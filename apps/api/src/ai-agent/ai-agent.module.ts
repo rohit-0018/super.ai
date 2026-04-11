@@ -4,8 +4,10 @@ import { AiAgentController } from './ai-agent.controller';
 import { LlmService } from './llm.service';
 import { ConversationMemoryService } from './conversation-memory.service';
 import { TradingDnaService } from './trading-dna.service';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
+  imports: [AuthModule],
   providers: [AiAgentService, LlmService, ConversationMemoryService, TradingDnaService],
   controllers: [AiAgentController],
   exports: [AiAgentService, TradingDnaService, ConversationMemoryService, LlmService],

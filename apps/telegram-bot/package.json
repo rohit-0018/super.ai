@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "grammy": "^1.27.0",
-    "axios": "^1.7.0",
     "dotenv": "^16.4.0"
   },
   "devDependencies": {

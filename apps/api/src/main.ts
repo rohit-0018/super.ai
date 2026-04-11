@@ -9,7 +9,7 @@ async function bootstrap() {
   app.use(helmet());
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
-  const port = Number(process.env.PORT ?? 4000);
+  const port = Number(process.env.PORT ?? 4400);
   await app.listen(port);
   Logger.log(`QWAI API listening on :${port}`, 'Bootstrap');
 }

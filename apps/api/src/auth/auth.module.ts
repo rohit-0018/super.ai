@@ -5,6 +5,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
 import { WalletVerifier } from './wallet-verifier';
+import { TelegramLinkService } from './telegram-link.service';
 
 @Module({
   imports: [
@@ -14,8 +15,8 @@ import { WalletVerifier } from './wallet-verifier';
       signOptions: { expiresIn: process.env.JWT_EXPIRES_IN ?? '15m' },
     }),
   ],
-  providers: [AuthService, JwtStrategy, WalletVerifier],
+  providers: [AuthService, JwtStrategy, WalletVerifier, TelegramLinkService],
   controllers: [AuthController],
-  exports: [AuthService, JwtModule],
+  exports: [AuthService, JwtModule, TelegramLinkService],
 })
 export class AuthModule {}

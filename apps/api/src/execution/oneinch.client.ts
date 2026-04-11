@@ -1,28 +1,28 @@
 import { Injectable } from '@nestjs/common';
-import axios from 'axios';
+import { http } from '../common/http';
 
 @Injectable()
 export class OneInchClient {
-  private base(chainId: number) { return `https://api.1inch.dev/swap/v6.0/${chainId}`; }
+  private base(chainId: number) {
+    return `https://api.1inch.dev/swap/v6.0/${chainId}`;
+  }
   private headers() {
     return { Authorization: `Bearer ${process.env.ONEINCH_API_KEY ?? ''}` };
   }
 
   async quote(chainId: number, src: string, dst: string, amount: string) {
-    const r = await axios.get(`${this.base(chainId)}/quote`, {
-      params: { src, dst, amount },
+    return http.get(`${this.base(chainId)}/quote`, {
       headers: this.headers(),
-      timeout: 8_000,
+      timeoutMs: 8_000,
+      params: { src, dst, amount },
     });
-    return r.data;
   }
 
   async swap(chainId: number, src: string, dst: string, amount: string, from: string, slippage: number) {
-    const r = await axios.get(`${this.base(chainId)}/swap`, {
-      params: { src, dst, amount, from, slippage, disableEstimate: false },
+    return http.get(`${this.base(chainId)}/swap`, {
       headers: this.headers(),
-      timeout: 8_000,
+      timeoutMs: 8_000,
+      params: { src, dst, amount, from, slippage, disableEstimate: false },
     });
-    return r.data;
   }
 }

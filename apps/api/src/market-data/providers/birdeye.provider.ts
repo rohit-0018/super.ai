@@ -1,23 +1,30 @@
 import { Injectable } from '@nestjs/common';
-import axios, { AxiosInstance } from 'axios';
+import { http } from '../../common/http';
 
 @Injectable()
 export class BirdeyeProvider {
-  private http: AxiosInstance = axios.create({
-    baseURL: 'https://public-api.birdeye.so',
-    timeout: 8_000,
-    headers: { 'X-API-KEY': process.env.BIRDEYE_API_KEY ?? '' },
-  });
+  private base = 'https://public-api.birdeye.so';
+  private headers = { 'X-API-KEY': process.env.BIRDEYE_API_KEY ?? '' };
 
   async tokenOverview(address: string) {
-    const r = await this.http.get('/defi/token_overview', { params: { address } });
-    return r.data?.data ?? null;
+    const r: any = await http.get(`${this.base}/defi/token_overview`, {
+      headers: this.headers,
+      timeoutMs: 8_000,
+      params: { address },
+    });
+    return r?.data ?? null;
   }
 
   async priceSolana(address: string): Promise<number | null> {
     try {
-      const r = await this.http.get('/defi/price', { params: { address } });
-      return r.data?.data?.value ?? null;
-    } catch { return null; }
+      const r: any = await http.get(`${this.base}/defi/price`, {
+        headers: this.headers,
+        timeoutMs: 8_000,
+        params: { address },
+      });
+      return r?.data?.value ?? null;
+    } catch {
+      return null;
+    }
   }
 }

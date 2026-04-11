@@ -15,20 +15,47 @@ export default function Wallets() {
     alert('Private key (store offline):\n\n' + data.key);
   }
   return (
-    <div className="panel">
-      <h1 className="text-2xl font-bold mb-4">Wallets</h1>
-      <div className="flex gap-2 mb-4">
-        <button onClick={() => create('SOLANA')} className="bg-accent text-black px-3 py-1 rounded">+ Solana</button>
-        <button onClick={() => create('EVM')} className="bg-accent text-black px-3 py-1 rounded">+ EVM</button>
+    <div className="space-y-6">
+      <header className="flex items-end justify-between">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-tight">Wallets</h1>
+          <p className="text-[13px] text-[color:var(--text-2)] mt-1">
+            Manage connected wallets across Solana and EVM chains.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => create('SOLANA')} className="btn">+ Solana</button>
+          <button onClick={() => create('EVM')} className="btn">+ EVM</button>
+        </div>
+      </header>
+
+      <div className="panel !p-0 overflow-hidden">
+        {wallets.length === 0 ? (
+          <div className="p-10 text-center">
+            <p className="text-[13px] text-[color:var(--text-3)]">No wallets yet</p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {wallets.map((w) => (
+              <li key={w.id} className="flex items-center justify-between px-5 py-4">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="chip">{w.chain}</span>
+                  <span className="font-mono text-[13px] text-[color:var(--text-2)] truncate">
+                    {w.address}
+                  </span>
+                </div>
+                <button
+                  onClick={() => exportKey(w.id)}
+                  className="btn btn-sm"
+                  style={{ color: 'var(--bad)' }}
+                >
+                  Export key
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
-      <ul className="space-y-2">
-        {wallets.map((w) => (
-          <li key={w.id} className="flex items-center justify-between border border-[#1c2540] rounded p-2">
-            <span><b>{w.chain}</b> {w.address}</span>
-            <button onClick={() => exportKey(w.id)} className="text-bad text-sm">Export Key</button>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

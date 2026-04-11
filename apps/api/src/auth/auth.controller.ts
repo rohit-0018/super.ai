@@ -1,10 +1,18 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { IsString, Length } from 'class-validator';
 import { AuthService } from './auth.service';
+import { TelegramLinkService } from './telegram-link.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
 import { NonceDto, RefreshDto, VerifyDto } from './dto';
+
+class TgLinkDto {
+  @IsString() @Length(4, 16) code!: string;
+  @IsString() telegramChatId!: string;
+}
 
 @Controller('auth')
 export class AuthController {
-  constructor(private auth: AuthService) {}
+  constructor(private auth: AuthService, private tgLink: TelegramLinkService) {}
 
   @Post('nonce')
   async nonce(@Body() dto: NonceDto) {
@@ -20,5 +28,16 @@ export class AuthController {
   @Post('refresh')
   refresh(@Body() dto: RefreshDto) {
     return this.auth.refresh(dto.refreshToken);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('telegram/code')
+  issueTelegramCode(@Req() req: any) {
+    return this.tgLink.issueCode(req.user.userId);
+  }
+
+  @Post('telegram/link')
+  linkTelegram(@Body() dto: TgLinkDto) {
+    return this.tgLink.link(dto.telegramChatId, dto.code);
   }
 }

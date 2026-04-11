@@ -50,25 +50,52 @@ export default function ChatPanel() {
   }
 
   return (
-    <div className="panel flex flex-col h-[420px]">
-      <h3 className="font-bold mb-2">QWAI Chat</h3>
-      <div className="flex-1 overflow-auto space-y-2 text-sm">
+    <div className="panel flex flex-col h-[460px]">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="section-title">QWAI chat</h3>
+        <span className="chip">
+          <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--ok)]" /> ready
+        </span>
+      </div>
+
+      <div className="flex-1 overflow-auto space-y-5 pr-1 -mr-1">
+        {msgs.length === 0 && (
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center max-w-sm">
+              <div className="text-[13px] text-[color:var(--text-2)] mb-2">
+                Ask anything about your trades, markets, or strategy.
+              </div>
+              <div className="text-[12px] text-[color:var(--text-3)] font-mono">
+                &ldquo;Buy $200 of SOL if it dips under $140&rdquo;
+              </div>
+            </div>
+          </div>
+        )}
         {msgs.map((m, i) => (
-          <div key={i} className={m.role === 'user' ? 'text-accent' : 'opacity-90'}>
-            <span className="opacity-50 mr-2">{m.role === 'user' ? 'you' : 'qwai'}</span>
-            {m.content}
+          <div key={i} className="text-[13px]">
+            <div className="stat-label mb-1.5">{m.role === 'user' ? 'You' : 'QWAI'}</div>
+            <div
+              className={`whitespace-pre-wrap leading-relaxed ${
+                m.role === 'user' ? 'text-text' : 'text-[color:var(--text-2)]'
+              }`}
+            >
+              {m.content}
+            </div>
           </div>
         ))}
       </div>
-      <div className="flex gap-2 mt-2">
+
+      <div className="flex gap-2 mt-4 pt-4 border-t border-border">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="Buy $200 of SOL..."
-          className="flex-1 bg-bg border border-[#1c2540] rounded px-2 py-1"
+          placeholder="Message QWAI…"
+          className="input"
         />
-        <button onClick={send} disabled={streaming} className="bg-accent text-black px-3 rounded font-bold">Send</button>
+        <button onClick={send} disabled={streaming || !input.trim()} className="btn btn-primary">
+          Send
+        </button>
       </div>
     </div>
   );

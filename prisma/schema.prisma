@@ -67,6 +67,7 @@ model User {
   id              String  @id @default(cuid())
   email           String? @unique
   primaryWallet   String? @unique
+  telegramChatId  String? @unique
   riskProfile     Json?
   emotionalState  Json?
   paperMode       Boolean @default(false)

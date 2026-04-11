@@ -4,12 +4,28 @@ import { api } from '../../lib/api';
 
 export default function Analytics() {
   const [perf, setPerf] = useState<any>(null);
-  useEffect(() => { api.get('/analytics/performance').then((r) => setPerf(r.data)).catch(() => setPerf({})); }, []);
+  useEffect(() => {
+    api.get('/analytics/performance').then((r) => setPerf(r.data)).catch(() => setPerf({}));
+  }, []);
+
   return (
-    <div className="grid gap-4">
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-[22px] font-semibold tracking-tight">Analytics</h1>
+        <p className="text-[13px] text-[color:var(--text-2)] mt-1">
+          Performance, PnL, and trade diagnostics.
+        </p>
+      </header>
+
       <div className="panel">
-        <h2 className="font-bold text-xl mb-2">Performance</h2>
-        {perf ? <pre className="text-xs opacity-80">{JSON.stringify(perf, null, 2)}</pre> : 'Loading…'}
+        <h2 className="section-title mb-4">Performance</h2>
+        {perf ? (
+          <pre className="text-[12px] font-mono text-[color:var(--text-2)] overflow-x-auto">
+            {JSON.stringify(perf, null, 2)}
+          </pre>
+        ) : (
+          <p className="text-[13px] text-[color:var(--text-3)]">Loading…</p>
+        )}
       </div>
     </div>
   );
