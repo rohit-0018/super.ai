@@ -15,6 +15,10 @@ export class ConversationMemoryService {
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
-    return rows.reverse().map((r) => ({ role: r.role as 'user' | 'assistant', content: r.content }));
+    return rows.reverse().map((r) => ({
+      role: r.role as 'user' | 'assistant',
+      content: r.content,
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 }

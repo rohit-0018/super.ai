@@ -262,6 +262,144 @@ body {
     text-underline-offset: 2px;
   }
 
+  /* ---------- Glass surfaces ---------- */
+  .glass {
+    background: color-mix(in srgb, var(--surface) 72%, transparent);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid color-mix(in srgb, var(--border-2) 80%, transparent);
+    border-radius: 14px;
+  }
+  .glass-strong {
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: blur(18px) saturate(160%);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    border: 1px solid color-mix(in srgb, var(--border-2) 90%, transparent);
+    border-radius: 14px;
+  }
+  .glass-sheen {
+    position: relative;
+    overflow: hidden;
+  }
+  .glass-sheen::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 300px at -10% -40%, color-mix(in srgb, var(--accent) 10%, transparent) 0%, transparent 60%),
+      radial-gradient(900px 260px at 110% -30%, color-mix(in srgb, var(--accent) 6%, transparent) 0%, transparent 55%);
+    mix-blend-mode: screen;
+    opacity: 0.6;
+  }
+
+  /* ---------- Chat bubbles ---------- */
+  .bubble {
+    max-width: 78%;
+    padding: 9px 13px;
+    border-radius: 14px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    position: relative;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+  .bubble-user {
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 92%, white 4%) 0%,
+      color-mix(in srgb, var(--accent) 88%, black 4%) 100%
+    );
+    color: var(--accent-fg);
+    border: 1px solid color-mix(in srgb, var(--accent) 80%, black 8%);
+    border-bottom-right-radius: 4px;
+    margin-left: auto;
+  }
+  .bubble-assistant {
+    background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: var(--text);
+    border: 1px solid color-mix(in srgb, var(--border-2) 70%, transparent);
+    border-bottom-left-radius: 4px;
+  }
+  .bubble code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12.5px;
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  }
+  .bubble-user code {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.22);
+    color: #fff;
+  }
+  .bubble pre {
+    margin: 6px 0;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--bg) 75%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .bubble strong { font-weight: 600; }
+
+  .msg-meta {
+    font-size: 10.5px;
+    color: var(--text-3);
+    padding: 0 4px;
+    letter-spacing: 0.02em;
+  }
+
+  /* Typing dots */
+  .typing-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 2px;
+  }
+  .typing-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--text-3);
+    animation: typing-bounce 1.2s ease-in-out infinite;
+  }
+  .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes typing-bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+    30% { transform: translateY(-3px); opacity: 1; }
+  }
+
+  /* Suggestion chip (clickable prompt seed) */
+  .suggest-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border-2) 60%, transparent);
+    font-size: 12px;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all 140ms ease;
+    backdrop-filter: blur(6px);
+  }
+  .suggest-chip:hover {
+    border-color: var(--accent);
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface-2) 90%);
+    transform: translateY(-1px);
+  }
+
   /* Stat display */
   .stat-label {
     font-size: 11px;
