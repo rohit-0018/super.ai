@@ -1,0 +1,266 @@
+// QWAI Prisma schema — full data model for W1–W6.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Chain {
+  SOLANA
+  EVM
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  STOP_LOSS
+  TAKE_PROFIT
+  TRAILING_STOP
+  BRACKET
+  DCA
+}
+
+enum OrderStatus {
+  PENDING
+  ACTIVE
+  FILLED
+  CANCELLED
+  FAILED
+}
+
+enum TradeMode {
+  LIVE
+  PAPER
+}
+
+enum AgentKind {
+  DCA
+  STOP_LOSS
+  COPY_TRADE
+  POSITION_MONITOR
+  SNIPE
+  BRIEFING
+}
+
+enum AgentStatus {
+  RUNNING
+  PAUSED
+  KILLED
+}
+
+enum AlertSeverity {
+  INFO
+  WARN
+  CRITICAL
+}
+
+enum Exchange {
+  BINANCE
+  BYBIT
+  OKX
+}
+
+model User {
+  id              String  @id @default(cuid())
+  email           String? @unique
+  primaryWallet   String? @unique
+  riskProfile     Json?
+  emotionalState  Json?
+  paperMode       Boolean @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  wallets         Wallet[]
+  sessions        Session[]
+  messages        ConversationMessage[]
+  tradingDna      TradingDna?
+  orders          Order[]
+  trades          Trade[]
+  agents          Agent[]
+  alerts          AlertEvent[]
+  audit           AuditLog[]
+  guardrails      GuardrailConfig?
+  cexConnections  CexConnection[]
+  paperBalances   PaperBalance[]
+}
+
+model Wallet {
+  id            String  @id @default(cuid())
+  userId        String
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain         Chain
+  address       String
+  encryptedKey  String  // KMS envelope ciphertext (base64)
+  encryptedDek  String  // wrapped data key (base64)
+  label         String?
+  isPrimary     Boolean @default(false)
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, address])
+  @@index([userId])
+}
+
+model Session {
+  id           String  @id @default(cuid())
+  userId       String
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshHash  String
+  nonce        String?
+  ip           String?
+  userAgent    String?
+  lastSeen     DateTime @default(now())
+  expiresAt    DateTime
+  @@index([userId])
+}
+
+model ConversationMessage {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   // "user" | "assistant" | "system"
+  content   String
+  channel   String   // "web" | "telegram"
+  meta      Json?
+  createdAt DateTime @default(now())
+  @@index([userId, createdAt])
+}
+
+model TradingDna {
+  userId            String  @id
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  winRate           Float   @default(0)
+  avgHoldMinutes    Float   @default(0)
+  riskScore         Float   @default(5)
+  totalTrades       Int     @default(0)
+  behavioralSignals Json?
+  preferences       Json?
+  updatedAt         DateTime @updatedAt
+}
+
+model TokenIntel {
+  id              String  @id @default(cuid())
+  chain           Chain
+  address         String
+  symbol          String?
+  name            String?
+  securityScore   Float?
+  convictionScore Float?
+  holderData      Json?
+  securityFlags   Json?
+  sentiment       Json?
+  priceUsd        Float?
+  updatedAt       DateTime @updatedAt
+  @@unique([chain, address])
+}
+
+model Order {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId  String
+  type      OrderType
+  status    OrderStatus @default(PENDING)
+  chain     Chain
+  tokenIn   String
+  tokenOut  String
+  amountIn  String      // bigint as string
+  params    Json
+  txHash    String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  trades    Trade[]
+  @@index([userId, status])
+}
+
+model Trade {
+  id        String    @id @default(cuid())
+  orderId   String?
+  order     Order?    @relation(fields: [orderId], references: [id])
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  side      String    // "buy" | "sell"
+  chain     Chain
+  tokenIn   String
+  tokenOut  String
+  amountIn  String
+  amountOut String
+  priceUsd  Float?
+  pnlUsd    Float?
+  mode      TradeMode @default(LIVE)
+  txHash    String?
+  createdAt DateTime  @default(now())
+  @@index([userId, createdAt])
+}
+
+model Agent {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      AgentKind
+  status    AgentStatus @default(RUNNING)
+  params    Json
+  lastRunAt DateTime?
+  createdAt DateTime    @default(now())
+  @@index([userId, status])
+}
+
+model AlertEvent {
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind        String
+  severity    AlertSeverity @default(INFO)
+  payload     Json
+  deliveredAt DateTime?
+  createdAt   DateTime      @default(now())
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  target    String?
+  payload   Json?
+  ip        String?
+  createdAt DateTime @default(now())
+  @@index([userId, createdAt])
+}
+
+model GuardrailConfig {
+  userId         String  @id
+  user           User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  perTradeUsd    Float   @default(500)
+  dailyUsd       Float   @default(2000)
+  maxSlippageBps Int     @default(150)
+  whitelist      String[]
+  blacklist      String[]
+  killSwitch     Boolean @default(false)
+  updatedAt      DateTime @updatedAt
+}
+
+model CexConnection {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exchange        Exchange
+  encryptedApiKey String
+  encryptedSecret String
+  encryptedDek    String
+  readOnly        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  @@unique([userId, exchange])
+}
+
+model PaperBalance {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token   String
+  amount  String  // bigint string
+  @@unique([userId, token])
+}

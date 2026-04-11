@@ -1,0 +1,41 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: qwai, POSTGRES_PASSWORD: qwai, POSTGRES_DB: qwai }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U qwai" --health-interval 5s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm prisma:generate
+      - run: pnpm lint
+      - run: pnpm test
+        env:
+          DATABASE_URL: postgresql://qwai:qwai@localhost:5432/qwai
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: ci-test-secret-32-bytes-minimum-length-ok
+      - run: pnpm build
+  e2e:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:e2e

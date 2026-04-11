@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { background: #0a0e1a; color: #e8eef9; font-family: ui-sans-serif, system-ui, -apple-system; }
+.panel { background: #0f1525; border: 1px solid #1c2540; border-radius: 12px; padding: 16px; }
