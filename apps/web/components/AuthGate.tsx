@@ -21,7 +21,8 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [hydrated, accessToken, pathname, router]);
 
-  if (!hydrated) {
+  const blocked = !hydrated || (!accessToken && !PUBLIC_ROUTES.includes(pathname));
+  if (blocked) {
     return <div className="p-8 text-[13px] text-[color:var(--text-3)]">Loading…</div>;
   }
   return <>{children}</>;
