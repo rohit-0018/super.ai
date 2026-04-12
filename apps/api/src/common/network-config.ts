@@ -53,7 +53,7 @@ export function getEvmChainId(chain: string): number {
 
 export function getEvmRpcUrl(chain?: string): string {
   if (isTestnet()) {
-    return process.env.EVM_TESTNET_RPC_URL ?? 'https://rpc.sepolia.org';
+    return process.env.EVM_TESTNET_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com';
   }
   return process.env.EVM_RPC_URL ?? 'https://eth.llamarpc.com';
 }

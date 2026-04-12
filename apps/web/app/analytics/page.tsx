@@ -167,7 +167,7 @@ export default function Analytics() {
                     <td className="py-3 pr-4"><span className="chip">{t.side}</span></td>
                     <td className="py-3 pr-4 font-mono">{(t.tokenIn || '').slice(0, 8)}</td>
                     <td className="py-3 pr-4 font-mono">{(t.tokenOut || '').slice(0, 8)}</td>
-                    <td className="py-3 pr-4 font-mono">{t.amountIn?.toFixed(4) ?? '—'}</td>
+                    <td className="py-3 pr-4 font-mono">{t.amountIn != null ? Number(t.amountIn).toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'}</td>
                     <td
                       className="py-3 pr-4 font-mono"
                       style={{

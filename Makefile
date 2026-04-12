@@ -57,6 +57,10 @@ prisma-status: ## Show pending migration status
 
 db-sync: prisma-push prisma-generate ## Push schema + regenerate client (one-shot dev workflow)
 
+db-seed: ## Seed database with test data (trades, agents, alerts, orders)
+	PGPASSWORD=qwai psql -h localhost -p 55432 -U qwai -d qwai -f prisma/seed.sql
+	@echo ">> Seeded: trades, agents, alerts, orders, trading DNA, paper balances, chat history"
+
 # ---------- infra (postgres + redis only, in docker) ----------
 # App services (api, worker, web, telegram-bot) run natively on the host
 # with hot reload. Docker is only used for the data stores.
@@ -92,12 +96,19 @@ dev-web: ## Run web with hot reload (next dev / fast refresh)
 dev-bot: ## Run telegram bot with hot reload (tsx watch)
 	$(PNPM) --filter @qwai/telegram-bot dev
 
+dev-kill: ## Kill anything on dev ports (3000, 4400) before starting
+	@-lsof -ti:3000 2>/dev/null | xargs kill -9 2>/dev/null || true
+	@-lsof -ti:4400 2>/dev/null | xargs kill -9 2>/dev/null || true
+	@sleep 1
+	@echo ">> ports 3000 + 4400 cleared"
+
 dev-stop: ## Kill stray host dev processes
 	-pkill -f "nest start --watch" 2>/dev/null || true
 	-pkill -f "next dev" 2>/dev/null || true
 	-pkill -f "tsx watch" 2>/dev/null || true
+	@$(MAKE) dev-kill
 
-dev-all: infra-up ## Start infra + api + worker + web + bot with hot reload
+dev-all: infra-up dev-kill ## Start infra + api + worker + web + bot with hot reload
 	@echo ">> infra up. starting api, worker, web, bot on host. Ctrl+C stops all."
 	@trap 'kill 0' INT TERM; \
 		( $(PNPM) --filter @qwai/api dev          2>&1 | awk '{print "[api]    " $$0; fflush()}' ) & \

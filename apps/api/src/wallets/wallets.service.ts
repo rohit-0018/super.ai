@@ -58,39 +58,65 @@ export class WalletsService {
     return { ...balance, walletId, chain: wallet.chain, address: wallet.address };
   }
 
-  /** Fetch all wallet balances in parallel — used by dedicated balance endpoint. */
+  // Balance cache: walletId → { bal, ts }
+  private balanceCache = new Map<string, { bal: any; ts: number }>();
+  private readonly BAL_CACHE_TTL = 30_000; // 30 seconds
+  private solConn: any = null;
+  private evmProvider: any = null;
+
+  /** Fetch all wallet balances — cached + parallel + 5s timeout per wallet. */
   async getAllBalances(userId: string) {
     const rows = await this.prisma.wallet.findMany({
       where: { userId },
       select: { id: true, chain: true, address: true },
     });
-    const results = await Promise.allSettled(
+
+    const results = await Promise.all(
       rows.map(async (w) => {
-        const bal = await this.fetchOnChainBalance(w.chain as 'SOLANA' | 'EVM', w.address);
-        return { walletId: w.id, chain: w.chain, address: w.address, ...bal };
+        // Check cache first
+        const cached = this.balanceCache.get(w.id);
+        if (cached && Date.now() - cached.ts < this.BAL_CACHE_TTL) {
+          return cached.bal;
+        }
+        try {
+          const bal = await this.withTimeout(
+            this.fetchOnChainBalance(w.chain as 'SOLANA' | 'EVM', w.address),
+            5000,
+          );
+          const result = { walletId: w.id, chain: w.chain, address: w.address, ...bal };
+          this.balanceCache.set(w.id, { bal: result, ts: Date.now() });
+          return result;
+        } catch (e: any) {
+          return { walletId: w.id, chain: w.chain, address: w.address, native: 0, symbol: w.chain === 'SOLANA' ? 'SOL' : 'ETH', usd: 0, error: e?.message };
+        }
       }),
     );
-    return results.map((r, i) =>
-      r.status === 'fulfilled'
-        ? r.value
-        : { walletId: rows[i].id, chain: rows[i].chain, address: rows[i].address, native: 0, symbol: rows[i].chain === 'SOLANA' ? 'SOL' : 'ETH', usd: 0, error: (r.reason as Error)?.message },
-    );
+    return results;
   }
 
   private async fetchOnChainBalance(chain: 'SOLANA' | 'EVM', address: string): Promise<{ native: number; symbol: string; usd: number }> {
     if (chain === 'SOLANA') {
       const { Connection, PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
-      const conn = new Connection(getSolanaRpcUrl(), { commitment: 'confirmed' });
-      const lamports = await conn.getBalance(new PublicKey(address));
+      // Reuse connection instead of creating a new one each time
+      if (!this.solConn) this.solConn = new Connection(getSolanaRpcUrl(), 'confirmed');
+      const lamports = await this.solConn.getBalance(new PublicKey(address));
       const sol = lamports / LAMPORTS_PER_SOL;
       const solPrice = await this.getPrice('solana').catch(() => 140);
       return { native: sol, symbol: 'SOL', usd: sol * solPrice };
     }
-    const provider = new ethers.JsonRpcProvider(getEvmRpcUrl());
-    const wei = await provider.getBalance(address);
+    // Reuse provider
+    if (!this.evmProvider) this.evmProvider = new ethers.JsonRpcProvider(getEvmRpcUrl());
+    const wei = await this.evmProvider.getBalance(address);
     const eth = parseFloat(ethers.formatEther(wei));
     const ethPrice = await this.getPrice('ethereum').catch(() => 2500);
     return { native: eth, symbol: 'ETH', usd: eth * ethPrice };
+  }
+
+  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`Timeout after ${ms}ms`)), ms)),
+    ]);
   }
 
   private priceCache = new Map<string, { price: number; ts: number }>();

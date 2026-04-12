@@ -71,7 +71,7 @@ export default function Wallets() {
         <div className="flex items-center justify-between">
           <div>
             <div className="stat-label mb-1">Total on-chain value</div>
-            {loading ? (
+            {balLoading && !balances ? (
               <Skeleton w={180} h={32} />
             ) : (
               <div className="stat-value fade-in">
@@ -153,7 +153,7 @@ export default function Wallets() {
                   <div className="text-right">
                     {(() => {
                       const bal = balMap.get(w.id);
-                      if (bal) {
+                      if (bal && !bal.error) {
                         return (
                           <div className="fade-in">
                             <div className="font-mono text-[15px] font-semibold">
@@ -165,8 +165,23 @@ export default function Wallets() {
                           </div>
                         );
                       }
-                      if (balLoading) return <Skeleton w={100} h={16} />;
-                      return <div className="font-mono text-[13px] text-[color:var(--text-3)]">$0.00</div>;
+                      if (balLoading && !balances) {
+                        return (
+                          <div className="space-y-1.5">
+                            <Skeleton w={110} h={16} />
+                            <Skeleton w={70} h={10} />
+                          </div>
+                        );
+                      }
+                      if (bal?.error) {
+                        return <div className="text-[11px] text-[color:var(--text-3)]">Balance unavailable</div>;
+                      }
+                      return (
+                        <div className="space-y-1.5">
+                          <Skeleton w={110} h={16} />
+                          <Skeleton w={70} h={10} />
+                        </div>
+                      );
                     })()}
                   </div>
                 </div>

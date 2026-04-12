@@ -14,6 +14,7 @@ interface WalletBalance {
   native: number;
   symbol: string;
   usd: number;
+  error?: string;
 }
 
 export default function PortfolioCard() {
@@ -74,13 +75,13 @@ export default function PortfolioCard() {
                   )}
                 </div>
                 <div className="text-right">
-                  {bal ? (
-                    <span className="font-mono text-[13px]">
+                  {bal && !bal.error ? (
+                    <span className="font-mono text-[13px] fade-in">
                       {bal.native.toLocaleString(undefined, { maximumFractionDigits: 4 })} {bal.symbol}
                       <span className="text-[color:var(--text-3)] ml-1.5 text-[11px]">${bal.usd.toFixed(2)}</span>
                     </span>
-                  ) : balLoading ? (
-                    <Skeleton w={80} h={12} />
+                  ) : (balLoading && !balances) ? (
+                    <Skeleton w={90} h={12} />
                   ) : (
                     <span className="font-mono text-[color:var(--text-3)] text-[12px]">
                       {w.address.slice(0, 6)}…{w.address.slice(-4)}
