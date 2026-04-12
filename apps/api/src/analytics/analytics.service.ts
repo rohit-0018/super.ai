@@ -12,6 +12,25 @@ export class AnalyticsService {
     const totalPnl = trades.reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
     const winRate = trades.length ? wins / trades.length : 0;
     const avgPnl = trades.length ? totalPnl / trades.length : 0;
+
+    const holdTimes: number[] = [];
+    for (let i = 1; i < trades.length; i++) {
+      if (trades[i].tokenIn === trades[i - 1].tokenOut) {
+        holdTimes.push((trades[i].createdAt.getTime() - trades[i - 1].createdAt.getTime()) / 60_000);
+      }
+    }
+    const avgHoldMinutes = holdTimes.length ? holdTimes.reduce((a, b) => a + b, 0) / holdTimes.length : 0;
+
+    const returns = trades.map((t) => t.pnlUsd ?? 0);
+    const cumulativeReturns: number[] = [];
+    let cum = 0;
+    for (const r of returns) { cum += r; cumulativeReturns.push(cum); }
+
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86400_000);
+    const weekTrades = trades.filter((t) => t.createdAt >= sevenDaysAgo);
+    const weekPnl = weekTrades.reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
+    const weekWins = weekTrades.filter((t) => (t.pnlUsd ?? 0) > 0).length;
+
     return {
       totalTrades: trades.length,
       wins,
@@ -19,7 +38,16 @@ export class AnalyticsService {
       winRate,
       totalPnl,
       avgPnl,
-      sharpe: this.sharpe(trades.map((t) => t.pnlUsd ?? 0)),
+      sharpe: this.sharpe(returns),
+      avgHoldMinutes: Math.round(avgHoldMinutes),
+      cumulativeReturns,
+      weekly: {
+        trades: weekTrades.length,
+        pnl: weekPnl,
+        wins: weekWins,
+        losses: weekTrades.length - weekWins,
+        winRate: weekTrades.length ? weekWins / weekTrades.length : 0,
+      },
     };
   }
 

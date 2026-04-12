@@ -11,6 +11,15 @@ interface Performance {
   totalPnl: number;
   avgPnl: number;
   sharpe: number;
+  avgHoldMinutes?: number;
+  cumulativeReturns?: number[];
+  weekly?: {
+    trades: number;
+    pnl: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+  };
 }
 
 interface Trade {
@@ -86,7 +95,30 @@ export default function Analytics() {
         <StatCard label="Win rate" value={loading ? null : `${(perf!.winRate * 100).toFixed(1)}%`} />
         <StatCard label="Trades" value={loading ? null : `${perf!.totalTrades}`} sub={loading ? undefined : `${perf!.wins}W · ${perf!.losses}L`} />
         <StatCard label="Sharpe" value={loading ? null : perf!.sharpe.toFixed(2)} sub={loading ? undefined : 'annualized'} />
+        <StatCard label="Avg hold" value={loading ? null : formatHoldTime(perf!.avgHoldMinutes ?? 0)} />
+        <StatCard label="Avg P&L" value={loading ? null : fmtUsd(perf!.avgPnl)} accent={loading ? undefined : (perf!.avgPnl >= 0 ? 'var(--ok)' : 'var(--bad)')} />
       </section>
+
+      {/* Weekly review card (L8) */}
+      {!loading && perf!.weekly && (
+        <section className="panel fade-in" style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 6%, var(--surface)) 0%, var(--surface) 60%)' }}>
+          <h2 className="section-title mb-4">Weekly review · Last 7 days</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <MiniStat label="Trades" value={`${perf!.weekly.trades}`} />
+            <MiniStat label="P&L" value={fmtUsd(perf!.weekly.pnl)} accent={perf!.weekly.pnl >= 0 ? 'var(--ok)' : 'var(--bad)'} />
+            <MiniStat label="Win rate" value={`${(perf!.weekly.winRate * 100).toFixed(1)}%`} />
+            <MiniStat label="W / L" value={`${perf!.weekly.wins} / ${perf!.weekly.losses}`} />
+          </div>
+        </section>
+      )}
+
+      {/* Cumulative returns sparkline (L7) */}
+      {!loading && perf!.cumulativeReturns && perf!.cumulativeReturns.length > 1 && (
+        <section className="panel fade-in">
+          <h2 className="section-title mb-4">Cumulative P&L curve</h2>
+          <CumulativeChart data={perf!.cumulativeReturns} />
+        </section>
+      )}
 
       {/* Trade replay */}
       <section className="panel">
@@ -164,7 +196,46 @@ export default function Analytics() {
 
 const EMPTY_PERF: Performance = {
   totalTrades: 0, wins: 0, losses: 0, winRate: 0, totalPnl: 0, avgPnl: 0, sharpe: 0,
+  avgHoldMinutes: 0, cumulativeReturns: [], weekly: { trades: 0, pnl: 0, wins: 0, losses: 0, winRate: 0 },
 };
+
+function MiniStat({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div>
+      <div className="stat-label mb-1">{label}</div>
+      <div className="font-mono text-[15px] font-semibold" style={{ color: accent }}>{value}</div>
+    </div>
+  );
+}
+
+function formatHoldTime(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1440) return `${Math.round(minutes / 60)}h`;
+  return `${Math.round(minutes / 1440)}d`;
+}
+
+function CumulativeChart({ data }: { data: number[] }) {
+  const max = Math.max(...data.map(Math.abs), 1);
+  const w = 100;
+  const h = 40;
+  const step = w / (data.length - 1);
+  const mid = h / 2;
+  const points = data.map((v, i) => `${(i * step).toFixed(1)},${(mid - (v / max) * (h / 2 - 2)).toFixed(1)}`).join(' ');
+  const lastVal = data[data.length - 1];
+  const color = lastVal >= 0 ? 'var(--ok)' : 'var(--bad)';
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 120 }} preserveAspectRatio="none">
+      <line x1="0" y1={mid} x2={w} y2={mid} stroke="var(--border)" strokeWidth="0.3" />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 function StatCard({
   label, value, sub, accent,
