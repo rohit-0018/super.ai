@@ -262,6 +262,50 @@ body {
     text-underline-offset: 2px;
   }
 
+  /* ---------- Skeleton + Spinner ---------- */
+  .skeleton {
+    position: relative;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--surface-2) 85%, var(--border));
+    isolation: isolate;
+  }
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--text) 6%, transparent) 50%,
+      transparent 100%
+    );
+    transform: translateX(-100%);
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes skeleton-shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  .qwai-spinner {
+    border-radius: 999px;
+    border: 2px solid color-mix(in srgb, var(--text) 16%, transparent);
+    border-top-color: var(--accent);
+    animation: qwai-spin 0.7s linear infinite;
+  }
+  @keyframes qwai-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Subtle fade-in on data arrival to avoid pop-in */
+  .fade-in {
+    animation: qwai-fade-in 260ms ease-out both;
+  }
+  @keyframes qwai-fade-in {
+    from { opacity: 0; transform: translateY(2px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
   /* ---------- Glass surfaces ---------- */
   .glass {
     background: color-mix(in srgb, var(--surface) 72%, transparent);

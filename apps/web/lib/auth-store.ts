@@ -53,8 +53,10 @@ export const useAuth = create<AuthState>((set, get) => {
       setToken(null);
       persist(null);
       set({ accessToken: null, refreshToken: null, expiresAt: null });
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login';
+      if (typeof window !== 'undefined') {
+        const p = window.location.pathname;
+        const isPublic = p === '/' || p.startsWith('/login');
+        if (!isPublic) window.location.href = '/login';
       }
     },
   });

@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import ThemeToggle from './ThemeToggle';
+import PaperModePill from './PaperModePill';
 
 const links: [string, string][] = [
   ['/dashboard', 'Dashboard'],
@@ -50,7 +51,7 @@ export default function Navbar() {
           })}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <span className="chip font-mono">v0.1.0</span>
+          <PaperModePill />
           <ThemeToggle />
         </div>
       </div>

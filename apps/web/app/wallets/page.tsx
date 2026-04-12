@@ -1,11 +1,12 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
+import { Skeleton } from '../../components/ui/Skeleton';
 
 export default function Wallets() {
-  const [wallets, setWallets] = useState<any[]>([]);
-  const refresh = () => api.get('/wallets').then((r) => setWallets(r.data));
-  useEffect(() => { refresh().catch(() => {}); }, []);
+  const [wallets, setWallets] = useState<any[] | null>(null);
+  const refresh = () => api.get('/wallets').then((r) => setWallets(r.data)).catch(() => setWallets([]));
+  useEffect(() => { refresh(); }, []);
   async function create(chain: 'SOLANA' | 'EVM') {
     await api.post('/wallets', { chain });
     refresh();
@@ -30,12 +31,24 @@ export default function Wallets() {
       </header>
 
       <div className="panel !p-0 overflow-hidden">
-        {wallets.length === 0 ? (
+        {wallets === null ? (
+          <ul className="divide-y divide-border">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <li key={i} className="flex items-center justify-between px-5 py-4">
+                <div className="flex items-center gap-3 flex-1">
+                  <Skeleton w={48} h={20} rounded="md" />
+                  <Skeleton w="40%" h={12} />
+                </div>
+                <Skeleton w={80} h={24} rounded="md" />
+              </li>
+            ))}
+          </ul>
+        ) : wallets.length === 0 ? (
           <div className="p-10 text-center">
             <p className="text-[13px] text-[color:var(--text-3)]">No wallets yet</p>
           </div>
         ) : (
-          <ul className="divide-y divide-border">
+          <ul className="divide-y divide-border fade-in">
             {wallets.map((w) => (
               <li key={w.id} className="flex items-center justify-between px-5 py-4">
                 <div className="flex items-center gap-3 min-w-0">

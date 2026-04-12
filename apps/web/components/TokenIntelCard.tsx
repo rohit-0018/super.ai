@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { api } from '../lib/api';
+import { Skeleton, Spinner } from './ui/Skeleton';
 
 interface IntelResponse {
   chain?: string;
@@ -74,11 +75,25 @@ export default function TokenIntelCard() {
           className="input font-mono"
         />
         <button onClick={analyze} disabled={loading || !input.trim()} className="btn btn-primary">
-          {loading ? '…' : 'Analyze'}
+          {loading ? <Spinner size={12} /> : 'Analyze'}
         </button>
       </div>
 
       {err && <p className="text-[13px] text-[color:var(--bad)] mb-2">{err}</p>}
+
+      {loading && !intel && (
+        <div className="space-y-3 pt-1">
+          <div className="flex items-baseline justify-between">
+            <Skeleton w={80} h={18} />
+            <Skeleton w={90} h={14} />
+          </div>
+          <hr className="divider" />
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5"><Skeleton w={60} h={10} /><Skeleton w={50} h={16} /></div>
+            <div className="space-y-1.5"><Skeleton w={60} h={10} /><Skeleton w={50} h={16} /></div>
+          </div>
+        </div>
+      )}
 
       {intel && (
         <div className="space-y-4 pt-1">
