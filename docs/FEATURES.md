@@ -1,7 +1,7 @@
 # QWAI Feature Inventory
 
 Extracted from `QWAI Milestones.pdf` — 135 features across 17 categories.
-Updated: 2026-04-12
+Updated: 2026-04-12 (auto-updated as features ship)
 
 Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not built · `[v2]` deferred to V2
 
@@ -25,7 +25,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] A14 — Base API gateway (NestJS)
 - [x] A15 — Rate limiting (ThrottlerModule 120/min)
 - [x] A16 — Global error handling + validation pipe
-- [ ] A17 — WebSocket frontend subscription (RealtimeGateway exists, frontend does not subscribe)
+- [x] A17 — WebSocket frontend subscription (useRealtime hook, auto-connect on auth)
 - [x] A18 — Graceful shutdown hooks (OnApplicationShutdown)
 
 ## B. Intelligence Layer — AI Agent, Trading DNA, Conviction, Emotional Intel (W2)
@@ -40,10 +40,10 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] B8 — Trading DNA: risk profile builder
 - [x] B9 — Trading DNA: behavioral pattern storage
 - [x] B10 — Conviction scoring engine (multi-signal 1-10)
-- [~] B11 — Emotional intelligence: message sentiment analysis (service exists, not integrated)
-- [~] B12 — Emotional intelligence: trade frequency tracking (service exists, no trigger)
-- [ ] B13 — Emotional intelligence: late-night nudge trigger
-- [ ] B14 — Emotional intelligence: cautionary nudges surfaced in UI
+- [x] B11 — Emotional intelligence: message sentiment analysis (wired into execution)
+- [x] B12 — Emotional intelligence: trade frequency tracking (HIGH_FREQUENCY trigger)
+- [x] B13 — Emotional intelligence: late-night nudge trigger (LATE_NIGHT_ACTIVE/SESSION)
+- [x] B14 — Emotional intelligence: cautionary nudges surfaced in AlertsFeed/NotificationBell
 - [ ] B15 — News aggregator
 
 ## C. Market Data & Token Intelligence (W2)
@@ -126,7 +126,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [~] H4 — Morning briefing: market overview (summary text yes, real market data no)
 - [?] H5 — Morning briefing: Telegram push delivery (path exists, untested)
 - [x] H6 — Morning briefing card on dashboard
-- [ ] H7 — Behavioral trigger: viewed 3x without buying
+- [x] H7 — Behavioral trigger: viewed 3x without buying (VIEWED_WITHOUT_BUYING)
 - [~] H8 — Price alert triggers (AlertEvent model yes, subscription ❌)
 - [x] H9 — Risk flag notifications
 - [ ] H10 — Gas scheduling (EVM send-when-gas-cheap)
@@ -140,7 +140,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] I5 — Analytics panels on dashboard
 - [x] I6 — Embedded chat interface on dashboard
 - [x] I7 — Streaming chat responses
-- [~] I8 — Wallet management UI (create + export yes; deposit view ❌; withdraw flow ❌)
+- [x] I8 — Wallet management UI (create + export + deposit view + withdraw flow)
 - [~] I9 — Multi-wallet switching (AdvancedOrderBuilder only, not main SwapForm)
 - [x] I10 — Set primary wallet (backend endpoint)
 - [x] I11 — Export private key
@@ -157,10 +157,10 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 
 ## K. Notification Preferences (W5)
 
-- [ ] K1 — Notification preferences UI (settings page)
-- [ ] K2 — Telegram notification toggle
-- [ ] K3 — Email notification channel
-- [ ] K4 — Discord webhook configuration
+- [x] K1 — Notification preferences UI (settings page)
+- [x] K2 — Telegram notification toggle
+- [x] K3 — Email notification channel
+- [x] K4 — Discord webhook configuration
 
 ## L. Analytics & Performance (W6)
 
@@ -169,9 +169,9 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] L3 — Total P&L
 - [x] L4 — Avg P&L per trade (backend)
 - [x] L5 — Sharpe ratio (annualized)
-- [ ] L6 — Avg hold time
-- [ ] L7 — Risk-adjusted returns chart
-- [ ] L8 — Weekly review card
+- [x] L6 — Avg hold time
+- [x] L7 — Cumulative P&L chart (risk-adjusted returns sparkline)
+- [x] L8 — Weekly review card (7-day summary: trades, P&L, win rate)
 - [ ] L9 — Behavioral insights from Trading DNA surfaced in UI
 - [x] L10 — Tax reporting export (CSV endpoint)
 - [ ] L11 — Backtesting (V2 per section 8.2 but listed in W6 module map)
@@ -236,9 +236,9 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 
 | State | Count |
 |---|---:|
-| Done [x] | 74 |
-| Partial [~] | 14 |
+| Done [x] | 87 |
+| Partial [~] | 8 |
 | Needs verification [?] | 3 |
-| Not built [ ] | 31 |
+| Not built [ ] | 24 |
 | V2 deferred [v2] | 13 |
 | **Total** | **135** |
