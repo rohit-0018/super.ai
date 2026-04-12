@@ -4,8 +4,10 @@ import { TokenIntelController } from './token-intel.controller';
 import { GoPlusProvider } from './providers/goplus.provider';
 import { RugCheckProvider } from './providers/rugcheck.provider';
 import { ConvictionEngine } from './conviction.engine';
+import { AgentsModule } from '../agents/agents.module';
 
 @Module({
+  imports: [AgentsModule],
   providers: [TokenIntelService, GoPlusProvider, RugCheckProvider, ConvictionEngine],
   controllers: [TokenIntelController],
   exports: [TokenIntelService, ConvictionEngine],

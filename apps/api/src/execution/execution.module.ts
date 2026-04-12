@@ -8,9 +8,10 @@ import { DcaService } from './dca.service';
 import { WalletsModule } from '../wallets/wallets.module';
 import { AiAgentModule } from '../ai-agent/ai-agent.module';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
+import { AgentsModule } from '../agents/agents.module';
 
 @Module({
-  imports: [WalletsModule, AiAgentModule, GuardrailsModule],
+  imports: [WalletsModule, AiAgentModule, GuardrailsModule, AgentsModule],
   providers: [ExecutionService, JupiterClient, OneInchClient, OrderManagerService, DcaService],
   controllers: [ExecutionController],
   exports: [ExecutionService, OrderManagerService, DcaService],

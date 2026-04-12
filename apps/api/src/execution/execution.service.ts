@@ -8,6 +8,7 @@ import { JupiterClient } from './jupiter.client';
 import { OneInchClient } from './oneinch.client';
 import { WalletsService } from '../wallets/wallets.service';
 import { TradingDnaService } from '../ai-agent/trading-dna.service';
+import { EmotionalIntelService } from '../agents/emotional-intel.service';
 
 export interface SwapInput {
   userId: string;
@@ -46,6 +47,7 @@ export class ExecutionService {
     private oneinch: OneInchClient,
     private wallets: WalletsService,
     private dna: TradingDnaService,
+    private emotional: EmotionalIntelService,
   ) {}
 
   async swap(input: SwapInput): Promise<SwapResult> {
@@ -131,6 +133,7 @@ export class ExecutionService {
     }
 
     await this.dna.recordTrade(input.userId, { pnlUsd: 0, holdMinutes: 0 });
+    this.emotional.evaluate(input.userId).catch((e) => this.logger.warn(`Emotional eval failed: ${e.message}`));
     await this.prisma.auditLog.create({
       data: {
         userId: input.userId,

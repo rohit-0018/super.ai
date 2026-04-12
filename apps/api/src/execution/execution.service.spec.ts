@@ -45,8 +45,9 @@ function makeService(overrides: {
     withSigningKey: jest.fn().mockResolvedValue('mock-tx-hash'),
   };
   const dna: any = { recordTrade: jest.fn().mockResolvedValue(undefined) };
+  const emotional: any = { evaluate: jest.fn().mockResolvedValue(undefined) };
 
-  const svc = new ExecutionService(prisma, guardrails, jup, oneinch, wallets, dna);
+  const svc = new ExecutionService(prisma, guardrails, jup, oneinch, wallets, dna, emotional);
   return { svc, prisma, guardrails, jup, oneinch, wallets, dna, trades, audits, paperBalances };
 }
 
