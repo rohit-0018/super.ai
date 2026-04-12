@@ -69,8 +69,9 @@ model User {
   primaryWallet   String? @unique
   telegramChatId  String? @unique
   riskProfile     Json?
-  emotionalState  Json?
-  paperMode       Boolean @default(false)
+  emotionalState    Json?
+  notificationPrefs Json?
+  paperMode         Boolean @default(false)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
