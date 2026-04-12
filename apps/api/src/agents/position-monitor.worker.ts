@@ -74,6 +74,33 @@ export function startPositionMonitorWorker(deps: WorkerDeps): Worker {
       }
     }
 
+    // G5: Liquidation defense — check for positions that dropped >80% from entry
+    const openTrades = await deps.prisma.trade.findMany({
+      where: { userId: { not: undefined }, mode: 'LIVE' },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      distinct: ['tokenOut', 'userId'],
+    });
+    for (const t of openTrades) {
+      const price = await safePrice(deps, t.tokenOut);
+      if (price == null || !t.priceUsd || t.priceUsd <= 0) continue;
+      const drawdown = 1 - price / t.priceUsd;
+      if (drawdown >= 0.8) {
+        await deps.notifications.emit({
+          userId: t.userId,
+          kind: 'LIQUIDATION_WARNING',
+          severity: 'CRITICAL',
+          payload: {
+            token: t.tokenOut,
+            entryPrice: t.priceUsd,
+            currentPrice: price,
+            drawdownPct: Math.round(drawdown * 100),
+            message: `${t.tokenOut.slice(0, 8)} is down ${Math.round(drawdown * 100)}% from entry. Consider closing to prevent total loss.`,
+          },
+        });
+      }
+    }
+
     logger.debug(`monitor tick: ${triggered} triggered / ${orders.length} scanned`);
     return { ok: true, triggered, scanned: orders.length };
   });

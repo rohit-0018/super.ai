@@ -17,6 +17,7 @@ import { SocialModule } from './social/social.module';
 import { CexModule } from './cex/cex.module';
 import { WsModule } from './ws/ws.module';
 import { UsersModule } from './users/users.module';
+import { NewsModule } from './news/news.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -38,6 +39,7 @@ import { HealthController } from './health.controller';
     CexModule,
     WsModule,
     UsersModule,
+    NewsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

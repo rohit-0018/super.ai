@@ -35,4 +35,14 @@ export class ConvictionEngine {
     }
     return Math.round(score * 10) / 10;
   }
+
+  portfolioFit(tokenCategory: string, existingCategories: string[]): { fitScore: number; reason: string } {
+    const count = existingCategories.filter((c) => c === tokenCategory).length;
+    const total = existingCategories.length || 1;
+    const concentration = count / total;
+    if (concentration >= 0.5) return { fitScore: 3, reason: `Already ${Math.round(concentration * 100)}% in ${tokenCategory} — high concentration risk` };
+    if (concentration >= 0.3) return { fitScore: 6, reason: `${Math.round(concentration * 100)}% in ${tokenCategory} — moderate overlap` };
+    if (count === 0) return { fitScore: 9, reason: `Diversifies into ${tokenCategory} — no existing exposure` };
+    return { fitScore: 7, reason: `Small existing ${tokenCategory} allocation — reasonable fit` };
+  }
 }
