@@ -57,8 +57,12 @@ export class LlmService {
       });
       return r.choices[0]?.message?.content ?? '';
     }
-    this.logger.warn('No LLM provider configured — returning stub');
-    return '[LLM offline] I would analyze this trade and respond with a conviction-scored recommendation.';
+    this.logger.error(
+      'No LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env (and LLM_PROVIDER accordingly).',
+    );
+    throw new Error(
+      'LLM provider not configured. Add ANTHROPIC_API_KEY (or OPENAI_API_KEY) to your .env and restart the API.',
+    );
   }
 
   private race<T>(p: Promise<T>, ms: number): Promise<T> {

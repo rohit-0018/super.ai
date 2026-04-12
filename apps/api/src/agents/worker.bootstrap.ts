@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import { Worker } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionService } from '../execution/execution.service';
@@ -19,7 +19,7 @@ export interface WorkerDeps {
 }
 
 @Injectable()
-export class WorkerBootstrap implements OnModuleInit {
+export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(WorkerBootstrap.name);
   private workers: Worker[] = [];
 
@@ -87,5 +87,14 @@ export class WorkerBootstrap implements OnModuleInit {
   async stop() {
     await Promise.all(this.workers.map((w) => w.close()));
     await connection.quit();
+  }
+
+  async onApplicationShutdown(signal?: string) {
+    this.logger.log(`Shutting down ${this.workers.length} workers (${signal ?? 'shutdown'})`);
+    try {
+      await this.stop();
+    } catch (e) {
+      this.logger.error(`Worker shutdown error: ${(e as Error).message}`);
+    }
   }
 }

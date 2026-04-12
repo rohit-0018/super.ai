@@ -134,6 +134,7 @@ export default function ChatPanel() {
       const dec = new TextDecoder();
       let acc = '';
       let buf = '';
+      let streamError: string | null = null;
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -141,24 +142,35 @@ export default function ChatPanel() {
         const events = buf.split(/\n\n/);
         buf = events.pop() ?? '';
         for (const ev of events) {
+          let eventType = 'message';
+          let dataPayload = '';
           for (const line of ev.split('\n')) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const j = JSON.parse(line.slice(6));
-              if (j.chunk) {
-                acc += j.chunk;
-                setMsgs((m) => {
-                  const copy = [...m];
-                  copy[copy.length - 1] = { role: 'assistant', content: acc, createdAt: now, pending: false };
-                  return copy;
-                });
-              }
-            } catch {
-              // skip malformed lines
+            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) dataPayload += line.slice(6);
+          }
+          if (!dataPayload) continue;
+          if (eventType === 'error') {
+            try { streamError = JSON.parse(dataPayload).message ?? 'Stream error'; }
+            catch { streamError = dataPayload; }
+            continue;
+          }
+          if (eventType === 'end') continue;
+          try {
+            const j = JSON.parse(dataPayload);
+            if (j.chunk) {
+              acc += j.chunk;
+              setMsgs((m) => {
+                const copy = [...m];
+                copy[copy.length - 1] = { role: 'assistant', content: acc, createdAt: now, pending: false };
+                return copy;
+              });
             }
+          } catch {
+            // skip malformed lines
           }
         }
       }
+      if (streamError) throw new Error(streamError);
       setMsgs((m) => {
         const copy = [...m];
         const last = copy[copy.length - 1];
