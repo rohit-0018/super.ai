@@ -53,7 +53,7 @@ export default function Login() {
       const { data: { nonce, message } } = await api.post('/auth/nonce', { address, chain: 'EVM' });
       const signature = await signer.signMessage(message);
       const { data } = await api.post('/auth/verify', { address, chain: 'EVM', signature, nonce });
-      setTokens(data.accessToken, data.refreshToken);
+      setTokens(data.accessToken, data.refreshToken, data.expiresIn);
       router.push('/dashboard');
     } catch (e) {
       console.error('[login] evm failed:', e);
@@ -82,7 +82,7 @@ export default function Login() {
         signature: bs58.default.encode(sig.signature),
         nonce,
       });
-      setTokens(data.accessToken, data.refreshToken);
+      setTokens(data.accessToken, data.refreshToken, data.expiresIn);
       router.push('/dashboard');
     } catch (e) {
       console.error('[login] solana failed:', e);

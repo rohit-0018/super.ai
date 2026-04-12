@@ -8,7 +8,11 @@ import { WalletVerifier } from './wallet-verifier';
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
+  expiresIn: number;
 }
+
+const ACCESS_TTL_SECONDS = parseDurationSeconds(process.env.JWT_EXPIRES_IN ?? '15m');
+const REFRESH_TTL_MS = parseDurationSeconds(process.env.JWT_REFRESH_EXPIRES_IN ?? '7d') * 1000;
 
 @Injectable()
 export class AuthService {
@@ -32,7 +36,12 @@ export class AuthService {
     return nonce;
   }
 
-  async verifyAndIssueTokens(address: string, chain: Chain, signature: string, nonce: string): Promise<AuthTokens> {
+  async verifyAndIssueTokens(
+    address: string,
+    chain: Chain,
+    signature: string,
+    nonce: string,
+  ): Promise<AuthTokens> {
     const session = await this.prisma.session.findFirst({
       where: { nonce, expiresAt: { gt: new Date() } },
       orderBy: { lastSeen: 'desc' },
@@ -47,8 +56,9 @@ export class AuthService {
       where: { id: session.id },
       data: {
         nonce: null,
-        refreshHash: createHash('sha256').update(tokens.refreshToken).digest('hex'),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60_000),
+        refreshHash: hashToken(tokens.refreshToken),
+        expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+        lastSeen: new Date(),
       },
     });
     await this.prisma.auditLog.create({
@@ -57,11 +67,64 @@ export class AuthService {
     return tokens;
   }
 
+  /**
+   * Rotate the refresh token: verify the incoming token matches a live session,
+   * issue a fresh pair, and atomically swap the stored hash + extend expiry.
+   *
+   * If a client presents a refresh token whose hash no longer matches any session
+   * (because it was already rotated or the session was invalidated), throw 401.
+   * This catches both natural staleness and replay attempts.
+   */
   async refresh(refreshToken: string): Promise<AuthTokens> {
-    const hash = createHash('sha256').update(refreshToken).digest('hex');
+    if (!refreshToken || typeof refreshToken !== 'string') {
+      throw new UnauthorizedException('Missing refresh token');
+    }
+    const hash = hashToken(refreshToken);
+
     const session = await this.prisma.session.findFirst({ where: { refreshHash: hash } });
-    if (!session || session.expiresAt < new Date()) throw new UnauthorizedException();
-    return this.signTokens(session.userId);
+    if (!session || session.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token invalid or expired');
+    }
+
+    const tokens = await this.signTokens(session.userId);
+    const newHash = hashToken(tokens.refreshToken);
+
+    // Conditional update — only rotate if the hash still matches (prevents
+    // concurrent refresh races from both succeeding).
+    const rotated = await this.prisma.session.updateMany({
+      where: { id: session.id, refreshHash: hash },
+      data: {
+        refreshHash: newHash,
+        expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+        lastSeen: new Date(),
+      },
+    });
+    if (rotated.count === 0) {
+      throw new UnauthorizedException('Refresh token already rotated');
+    }
+
+    await this.prisma.auditLog.create({
+      data: { userId: session.userId, action: 'auth.refresh', target: session.id },
+    });
+    return tokens;
+  }
+
+  async logout(refreshToken: string): Promise<void> {
+    if (!refreshToken) return;
+    const hash = hashToken(refreshToken);
+    await this.prisma.session.updateMany({
+      where: { refreshHash: hash },
+      data: { refreshHash: 'revoked', expiresAt: new Date(0) },
+    });
+  }
+
+  async getUserById(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, primaryWallet: true, createdAt: true, paperMode: true },
+    });
+    if (!user) throw new UnauthorizedException('User not found');
+    return user;
   }
 
   private async upsertUserByWallet(address: string, _chain: Chain) {
@@ -75,6 +138,24 @@ export class AuthService {
   private async signTokens(userId: string, address?: string): Promise<AuthTokens> {
     const accessToken = await this.jwt.signAsync({ sub: userId, address });
     const refreshToken = randomBytes(48).toString('base64url');
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, expiresIn: ACCESS_TTL_SECONDS };
+  }
+}
+
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+/** Parse "15m", "7d", "3600" → seconds. */
+function parseDurationSeconds(v: string): number {
+  const m = /^(\d+)\s*(s|m|h|d)?$/.exec(v.trim());
+  if (!m) return 900;
+  const n = parseInt(m[1], 10);
+  switch (m[2]) {
+    case 's': return n;
+    case 'm': return n * 60;
+    case 'h': return n * 3600;
+    case 'd': return n * 86400;
+    default: return n;
   }
 }

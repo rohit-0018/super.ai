@@ -1,8 +1,10 @@
 /**
- * Tiny fetch-based API client. Preserves the axios-like surface used across
- * the app: `api.get(path).then(r => r.data)`, `api.post(path, body)`,
- * `api.defaults.baseURL`, `api.defaults.headers.common`, and `setToken()`.
- * No external HTTP deps.
+ * Tiny fetch-based API client with transparent JWT refresh.
+ *
+ * On 401 it calls /auth/refresh once (single-flight), swaps in the new access
+ * token, and retries the original request. Concurrent 401s share the same
+ * in-flight refresh promise. Only when refresh itself fails do we wipe the
+ * session and redirect to /login.
  */
 
 type HeaderMap = Record<string, string>;
@@ -16,6 +18,12 @@ interface ApiResponse<T = any> {
 interface Defaults {
   baseURL: string;
   headers: { common: HeaderMap };
+}
+
+export interface RefreshHook {
+  getRefreshToken: () => string | null;
+  onRefreshed: (accessToken: string, refreshToken: string, expiresIn: number) => void;
+  onSessionLost: () => void;
 }
 
 function makeError(message: string, status: number, data: unknown) {
@@ -38,24 +46,79 @@ class ApiClient {
     headers: { common: {} },
   };
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<ApiResponse<T>> {
-    const url = this.defaults.baseURL + path;
-    const hasBody = body !== undefined && method !== 'GET' && method !== 'HEAD';
-    const headers: HeaderMap = {
+  private refreshHook: RefreshHook | null = null;
+  private refreshInflight: Promise<string | null> | null = null;
+
+  setRefreshHook(hook: RefreshHook | null) {
+    this.refreshHook = hook;
+  }
+
+  private buildHeaders(hasBody: boolean): HeaderMap {
+    return {
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...this.defaults.headers.common,
     };
+  }
+
+  private async doFetch(method: string, path: string, body: unknown, hasBody: boolean): Promise<Response> {
+    const url = this.defaults.baseURL + path;
+    return fetch(url, {
+      method,
+      headers: this.buildHeaders(hasBody),
+      body: hasBody ? JSON.stringify(body) : undefined,
+      credentials: 'omit',
+    });
+  }
+
+  /** Single-flight refresh. Returns new access token or null on failure. */
+  private async refreshAccessToken(): Promise<string | null> {
+    if (this.refreshInflight) return this.refreshInflight;
+    const hook = this.refreshHook;
+    const refreshToken = hook?.getRefreshToken();
+    if (!hook || !refreshToken) return null;
+
+    this.refreshInflight = (async () => {
+      try {
+        const resp = await fetch(this.defaults.baseURL + '/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+          credentials: 'omit',
+        });
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        if (!data?.accessToken || !data?.refreshToken) return null;
+        hook.onRefreshed(data.accessToken, data.refreshToken, data.expiresIn ?? 0);
+        return data.accessToken as string;
+      } catch {
+        return null;
+      } finally {
+        this.refreshInflight = null;
+      }
+    })();
+
+    return this.refreshInflight;
+  }
+
+  private async request<T>(method: string, path: string, body?: unknown, isRetry = false): Promise<ApiResponse<T>> {
+    const hasBody = body !== undefined && method !== 'GET' && method !== 'HEAD';
 
     let resp: Response;
     try {
-      resp = await fetch(url, {
-        method,
-        headers,
-        body: hasBody ? JSON.stringify(body) : undefined,
-        credentials: 'omit',
-      });
+      resp = await this.doFetch(method, path, body, hasBody);
     } catch (e: any) {
       throw makeError(e?.message ?? 'Network error', 0, null);
+    }
+
+    if (resp.status === 401 && !isRetry && !path.startsWith('/auth/')) {
+      const newToken = await this.refreshAccessToken();
+      if (newToken) {
+        return this.request<T>(method, path, body, true);
+      }
+      if (typeof window !== 'undefined') {
+        this.refreshHook?.onSessionLost();
+      }
+      throw makeError('Session expired', 401, null);
     }
 
     const ct = resp.headers.get('content-type') ?? '';
@@ -69,12 +132,6 @@ class ApiClient {
     }
 
     if (!resp.ok) {
-      if (resp.status === 401 && typeof window !== 'undefined') {
-        window.localStorage.removeItem('qwai.auth');
-        if (!window.location.pathname.startsWith('/login')) {
-          window.location.href = '/login';
-        }
-      }
       const message =
         (data && typeof data === 'object' && (data as any).message) || resp.statusText || `HTTP ${resp.status}`;
       throw makeError(message, resp.status, data);
