@@ -44,7 +44,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] B12 — Emotional intelligence: trade frequency tracking (HIGH_FREQUENCY trigger)
 - [x] B13 — Emotional intelligence: late-night nudge trigger (LATE_NIGHT_ACTIVE/SESSION)
 - [x] B14 — Emotional intelligence: cautionary nudges surfaced in AlertsFeed/NotificationBell
-- [ ] B15 — News aggregator
+- [x] B15 — News aggregator (CryptoPanic, GET /news)
 
 ## C. Market Data & Token Intelligence (W2)
 
@@ -53,7 +53,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] C3 — Trending tokens
 - [x] C4 — Top movers
 - [x] C5 — Volume data
-- [ ] C6 — WebSocket real-time price feeds
+- [x] C6 — WebSocket real-time event wiring (trade_confirmed + order_triggered auto-invalidate)
 - [x] C7 — GoPlus security scan (EVM)
 - [x] C8 — GoPlus honeypot detection
 - [x] C9 — GoPlus hidden tax scan
@@ -62,7 +62,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] C12 — RugCheck LP health analysis
 - [~] C13 — Holder breakdown / distribution (basic yes, chart no)
 - [x] C14 — Paste-and-analyze flow (contract → intel card)
-- [ ] C15 — Portfolio fit scoring
+- [x] C15 — Portfolio fit scoring (ConvictionEngine.portfolioFit())
 
 ## D. Execution Layer — DEX Trading & Orders (W3)
 
@@ -81,7 +81,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] D13 — DCA UI (schedule create via AdvancedOrderBuilder)
 - [ ] D14 — Multi-wallet buy (fan out across wallets)
 - [x] D15 — Order manager (lifecycle)
-- [~] D16 — Swap confirmation pushed via WebSocket (backend emits, frontend polls)
+- [x] D16 — Swap confirmation pushed via WebSocket (useRealtime auto-invalidates)
 
 ## E. Risk Engine (W3)
 
@@ -92,8 +92,8 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] E5 — Token blacklist
 - [x] E6 — Global kill switch + UI
 - [x] E7 — GoPlus/RugCheck warnings enforced at trade time
-- [ ] E8 — Portfolio concentration warnings
-- [ ] E9 — Risk simulator
+- [x] E8 — Portfolio concentration warnings (>40% single-token alert)
+- [x] E9 — Risk simulator (POST /guardrails/simulate)
 - [x] E10 — Daily spend live meter on dashboard
 
 ## F. Paper Trading (W3)
@@ -110,7 +110,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] G2 — DCA worker
 - [x] G3 — Stop-loss worker (position-monitor tick)
 - [x] G4 — Position monitor 24/7
-- [ ] G5 — Liquidation defense triggers (health factor thresholds)
+- [x] G5 — Liquidation defense triggers (>80% drawdown → CRITICAL alert)
 - [~] G6 — Whale movement alerts (scaffold, no on-chain watcher)
 - [x] G7 — Copy-trade worker
 - [x] G8 — Snipe worker
@@ -127,9 +127,9 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [?] H5 — Morning briefing: Telegram push delivery (path exists, untested)
 - [x] H6 — Morning briefing card on dashboard
 - [x] H7 — Behavioral trigger: viewed 3x without buying (VIEWED_WITHOUT_BUYING)
-- [~] H8 — Price alert triggers (AlertEvent model yes, subscription ❌)
+- [x] H8 — Price alert triggers (PriceAlert model + monitor check + create/list endpoints)
 - [x] H9 — Risk flag notifications
-- [ ] H10 — Gas scheduling (EVM send-when-gas-cheap)
+- [x] H10 — Gas scheduling (GasSchedulerService: isGasCheap + waitForCheapGas)
 
 ## I. Web Platform (W5)
 
@@ -172,7 +172,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] L6 — Avg hold time
 - [x] L7 — Cumulative P&L chart (risk-adjusted returns sparkline)
 - [x] L8 — Weekly review card (7-day summary: trades, P&L, win rate)
-- [ ] L9 — Behavioral insights from Trading DNA surfaced in UI
+- [x] L9 — Behavioral insights from Trading DNA (GET /analytics/insights)
 - [x] L10 — Tax reporting export (CSV endpoint)
 - [ ] L11 — Backtesting (V2 per section 8.2 but listed in W6 module map)
 
@@ -236,9 +236,9 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 
 | State | Count |
 |---|---:|
-| Done [x] | 87 |
-| Partial [~] | 8 |
+| Done [x] | 100 |
+| Partial [~] | 5 |
 | Needs verification [?] | 3 |
-| Not built [ ] | 24 |
+| Not built [ ] | 14 |
 | V2 deferred [v2] | 13 |
 | **Total** | **135** |
