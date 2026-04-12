@@ -74,11 +74,20 @@ export default function SwapForm() {
       <div className="space-y-3">
         <div>
           <label className="label">Wallet</label>
-          <select value={walletId} onChange={(e) => setWalletId(e.target.value)} className="input">
+          <select
+            value={walletId}
+            onChange={(e) => {
+              setWalletId(e.target.value);
+              const w = wallets.find((w) => w.id === e.target.value);
+              if (w) setChain(w.chain);
+            }}
+            className="input"
+          >
             {wallets.length === 0 && <option value="">No wallets connected</option>}
             {wallets.map((w) => (
               <option key={w.id} value={w.id}>
-                {w.chain} · {w.address.slice(0, 10)}…
+                {w.chain} · {w.address.slice(0, 6)}…{w.address.slice(-4)}
+                {w.isPrimary ? ' (primary)' : ''}
               </option>
             ))}
           </select>

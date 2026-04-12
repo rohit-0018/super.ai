@@ -13,9 +13,29 @@ export class LlmService {
     : null;
   private openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
+  private responseCache = new Map<string, { result: string; ts: number }>();
+  private readonly CACHE_TTL = 5 * 60_000;
+
   async chat(messages: ChatMessage[]): Promise<string> {
+    const key = this.cacheKey(messages);
+    const cached = this.responseCache.get(key);
+    if (cached && Date.now() - cached.ts < this.CACHE_TTL) {
+      this.logger.debug('LLM cache hit');
+      return cached.result;
+    }
     const timeout = Number(process.env.LLM_TIMEOUT_MS ?? 30_000);
-    return this.race(this.callProvider(messages), timeout);
+    const result = await this.race(this.callProvider(messages), timeout);
+    this.responseCache.set(key, { result, ts: Date.now() });
+    if (this.responseCache.size > 200) {
+      const oldest = [...this.responseCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+      if (oldest) this.responseCache.delete(oldest[0]);
+    }
+    return result;
+  }
+
+  private cacheKey(messages: ChatMessage[]): string {
+    const last3 = messages.slice(-3).map((m) => `${m.role}:${m.content.slice(0, 100)}`).join('|');
+    return last3;
   }
 
   async *stream(messages: ChatMessage[]): AsyncGenerator<string> {

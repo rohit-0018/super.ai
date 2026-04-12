@@ -10,3 +10,5 @@ coverage
 .pnpm-store
 prisma/migrations/dev.db*
 docs
+.gstack
+test-results

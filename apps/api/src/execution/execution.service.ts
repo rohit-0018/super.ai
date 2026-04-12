@@ -146,6 +146,20 @@ export class ExecutionService {
     return { tradeId: trade.id, txHash, amountOut: outAmount, mode };
   }
 
+  async multiWalletBuy(userId: string, walletIds: string[], input: Omit<SwapInput, 'userId' | 'walletId'>): Promise<SwapResult[]> {
+    const results: SwapResult[] = [];
+    for (const walletId of walletIds) {
+      try {
+        const result = await this.swap({ ...input, userId, walletId });
+        results.push(result);
+      } catch (e: any) {
+        this.logger.warn(`Multi-wallet buy wallet=${walletId} failed: ${e.message}`);
+        results.push({ tradeId: '', txHash: null, amountOut: '0', mode: 'PAPER' as TradeMode });
+      }
+    }
+    return results;
+  }
+
   private async executeSolana(input: SwapInput): Promise<{ txHash: string; outAmount: string }> {
     const wallet = await this.prisma.wallet.findFirst({
       where: { id: input.walletId, userId: input.userId },

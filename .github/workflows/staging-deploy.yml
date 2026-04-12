@@ -1,0 +1,59 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm prisma:generate
+      - run: pnpm build
+
+      # DB migration on staging
+      - name: Run migrations
+        run: npx prisma migrate deploy --schema=./prisma/schema.prisma
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+
+      # Deploy API
+      - name: Deploy API to Fly.io (staging)
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --config apps/api/fly.toml --app qwai-api-staging --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # Health check
+      - name: Staging health check
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ vars.STAGING_API_URL }}/api/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "Staging healthy: HTTP $STATUS"
+
+  promote-to-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Promote staging → production
+        run: |
+          echo "Production promotion triggered after staging health check passed."
+          echo "Manual approval required via GitHub environment protection rules."
+          echo "To deploy: approve the 'production' environment gate in the Actions UI."

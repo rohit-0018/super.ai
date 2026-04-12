@@ -30,18 +30,32 @@ test-e2e: ## Run e2e tests
 clean: ## Remove build artifacts and node_modules
 	rm -rf node_modules apps/*/node_modules apps/*/dist apps/web/.next
 
-# ---------- prisma ----------
-prisma-generate: ## Generate Prisma client
-	$(PNPM) prisma:generate
+# ---------- prisma / database ----------
+prisma-generate: ## Generate Prisma client from schema
+	npx prisma generate --schema=./prisma/schema.prisma
 
-prisma-migrate: ## Run Prisma dev migration
-	$(PNPM) prisma:migrate
+prisma-migrate: ## Create + apply a new migration (prompts for name)
+	npx prisma migrate dev --schema=./prisma/schema.prisma
 
-prisma-studio: ## Open Prisma Studio
+prisma-push: ## Push schema changes directly to DB (no migration file, good for dev)
+	npx prisma db push --schema=./prisma/schema.prisma
+
+prisma-push-force: ## Push schema changes, accept data loss if needed
+	npx prisma db push --schema=./prisma/schema.prisma --accept-data-loss
+
+prisma-studio: ## Open Prisma Studio (visual DB browser)
 	npx prisma studio --schema=./prisma/schema.prisma
 
-prisma-reset: ## Reset database (destructive)
+prisma-reset: ## Reset database + re-run all migrations (destructive)
 	npx prisma migrate reset --schema=./prisma/schema.prisma
+
+prisma-seed: ## Seed database (if prisma/seed.ts exists)
+	npx prisma db seed --schema=./prisma/schema.prisma
+
+prisma-status: ## Show pending migration status
+	npx prisma migrate status --schema=./prisma/schema.prisma
+
+db-sync: prisma-push prisma-generate ## Push schema + regenerate client (one-shot dev workflow)
 
 # ---------- infra (postgres + redis only, in docker) ----------
 # App services (api, worker, web, telegram-bot) run natively on the host
@@ -93,3 +107,17 @@ dev-all: infra-up ## Start infra + api + worker + web + bot with hot reload
 		wait
 
 dev: dev-all ## Alias for dev-all
+
+# ---------- quality ----------
+load-test: ## Run load test against local API
+	bash scripts/load-test.sh http://localhost:4400/api 20 200
+
+security-scan: ## Run security scan (secrets, deps, SQL, CORS)
+	bash scripts/security-scan.sh
+
+typecheck: ## Typecheck api + web
+	cd apps/api && $(PNPM) exec tsc --noEmit
+	cd apps/web && $(PNPM) exec tsc --noEmit
+
+qa: ## Run QA script (playwright headless)
+	cd apps/web && node ../../.gstack/qa-reports/qa-script.mjs

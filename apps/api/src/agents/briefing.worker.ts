@@ -60,6 +60,20 @@ async function deliverBriefing(deps: WorkerDeps, userId: string) {
   const pnl = trades.reduce((acc, t) => acc + (t.pnlUsd ?? 0), 0);
   const volume = trades.reduce((acc, t) => acc + (t.priceUsd ?? 0), 0);
 
+  // H4: Market overview data
+  let marketOverview: Record<string, unknown> = {};
+  try {
+    const trending = await deps.marketData.trending?.() ?? [];
+    const topMovers = await deps.marketData.topMovers?.() ?? [];
+    marketOverview = {
+      trendingTokens: Array.isArray(trending) ? trending.slice(0, 5).map((t: any) => t?.item?.symbol ?? t?.symbol ?? '?') : [],
+      topGainers: Array.isArray(topMovers) ? topMovers.slice(0, 3).map((m: any) => ({ symbol: m.symbol, pct24h: m.price_change_percentage_24h })) : [],
+    };
+  } catch {}
+
+  const pnlDir = pnl >= 0 ? 'up' : 'down';
+  const summary = `${trades.length} trades, ${orders} filled. Portfolio ${pnlDir} $${Math.abs(pnl).toFixed(2)}. ${alerts} alerts triggered. ${marketOverview.trendingTokens ? 'Trending: ' + (marketOverview.trendingTokens as string[]).join(', ') + '.' : ''}`;
+
   await deps.notifications.emit({
     userId,
     kind: 'BRIEFING',
@@ -70,6 +84,8 @@ async function deliverBriefing(deps: WorkerDeps, userId: string) {
       alertsCount: alerts,
       pnlUsd: Number(pnl.toFixed(2)),
       volumeUsd: Number(volume.toFixed(2)),
+      market: marketOverview,
+      summary,
     },
   });
   return { ok: true };

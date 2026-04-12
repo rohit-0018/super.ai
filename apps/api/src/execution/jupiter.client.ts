@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { http } from '../common/http';
+import { CircuitBreaker } from '../common/circuit-breaker';
+
+const breaker = new CircuitBreaker('Jupiter', 5, 30_000);
 
 export interface JupQuote {
   inputMint: string;
@@ -15,10 +18,12 @@ export class JupiterClient {
   private base = process.env.JUPITER_API_BASE ?? 'https://quote-api.jup.ag/v6';
 
   async quote(inputMint: string, outputMint: string, amount: string, slippageBps: number): Promise<JupQuote> {
-    return http.get<JupQuote>(`${this.base}/quote`, {
-      timeoutMs: 8_000,
-      params: { inputMint, outputMint, amount, slippageBps, onlyDirectRoutes: false },
-    });
+    return breaker.exec(() =>
+      http.get<JupQuote>(`${this.base}/quote`, {
+        timeoutMs: 8_000,
+        params: { inputMint, outputMint, amount, slippageBps, onlyDirectRoutes: false },
+      }),
+    );
   }
 
   async swapTx(quote: JupQuote, userPublicKey: string, useJito = true) {
