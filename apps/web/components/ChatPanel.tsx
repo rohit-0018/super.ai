@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { useApi, mutate } from '../lib/useApi';
 
 interface Msg {
   role: 'user' | 'assistant';
@@ -59,33 +60,25 @@ function renderInline(text: string, key: number): React.ReactNode {
 }
 
 export default function ChatPanel() {
-  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const { data: history, loading: loadingHistory } = useApi<Msg[]>('/chat/history');
+  const [localMsgs, setLocalMsgs] = useState<Msg[] | null>(null);
+  const msgs = localMsgs ?? (Array.isArray(history) ? history : []);
+  const setMsgs = (updater: Msg[] | ((prev: Msg[]) => Msg[])) => {
+    setLocalMsgs((prev) => {
+      const base = prev ?? (Array.isArray(history) ? history : []);
+      return typeof updater === 'function' ? (updater as (p: Msg[]) => Msg[])(base) : updater;
+    });
+  };
+
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [loadingHistory, setLoadingHistory] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await api.get<Msg[]>('/chat/history');
-        if (!cancelled && Array.isArray(data)) setMsgs(data);
-      } catch {
-        // silent — fresh conversation
-      } finally {
-        if (!cancelled) setLoadingHistory(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      abortRef.current?.abort();
-    };
-  }, []);
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   useEffect(() => {
     const el = scrollRef.current;

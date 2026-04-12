@@ -1,27 +1,17 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../lib/auth-store';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Skeleton } from './ui/Skeleton';
 
 interface Me { id: string; primaryWallet: string; paperMode: boolean; }
 
 export default function UserMenu() {
   const { accessToken, hydrated, logout } = useAuth();
-  const [me, setMe] = useState<Me | null>(null);
+  const { data: me } = useApi<Me>('/me');
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!hydrated || !accessToken) { setMe(null); return; }
-    let cancelled = false;
-    api
-      .get<Me>('/me')
-      .then((r) => { if (!cancelled) setMe(r.data); })
-      .catch(() => { if (!cancelled) setMe(null); });
-    return () => { cancelled = true; };
-  }, [hydrated, accessToken]);
 
   useEffect(() => {
     if (!open) return;

@@ -1,6 +1,6 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { useState } from 'react';
+import { useApi } from '../lib/useApi';
 import { Skeleton } from './ui/Skeleton';
 
 interface Trending {
@@ -33,26 +33,18 @@ type Tab = 'trending' | 'movers';
 
 export default function TrendingMovers() {
   const [tab, setTab] = useState<Tab>('trending');
-  const [trending, setTrending] = useState<Trending[] | null>(null);
-  const [movers, setMovers] = useState<Mover[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const trendingQ = useApi<{ coins: Trending[] } | Trending[]>('/market/trending');
+  const moversQ = useApi<Mover[]>('/market/top-movers');
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      api.get<{ coins: Trending[] } | Trending[]>('/market/trending').catch(() => null),
-      api.get<Mover[]>('/market/top-movers').catch(() => null),
-    ]).then(([t, m]) => {
-      if (cancelled) return;
-      const tList = Array.isArray(t?.data) ? (t!.data as Trending[]) : ((t?.data as any)?.coins ?? []);
-      setTrending(tList);
-      setMovers(Array.isArray(m?.data) ? m!.data : []);
-      if (!t && !m) setError('Failed to load market data');
-    });
-    return () => { cancelled = true; };
-  }, []);
+  const trending: Trending[] | null = trendingQ.data
+    ? Array.isArray(trendingQ.data)
+      ? trendingQ.data
+      : ((trendingQ.data as any).coins ?? [])
+    : null;
+  const movers = moversQ.data ?? null;
 
-  const loading = trending === null || movers === null;
+  const loading = (trendingQ.loading && !trending) || (moversQ.loading && !movers);
+  const error = trendingQ.error || moversQ.error;
   const list = tab === 'trending' ? trending : movers;
 
   return (

@@ -1,11 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Spinner } from './ui/Skeleton';
 import AdvancedOrderBuilder from './AdvancedOrderBuilder';
 
+interface Wallet { id: string; chain: 'SOLANA' | 'EVM'; address: string; isPrimary?: boolean }
+
 export default function SwapForm() {
-  const [wallets, setWallets] = useState<any[]>([]);
+  const { data: wallets = [] } = useApi<Wallet[]>('/wallets');
   const [walletId, setWalletId] = useState('');
   const [chain, setChain] = useState<'SOLANA' | 'EVM'>('SOLANA');
   const [tokenIn, setTokenIn] = useState('');
@@ -19,15 +22,11 @@ export default function SwapForm() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
-    api.get('/wallets').then((r) => {
-      setWallets(r.data);
-      const primary = r.data.find((w: any) => w.isPrimary) ?? r.data[0];
-      if (primary) {
-        setWalletId(primary.id);
-        setChain(primary.chain);
-      }
-    }).catch(() => {});
-  }, []);
+    if (walletId || !wallets.length) return;
+    const primary = wallets.find((w) => w.isPrimary) ?? wallets[0];
+    setWalletId(primary.id);
+    setChain(primary.chain);
+  }, [wallets, walletId]);
 
   async function submit() {
     setBusy(true);

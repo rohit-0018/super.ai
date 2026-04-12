@@ -1,6 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Skeleton } from './ui/Skeleton';
 
 interface Alert {
@@ -12,28 +11,9 @@ interface Alert {
 }
 
 export default function AlertsFeed() {
-  const [alerts, setAlerts] = useState<Alert[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      api
-        .get<Alert[]>('/alerts?limit=8')
-        .then((r) => { if (!cancelled) setAlerts(Array.isArray(r.data) ? r.data : []); })
-        .catch((e: any) => {
-          if (!cancelled) {
-            setError(e?.message ?? 'Failed to load alerts');
-            setAlerts([]);
-          }
-        });
-    };
-    load();
-    const id = setInterval(load, 30_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, []);
-
-  const loading = alerts === null;
+  // Deliberately identical key to NotificationBell so they share one fetch.
+  const { data: allAlerts, loading, error } = useApi<Alert[]>('/alerts?limit=15', { pollMs: 30_000 });
+  const alerts = (allAlerts ?? []).slice(0, 8);
 
   return (
     <div className="panel h-full flex flex-col">
@@ -44,13 +24,13 @@ export default function AlertsFeed() {
             Pre-trade scans, agent events, and risk flags
           </div>
         </div>
-        {!loading && alerts && (
-          <span className="chip">{alerts.length}</span>
+        {!loading && allAlerts && (
+          <span className="chip">{allAlerts.length}</span>
         )}
       </div>
 
       <div className="flex-1 overflow-y-auto -mx-2 pr-2">
-        {loading ? (
+        {loading && !allAlerts ? (
           <ul className="space-y-3 px-2">
             {Array.from({ length: 4 }).map((_, i) => (
               <li key={i} className="flex items-start gap-3">
@@ -64,7 +44,7 @@ export default function AlertsFeed() {
           </ul>
         ) : error ? (
           <p className="text-[13px] text-[color:var(--bad)] px-2">{error}</p>
-        ) : alerts!.length === 0 ? (
+        ) : alerts.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center py-8">
             <div className="text-[20px] mb-2" style={{ color: 'var(--text-3)' }}>◦</div>
             <div className="text-[12.5px] text-[color:var(--text-3)]">No alerts yet</div>
@@ -74,7 +54,7 @@ export default function AlertsFeed() {
           </div>
         ) : (
           <ul className="space-y-0 fade-in">
-            {alerts!.map((a) => (
+            {alerts.map((a) => (
               <li
                 key={a.id}
                 className="flex items-start gap-3 px-2 py-2.5 rounded-md hover:bg-[color:var(--surface-hover)] transition-colors"

@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Spinner } from './ui/Skeleton';
 
 type OrderType = 'LIMIT' | 'STOP_LOSS' | 'TAKE_PROFIT' | 'TRAILING_STOP' | 'BRACKET' | 'DCA';
@@ -23,7 +24,7 @@ const ORDER_TYPES: { value: OrderType; label: string; blurb: string }[] = [
 
 export default function AdvancedOrderBuilder({ onClose }: { onClose: () => void }) {
   const [type, setType] = useState<OrderType>('LIMIT');
-  const [wallets, setWallets] = useState<Wallet[]>([]);
+  const { data: wallets = [] } = useApi<Wallet[]>('/wallets');
   const [walletId, setWalletId] = useState('');
   const [tokenIn, setTokenIn] = useState('');
   const [tokenOut, setTokenOut] = useState('');
@@ -38,12 +39,10 @@ export default function AdvancedOrderBuilder({ onClose }: { onClose: () => void 
   const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<Wallet[]>('/wallets').then((r) => {
-      setWallets(r.data);
-      if (r.data.length && !walletId) setWalletId(r.data.find((w) => w.isPrimary)?.id ?? r.data[0].id);
-    }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (wallets.length && !walletId) {
+      setWalletId(wallets.find((w) => w.isPrimary)?.id ?? wallets[0].id);
+    }
+  }, [wallets, walletId]);
 
   async function submit() {
     if (!walletId || !tokenIn || !tokenOut || !amount) {

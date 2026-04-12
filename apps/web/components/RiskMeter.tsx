@@ -1,6 +1,7 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api } from '../lib/api';
+import { useApi, invalidate } from '../lib/useApi';
 import { Skeleton } from './ui/Skeleton';
 
 interface Guardrails {
@@ -15,37 +16,19 @@ interface Guardrails {
 }
 
 export default function RiskMeter() {
-  const [g, setG] = useState<Guardrails | null>(null);
+  const { data: g, loading, error } = useApi<Guardrails>('/guardrails');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function load() {
-    try {
-      const { data } = await api.get<Guardrails>('/guardrails');
-      setG(data);
-      setError(null);
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to load guardrails');
-      setG(null);
-    }
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
 
   async function toggleKill() {
     if (!g) return;
     setBusy(true);
     try {
       await api.post('/guardrails', { ...g, killSwitch: !g.killSwitch });
-      await load();
+      invalidate('/guardrails');
     } finally {
       setBusy(false);
     }
   }
-
-  const loading = g === null && !error;
 
   const spent = g?.dailySpentUsd ?? 0;
   const cap = g?.dailyUsd ?? 1;
@@ -60,7 +43,7 @@ export default function RiskMeter() {
             Daily caps + kill switch protect every trade
           </div>
         </div>
-        {loading ? (
+        {loading && !g ? (
           <Skeleton w={90} h={24} rounded="md" />
         ) : g ? (
           <button
@@ -89,7 +72,7 @@ export default function RiskMeter() {
       <div className="mb-4">
         <div className="flex items-baseline justify-between mb-1.5">
           <div className="stat-label">Daily spend</div>
-          {loading ? (
+          {loading && !g ? (
             <Skeleton w={100} h={12} />
           ) : (
             <div className="text-[12px] font-mono text-[color:var(--text-2)]">
@@ -101,7 +84,7 @@ export default function RiskMeter() {
           className="h-1.5 rounded-full overflow-hidden"
           style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
         >
-          {loading ? (
+          {loading && !g ? (
             <div className="skeleton h-full w-full" />
           ) : (
             <div
@@ -117,11 +100,10 @@ export default function RiskMeter() {
         </div>
       </div>
 
-      {/* Stat grid */}
       <div className="grid grid-cols-3 gap-3">
-        <Stat label="Per trade" value={loading ? null : `$${g!.perTradeUsd.toLocaleString()}`} />
-        <Stat label="Max slip" value={loading ? null : `${(g!.maxSlippageBps / 100).toFixed(2)}%`} />
-        <Stat label="Trades / day" value={loading ? null : `${g!.tradesToday ?? 0}`} />
+        <Stat label="Per trade" value={loading || !g ? null : `$${g.perTradeUsd.toLocaleString()}`} />
+        <Stat label="Max slip" value={loading || !g ? null : `${(g.maxSlippageBps / 100).toFixed(2)}%`} />
+        <Stat label="Trades / day" value={loading || !g ? null : `${g.tradesToday ?? 0}`} />
       </div>
     </div>
   );

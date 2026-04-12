@@ -1,6 +1,7 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api } from '../lib/api';
+import { useApi, invalidate } from '../lib/useApi';
 import { Skeleton } from './ui/Skeleton';
 
 type AgentKind = 'DCA' | 'STOP_LOSS' | 'COPY_TRADE' | 'POSITION_MONITOR' | 'SNIPE' | 'BRIEFING';
@@ -34,42 +35,26 @@ const KIND_ICON: Record<AgentKind, string> = {
 };
 
 export default function AgentsPanel() {
-  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const { data: agents, loading, error } = useApi<Agent[]>('/agents', { pollMs: 20_000 });
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const { data } = await api.get<Agent[]>('/agents');
-      setAgents(Array.isArray(data) ? data : []);
-      setError(null);
-    } catch (e: any) {
-      setAgents([]);
-      setError(e?.message ?? 'Failed to load agents');
-    }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 20_000);
-    return () => clearInterval(id);
-  }, [refresh]);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   async function act(agent: Agent, action: 'pause' | 'resume' | 'kill') {
     setBusyId(agent.id);
+    setActionError(null);
     try {
       if (action === 'kill') await api.delete(`/agents/${agent.id}`);
       else await api.post(`/agents/${agent.id}/${action}`, {});
-      await refresh();
+      invalidate('/agents');
     } catch (e: any) {
-      setError(e?.message ?? 'Action failed');
+      setActionError(e?.message ?? 'Action failed');
     } finally {
       setBusyId(null);
     }
   }
 
-  const loading = agents === null;
   const running = agents?.filter((a) => a.status === 'RUNNING').length ?? 0;
+  const showError = error ?? actionError;
 
   return (
     <div className="panel">
@@ -80,7 +65,7 @@ export default function AgentsPanel() {
             Autonomous trade logic running 24/7
           </div>
         </div>
-        {loading ? (
+        {loading && !agents ? (
           <Skeleton w={70} h={22} rounded="md" />
         ) : (
           <span className="chip">
@@ -93,7 +78,7 @@ export default function AgentsPanel() {
         )}
       </div>
 
-      {loading ? (
+      {loading && !agents ? (
         <div className="space-y-2">
           {Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="flex items-center justify-between py-2.5">
@@ -108,9 +93,9 @@ export default function AgentsPanel() {
             </div>
           ))}
         </div>
-      ) : error ? (
-        <p className="text-[13px] text-[color:var(--bad)]">{error}</p>
-      ) : agents!.length === 0 ? (
+      ) : showError ? (
+        <p className="text-[13px] text-[color:var(--bad)]">{showError}</p>
+      ) : !agents || agents.length === 0 ? (
         <div className="py-6 text-center">
           <div className="text-[13px] text-[color:var(--text-3)] mb-2">No agents yet</div>
           <div className="text-[11px] text-[color:var(--text-3)] mb-3">
@@ -120,7 +105,7 @@ export default function AgentsPanel() {
         </div>
       ) : (
         <ul className="fade-in divide-y divide-border -mx-2">
-          {agents!.map((a) => (
+          {agents.map((a) => (
             <li key={a.id} className="flex items-center justify-between px-2 py-3 gap-3">
               <div className="flex items-center gap-3 min-w-0 flex-1">
                 <div

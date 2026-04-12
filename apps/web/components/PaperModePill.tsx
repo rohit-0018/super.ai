@@ -1,44 +1,31 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api } from '../lib/api';
-import { useAuth } from '../lib/auth-store';
+import { useApi, mutate } from '../lib/useApi';
 import { Skeleton, Spinner } from './ui/Skeleton';
 
 interface Me { paperMode: boolean }
 
 export default function PaperModePill() {
-  const { accessToken, hydrated } = useAuth();
-  const [me, setMe] = useState<Me | null>(null);
+  const { data: me, loading } = useApi<Me>('/me');
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!hydrated || !accessToken) { setMe(null); return; }
-    let cancelled = false;
-    api
-      .get<Me>('/me')
-      .then((r) => { if (!cancelled) setMe(r.data); })
-      .catch(() => { if (!cancelled) setMe({ paperMode: true }); });
-    return () => { cancelled = true; };
-  }, [hydrated, accessToken]);
-
-  if (!hydrated || !accessToken) return null;
 
   async function toggle() {
     if (!me || busy) return;
     setBusy(true);
     const next = !me.paperMode;
-    // optimistic
-    setMe({ paperMode: next });
+    // Optimistic: broadcast to every subscriber of /me
+    mutate<Me>('/me', (prev) => ({ ...(prev ?? { paperMode: false }), paperMode: next }));
     try {
       await api.post('/me/paper-mode', { paperMode: next });
     } catch {
-      setMe({ paperMode: !next });
+      mutate<Me>('/me', (prev) => ({ ...(prev ?? { paperMode: false }), paperMode: !next }));
     } finally {
       setBusy(false);
     }
   }
 
-  if (!me) return <Skeleton w={86} h={24} rounded="md" />;
+  if (loading || !me) return <Skeleton w={86} h={24} rounded="md" />;
 
   const live = !me.paperMode;
   return (

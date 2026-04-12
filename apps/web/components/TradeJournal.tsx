@@ -1,6 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Skeleton } from './ui/Skeleton';
 
 interface Order {
@@ -14,21 +13,8 @@ interface Order {
 }
 
 export default function TradeJournal() {
-  const [orders, setOrders] = useState<Order[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .get<Order[]>('/orders')
-      .then((r) => { if (!cancelled) setOrders(Array.isArray(r.data) ? r.data : []); })
-      .catch((e: any) => {
-        if (!cancelled) { setError(e?.message ?? 'Failed to load orders'); setOrders([]); }
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  const loading = orders === null;
+  const { data, loading, error } = useApi<Order[]>('/orders');
+  const orders = data ?? [];
 
   return (
     <div className="overflow-x-auto">
@@ -44,7 +30,7 @@ export default function TradeJournal() {
           </tr>
         </thead>
         <tbody>
-          {loading ? (
+          {loading && !data ? (
             Array.from({ length: 4 }).map((_, i) => (
               <tr key={i} className="border-t border-border">
                 <td className="py-3 pr-4"><Skeleton w={130} h={12} /></td>
@@ -61,14 +47,14 @@ export default function TradeJournal() {
                 {error}
               </td>
             </tr>
-          ) : orders!.length === 0 ? (
+          ) : orders.length === 0 ? (
             <tr>
               <td colSpan={6} className="text-[color:var(--text-3)] py-8 text-center text-[13px]">
                 No trades yet — ask QWAI to place your first order
               </td>
             </tr>
           ) : (
-            orders!.map((o) => (
+            orders.map((o) => (
               <tr
                 key={o.id}
                 className="fade-in border-t border-border hover:bg-[color:var(--surface-hover)] transition-colors"

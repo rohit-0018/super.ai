@@ -1,8 +1,7 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth-store';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Skeleton } from '../components/ui/Skeleton';
 
 interface Me {
@@ -13,19 +12,7 @@ interface Me {
 
 export default function Landing() {
   const { accessToken, hydrated, logout } = useAuth();
-  const [me, setMe] = useState<Me | null>(null);
-  const [loadingMe, setLoadingMe] = useState(false);
-
-  useEffect(() => {
-    if (!hydrated || !accessToken) return;
-    setLoadingMe(true);
-    api
-      .get<Me>('/me')
-      .then((r) => setMe(r.data))
-      .catch(() => setMe(null))
-      .finally(() => setLoadingMe(false));
-  }, [hydrated, accessToken]);
-
+  const { data: me, loading: loadingMe } = useApi<Me>('/me');
   const connected = hydrated && !!accessToken;
 
   return (
@@ -59,7 +46,7 @@ export default function Landing() {
                 <Skeleton w={120} h={36} rounded="md" />
               </div>
             ) : connected ? (
-              <ConnectedCta me={me} loadingMe={loadingMe} onLogout={logout} />
+              <ConnectedCta me={me ?? null} loadingMe={loadingMe} onLogout={logout} />
             ) : (
               <DisconnectedCta />
             )}

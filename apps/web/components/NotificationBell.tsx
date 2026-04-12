@@ -1,7 +1,6 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../lib/api';
-import { useAuth } from '../lib/auth-store';
+import { useEffect, useRef, useState } from 'react';
+import { useApi } from '../lib/useApi';
 import { Spinner } from './ui/Skeleton';
 
 interface Alert {
@@ -13,33 +12,9 @@ interface Alert {
 }
 
 export default function NotificationBell() {
-  const { accessToken, hydrated } = useAuth();
-  const [alerts, setAlerts] = useState<Alert[] | null>(null);
+  const { data: alerts, loading } = useApi<Alert[]>('/alerts?limit=15', { pollMs: 30_000 });
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { data } = await api.get<Alert[]>('/alerts?limit=15');
-      setAlerts(Array.isArray(data) ? data : []);
-    } catch {
-      setAlerts([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated || !accessToken) {
-      setAlerts(null);
-      return;
-    }
-    load();
-    const id = setInterval(load, 30_000);
-    return () => clearInterval(id);
-  }, [hydrated, accessToken, load]);
 
   useEffect(() => {
     if (!open) return;
@@ -50,7 +25,7 @@ export default function NotificationBell() {
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  if (!hydrated || !accessToken) return null;
+  if (!alerts && !loading) return null;
 
   const unread = alerts?.length ?? 0;
 
@@ -86,11 +61,11 @@ export default function NotificationBell() {
             {loading && <Spinner size={12} />}
           </div>
           <div className="overflow-y-auto flex-1">
-            {alerts === null || (loading && alerts.length === 0) ? (
+            {loading && !alerts ? (
               <div className="px-4 py-8 text-center text-[12px] text-[color:var(--text-3)]">
                 Loading…
               </div>
-            ) : alerts.length === 0 ? (
+            ) : !alerts || alerts.length === 0 ? (
               <div className="px-4 py-10 text-center">
                 <div className="text-[20px] mb-2" style={{ color: 'var(--text-3)' }}>◦</div>
                 <div className="text-[12px] text-[color:var(--text-3)]">No notifications yet</div>

@@ -1,6 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Skeleton, SkeletonText } from './ui/Skeleton';
 
 interface Briefing {
@@ -18,18 +17,7 @@ interface Briefing {
 }
 
 export default function BriefingCard() {
-  const [briefing, setBriefing] = useState<Briefing | null | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .get<Briefing | null>('/alerts/briefings/latest')
-      .then((r) => { if (!cancelled) setBriefing(r.data); })
-      .catch(() => { if (!cancelled) setBriefing(null); });
-    return () => { cancelled = true; };
-  }, []);
-
-  const loading = briefing === undefined;
+  const { data: briefing, loading } = useApi<Briefing | null>('/alerts/briefings/latest');
   const p = briefing?.payload;
 
   return (

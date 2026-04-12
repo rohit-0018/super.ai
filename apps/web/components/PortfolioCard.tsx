@@ -1,6 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 import { Skeleton, SkeletonRow } from './ui/Skeleton';
 
 interface Wallet {
@@ -12,27 +11,9 @@ interface Wallet {
 }
 
 export default function PortfolioCard() {
-  const [wallets, setWallets] = useState<Wallet[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await api.get<Wallet[]>('/wallets');
-        if (!cancelled) setWallets(Array.isArray(data) ? data : []);
-      } catch (e: any) {
-        if (!cancelled) {
-          setError(e?.message ?? 'Failed to load');
-          setWallets([]);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  const loading = wallets === null;
-  const totalUsd = wallets?.reduce((s, w) => s + (w.balanceUsd ?? 0), 0) ?? 0;
+  const { data, loading, error } = useApi<Wallet[]>('/wallets');
+  const wallets = data ?? [];
+  const totalUsd = wallets.reduce((s, w) => s + (w.balanceUsd ?? 0), 0);
 
   return (
     <div className="panel">
@@ -42,7 +23,7 @@ export default function PortfolioCard() {
           <Skeleton w={60} h={20} rounded="md" />
         ) : (
           <span className="chip">
-            {wallets!.length} wallet{wallets!.length === 1 ? '' : 's'}
+            {wallets.length} wallet{wallets.length === 1 ? '' : 's'}
           </span>
         )}
       </div>
@@ -67,14 +48,14 @@ export default function PortfolioCard() {
         </div>
       ) : error ? (
         <p className="text-[13px] text-[color:var(--bad)]">{error}</p>
-      ) : wallets!.length === 0 ? (
+      ) : wallets.length === 0 ? (
         <div className="py-4">
           <p className="text-[13px] text-[color:var(--text-3)] mb-2">No wallets connected yet</p>
           <a href="/wallets" className="link text-[12px]">+ Create your first wallet</a>
         </div>
       ) : (
         <ul className="space-y-2.5 fade-in">
-          {wallets!.map((w) => (
+          {wallets.map((w) => (
             <li key={w.id} className="flex items-center justify-between text-[13px]">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="chip">{w.chain === 'SOLANA' ? 'SOL' : 'EVM'}</span>
