@@ -83,6 +83,72 @@ export class WalletsService {
     }
   }
 
+  async depositInfo(userId: string, walletId: string) {
+    const wallet = await this.prisma.wallet.findFirst({
+      where: { id: walletId, userId },
+      select: { id: true, chain: true, address: true, label: true },
+    });
+    if (!wallet) throw new ForbiddenException();
+    return {
+      address: wallet.address,
+      chain: wallet.chain,
+      label: wallet.label,
+      instructions:
+        wallet.chain === 'SOLANA'
+          ? 'Send SOL or SPL tokens to this address. Funds arrive in ~400ms.'
+          : 'Send ETH or ERC-20 tokens to this address. Wait for block confirmation.',
+    };
+  }
+
+  async withdraw(userId: string, walletId: string, toAddress: string, tokenMint: string, amount: number) {
+    const wallet = await this.prisma.wallet.findFirst({ where: { id: walletId, userId } });
+    if (!wallet) throw new ForbiddenException();
+    const key = await this.kms.decrypt({
+      ciphertext: wallet.encryptedKey,
+      encryptedDek: wallet.encryptedDek,
+    });
+    try {
+      let txHash: string;
+      if (wallet.chain === 'SOLANA') {
+        txHash = await this.withdrawSolana(key, toAddress, tokenMint, amount);
+      } else {
+        txHash = await this.withdrawEvm(key, toAddress, tokenMint, amount);
+      }
+      await this.prisma.auditLog.create({
+        data: { userId, action: 'wallet.withdraw', target: wallet.address, payload: { toAddress, tokenMint, amount, txHash } as any },
+      });
+      return { txHash, chain: wallet.chain };
+    } finally {
+      key.fill(0);
+    }
+  }
+
+  private async withdrawSolana(secret: Buffer, to: string, _mint: string, amount: number): Promise<string> {
+    const { Connection, Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction } = await import('@solana/web3.js');
+    const kp = Keypair.fromSecretKey(secret);
+    const conn = new Connection(process.env.SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com');
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: kp.publicKey,
+        toPubkey: new PublicKey(to),
+        lamports: Math.round(amount * 1e9),
+      }),
+    );
+    const sig = await sendAndConfirmTransaction(conn, tx, [kp]);
+    return sig;
+  }
+
+  private async withdrawEvm(secret: Buffer, to: string, _tokenAddress: string, amount: number): Promise<string> {
+    const provider = new ethers.JsonRpcProvider(process.env.EVM_RPC_URL ?? 'https://eth.llamarpc.com');
+    const wallet = new ethers.Wallet('0x' + secret.toString('hex'), provider);
+    const tx = await wallet.sendTransaction({
+      to,
+      value: ethers.parseEther(amount.toString()),
+    });
+    await tx.wait(1);
+    return tx.hash;
+  }
+
   private generateKeypair(chain: Chain): { address: string; secret: Buffer } {
     if (chain === 'SOLANA') {
       const kp = Keypair.generate();

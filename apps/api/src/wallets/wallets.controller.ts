@@ -1,12 +1,18 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { WalletsService } from './wallets.service';
-import { IsEnum, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Chain } from '@prisma/client';
 
 class CreateWalletDto {
   @IsEnum(Chain) chain!: Chain;
   @IsOptional() @IsString() label?: string;
+}
+
+class WithdrawDto {
+  @IsString() toAddress!: string;
+  @IsString() tokenMint!: string;
+  @IsNumber() @Min(0) amount!: number;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -26,5 +32,13 @@ export class WalletsController {
 
   @Post(':id/primary') primary(@Req() req: any, @Param('id') id: string) {
     return this.wallets.setPrimary(req.user.userId, id);
+  }
+
+  @Post(':id/withdraw') withdraw(@Req() req: any, @Param('id') id: string, @Body() dto: WithdrawDto) {
+    return this.wallets.withdraw(req.user.userId, id, dto.toAddress, dto.tokenMint, dto.amount);
+  }
+
+  @Get(':id/deposit') deposit(@Req() req: any, @Param('id') id: string) {
+    return this.wallets.depositInfo(req.user.userId, id);
   }
 }
