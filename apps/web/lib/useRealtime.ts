@@ -42,11 +42,19 @@ async function getSocket(apiBase: string): Promise<any> {
       invalidate('/orders');
       invalidate('/wallets');
       invalidate('/guardrails');
+      invalidate('/analytics/performance');
       emit('trade_confirmed', data);
     });
 
     socket.on('price', (data: any) => {
       emit('price', data);
+    });
+
+    socket.on('order_triggered', (data: any) => {
+      invalidate('/orders');
+      invalidate('/agents');
+      invalidate('/alerts?limit=15');
+      emit('order_triggered', data);
     });
 
     await new Promise<void>((resolve) => {

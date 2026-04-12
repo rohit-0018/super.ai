@@ -101,6 +101,29 @@ export function startPositionMonitorWorker(deps: WorkerDeps): Worker {
       }
     }
 
+    // H8: Price alert subscriptions
+    const priceAlerts = await (deps.prisma as any).priceAlert.findMany({ where: { fired: false }, take: 200 });
+    for (const pa of priceAlerts) {
+      const p = await safePrice(deps, pa.token);
+      if (p == null) continue;
+      const hit = pa.direction === 'above' ? p >= pa.targetUsd : p <= pa.targetUsd;
+      if (hit) {
+        await deps.notifications.emit({
+          userId: pa.userId,
+          kind: 'PRICE_ALERT',
+          severity: 'INFO',
+          payload: {
+            token: pa.token,
+            direction: pa.direction,
+            targetUsd: pa.targetUsd,
+            currentPrice: p,
+            message: `${pa.token.slice(0, 8)} hit $${p.toFixed(4)} (${pa.direction} $${pa.targetUsd})`,
+          },
+        });
+        await (deps.prisma as any).priceAlert.update({ where: { id: pa.id }, data: { fired: true } });
+      }
+    }
+
     logger.debug(`monitor tick: ${triggered} triggered / ${orders.length} scanned`);
     return { ok: true, triggered, scanned: orders.length };
   });

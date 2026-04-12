@@ -83,6 +83,7 @@ model User {
   trades          Trade[]
   agents          Agent[]
   alerts          AlertEvent[]
+  priceAlerts     PriceAlert[]
   audit           AuditLog[]
   guardrails      GuardrailConfig?
   cexConnections  CexConnection[]
@@ -219,6 +220,19 @@ model AlertEvent {
   deliveredAt DateTime?
   createdAt   DateTime      @default(now())
   @@index([userId, createdAt])
+}
+
+model PriceAlert {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String
+  chain     Chain
+  targetUsd Float
+  direction String  @default("below") // "above" | "below"
+  fired     Boolean @default(false)
+  createdAt DateTime @default(now())
+  @@index([userId, fired])
 }
 
 model AuditLog {
