@@ -1,14 +1,25 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { AiAgentService } from './ai-agent.service';
 import { AiAgentController } from './ai-agent.controller';
 import { LlmService } from './llm.service';
 import { ConversationMemoryService } from './conversation-memory.service';
 import { TradingDnaService } from './trading-dna.service';
+import { ToolExecutorService } from './tool-executor.service';
 import { AuthModule } from '../auth/auth.module';
+import { ExecutionModule } from '../execution/execution.module';
+import { TokenIntelModule } from '../token-intel/token-intel.module';
+import { AgentsModule } from '../agents/agents.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
-  imports: [AuthModule],
-  providers: [AiAgentService, LlmService, ConversationMemoryService, TradingDnaService],
+  imports: [
+    AuthModule,
+    forwardRef(() => ExecutionModule),
+    forwardRef(() => TokenIntelModule),
+    forwardRef(() => AgentsModule),
+    AnalyticsModule,
+  ],
+  providers: [AiAgentService, LlmService, ConversationMemoryService, TradingDnaService, ToolExecutorService],
   controllers: [AiAgentController],
   exports: [AiAgentService, TradingDnaService, ConversationMemoryService, LlmService],
 })

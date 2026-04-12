@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { ExecutionService } from './execution.service';
 import { ExecutionController } from './execution.controller';
 import { JupiterClient } from './jupiter.client';
@@ -10,9 +10,16 @@ import { WalletsModule } from '../wallets/wallets.module';
 import { AiAgentModule } from '../ai-agent/ai-agent.module';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { AgentsModule } from '../agents/agents.module';
+import { SecurityModule } from '../security/security.module';
 
 @Module({
-  imports: [WalletsModule, AiAgentModule, GuardrailsModule, AgentsModule],
+  imports: [
+    WalletsModule,
+    AiAgentModule,
+    GuardrailsModule,
+    forwardRef(() => AgentsModule),
+    SecurityModule,
+  ],
   providers: [ExecutionService, JupiterClient, OneInchClient, OrderManagerService, DcaService, GasSchedulerService],
   controllers: [ExecutionController],
   exports: [ExecutionService, OrderManagerService, DcaService, GasSchedulerService],

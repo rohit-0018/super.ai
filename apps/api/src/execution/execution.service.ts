@@ -9,6 +9,15 @@ import { OneInchClient } from './oneinch.client';
 import { WalletsService } from '../wallets/wallets.service';
 import { TradingDnaService } from '../ai-agent/trading-dna.service';
 import { EmotionalIntelService } from '../agents/emotional-intel.service';
+import { SecurityComplianceService } from '../security/security-compliance.service';
+import { RiskEngineService } from '../security/risk-engine.service';
+import { SecurityAuditService } from '../security/security-audit.service';
+import {
+  AgentActionType,
+  OrderSide,
+  OrderType,
+  type PlaceOrderAction,
+} from '@super-ai/security';
 
 export interface SwapInput {
   userId: string;
@@ -48,9 +57,65 @@ export class ExecutionService {
     private wallets: WalletsService,
     private dna: TradingDnaService,
     private emotional: EmotionalIntelService,
+    private securityCompliance: SecurityComplianceService,
+    private riskEngine: RiskEngineService,
+    private securityAudit: SecurityAuditService,
   ) {}
 
   async swap(input: SwapInput): Promise<SwapResult> {
+    // ── Security layer: audit, compliance, and risk checks ──
+    await this.securityAudit.log('SWAP_INITIATED', {
+      userId: input.userId,
+      walletId: input.walletId,
+      chain: input.chain,
+      tokenIn: input.tokenIn,
+      tokenOut: input.tokenOut,
+      amountIn: input.amountIn,
+      notionalUsd: input.notionalUsd,
+    }, { userId: input.userId });
+
+    const orderAction: PlaceOrderAction = {
+      type: AgentActionType.PlaceOrder,
+      instrument: `${input.tokenIn}-${input.tokenOut}`,
+      side: OrderSide.BUY,
+      orderType: OrderType.MARKET,
+      quantity: parseFloat(input.amountIn) || 0,
+      strategyId: 'swap',
+      clientOrderId: input.orderId ?? crypto.randomUUID(),
+    };
+
+    // Wash trade check
+    const washResult = await this.securityCompliance.checkWashTrade(orderAction, input.userId);
+    if (washResult.detected) {
+      await this.securityAudit.log('COMPLIANCE_WASH_TRADE_BLOCKED', {
+        userId: input.userId,
+        instrument: orderAction.instrument,
+        relatedOrderId: washResult.relatedOrderId,
+      }, { userId: input.userId });
+      throw new ForbiddenException('Wash trade detected — swap blocked by compliance');
+    }
+
+    // Risk engine evaluation
+    const riskResult = await this.riskEngine.evaluate(orderAction, {
+      userId: input.userId,
+      strategyId: 'swap',
+      portfolio: { positions: [], totalNotional: input.notionalUsd, totalUnrealizedPnl: 0, drawdownFromHighWatermarkPercent: 0 },
+      sessionId: input.userId,
+    });
+    if (!riskResult.approved) {
+      await this.securityAudit.log('RISK_ENGINE_BLOCKED', {
+        userId: input.userId,
+        instrument: orderAction.instrument,
+        blockReasons: riskResult.blockReasons,
+        riskLevel: riskResult.riskLevel,
+      }, { userId: input.userId });
+      throw new ForbiddenException({
+        message: 'Swap blocked by risk engine',
+        reasons: riskResult.blockReasons,
+      });
+    }
+
+    // ── Existing guardrails ──
     const decision = await this.guardrails.check({
       userId: input.userId,
       tokenAddress: input.tokenOut,
@@ -79,15 +144,22 @@ export class ExecutionService {
           outAmount = res.outAmount;
         }
       } else {
-        // PAPER mode: still fetch a quote for realistic outAmount, but don't broadcast.
-        if (input.chain === 'SOLANA') {
-          const quote = await this.jup.quote(input.tokenIn, input.tokenOut, input.amountIn, input.slippageBps);
-          outAmount = quote.outAmount;
-        } else {
-          const chainId = this.resolveEvmChainId(input);
-          const quote = await this.oneinch.quote(chainId, input.tokenIn, input.tokenOut, input.amountIn);
-          outAmount = quote?.dstAmount ?? input.amountIn;
+        // PAPER mode: try to fetch a real quote for realistic outAmount.
+        // If DEX fetch fails (no network, bad token address), simulate it.
+        try {
+          if (input.chain === 'SOLANA') {
+            const quote = await this.jup.quote(input.tokenIn, input.tokenOut, input.amountIn, input.slippageBps);
+            outAmount = quote.outAmount;
+          } else {
+            const chainId = this.resolveEvmChainId(input);
+            const quote = await this.oneinch.quote(chainId, input.tokenIn, input.tokenOut, input.amountIn);
+            outAmount = quote?.dstAmount ?? input.amountIn;
+          }
+        } catch (quoteErr: any) {
+          this.logger.warn(`Paper mode quote failed (using simulated amount): ${quoteErr.message}`);
+          outAmount = input.amountIn; // 1:1 simulated ratio
         }
+        txHash = `paper-${Date.now().toString(36)}`;
         await this.updatePaperBalance(input.userId, input.tokenOut, outAmount);
       }
     } catch (err: any) {
@@ -131,6 +203,19 @@ export class ExecutionService {
         data: { status: OrderStatus.FILLED, txHash: txHash ?? undefined },
       });
     }
+
+    // Security: record order for compliance tracking
+    await this.securityCompliance.recordOrder(orderAction, input.userId);
+    await this.securityAudit.log('SWAP_COMPLETED', {
+      userId: input.userId,
+      tradeId: trade.id,
+      txHash,
+      mode,
+      tokenIn: input.tokenIn,
+      tokenOut: input.tokenOut,
+      amountIn: input.amountIn,
+      amountOut: outAmount,
+    }, { userId: input.userId });
 
     await this.dna.recordTrade(input.userId, { pnlUsd: 0, holdMinutes: 0 });
     this.emotional.evaluate(input.userId).catch((e) => this.logger.warn(`Emotional eval failed: ${e.message}`));

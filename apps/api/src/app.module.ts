@@ -18,12 +18,14 @@ import { CexModule } from './cex/cex.module';
 import { WsModule } from './ws/ws.module';
 import { UsersModule } from './users/users.module';
 import { NewsModule } from './news/news.module';
+import { SecurityModule } from './security/security.module';
 import { HealthController } from './health.controller';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    SecurityModule,
     PrismaModule,
     AuthModule,
     WalletsModule,

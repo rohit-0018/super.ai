@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import { TOOL_DEFINITIONS } from './tools';
 
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string; }
+export interface ToolCall { name: string; arguments: Record<string, any>; }
 
 @Injectable()
 export class LlmService {
@@ -33,9 +35,61 @@ export class LlmService {
     return result;
   }
 
+  /**
+   * Call the LLM with tool definitions. Returns either a text response
+   * or a list of tool calls the LLM wants to execute.
+   */
+  async chatWithTools(messages: ChatMessage[]): Promise<{ text?: string; toolCalls?: ToolCall[] }> {
+    if (this.openai) return this.openaiWithTools(messages);
+    if (this.provider === 'anthropic' && this.anthropic) return this.anthropicWithTools(messages);
+    return { text: await this.chat(messages) };
+  }
+
+  private async openaiWithTools(messages: ChatMessage[]): Promise<{ text?: string; toolCalls?: ToolCall[] }> {
+    const r = await this.openai!.chat.completions.create({
+      model: process.env.LLM_MODEL ?? 'gpt-4o',
+      messages,
+      tools: TOOL_DEFINITIONS as any,
+      tool_choice: 'auto',
+    });
+    const choice = r.choices[0];
+    if (choice?.message?.tool_calls?.length) {
+      return {
+        toolCalls: choice.message.tool_calls.map((tc) => ({
+          name: tc.function.name,
+          arguments: JSON.parse(tc.function.arguments || '{}'),
+        })),
+      };
+    }
+    return { text: choice?.message?.content ?? '' };
+  }
+
+  private async anthropicWithTools(messages: ChatMessage[]): Promise<{ text?: string; toolCalls?: ToolCall[] }> {
+    const sys = messages.find((m) => m.role === 'system')?.content;
+    const rest = messages.filter((m) => m.role !== 'system') as { role: 'user' | 'assistant'; content: string }[];
+    const anthropicTools = TOOL_DEFINITIONS.map((t) => ({
+      name: t.function.name,
+      description: t.function.description,
+      input_schema: t.function.parameters as any,
+    }));
+    const r = await this.anthropic!.messages.create({
+      model: process.env.LLM_MODEL ?? 'claude-opus-4-6',
+      max_tokens: 1024,
+      system: sys,
+      messages: rest,
+      tools: anthropicTools,
+    });
+    const toolUseBlocks = r.content.filter((c) => c.type === 'tool_use');
+    if (toolUseBlocks.length) {
+      return {
+        toolCalls: toolUseBlocks.map((b: any) => ({ name: b.name, arguments: b.input ?? {} })),
+      };
+    }
+    return { text: r.content.map((c) => (c.type === 'text' ? c.text : '')).join('') };
+  }
+
   private cacheKey(messages: ChatMessage[]): string {
-    const last3 = messages.slice(-3).map((m) => `${m.role}:${m.content.slice(0, 100)}`).join('|');
-    return last3;
+    return messages.slice(-3).map((m) => `${m.role}:${m.content.slice(0, 100)}`).join('|');
   }
 
   async *stream(messages: ChatMessage[]): AsyncGenerator<string> {
@@ -77,12 +131,7 @@ export class LlmService {
       });
       return r.choices[0]?.message?.content ?? '';
     }
-    this.logger.error(
-      'No LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env (and LLM_PROVIDER accordingly).',
-    );
-    throw new Error(
-      'LLM provider not configured. Add ANTHROPIC_API_KEY (or OPENAI_API_KEY) to your .env and restart the API.',
-    );
+    throw new Error('LLM provider not configured.');
   }
 
   private race<T>(p: Promise<T>, ms: number): Promise<T> {
