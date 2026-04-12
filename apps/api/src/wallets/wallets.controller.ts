@@ -38,7 +38,19 @@ export class WalletsController {
     return this.wallets.withdraw(req.user.userId, id, dto.toAddress, dto.tokenMint, dto.amount);
   }
 
+  @Get('balances') balances(@Req() req: any) {
+    return this.wallets.getAllBalances(req.user.userId);
+  }
+
+  @Get(':id/balance') balance(@Req() req: any, @Param('id') id: string) {
+    return this.wallets.getBalance(req.user.userId, id);
+  }
+
   @Get(':id/deposit') deposit(@Req() req: any, @Param('id') id: string) {
     return this.wallets.depositInfo(req.user.userId, id);
+  }
+
+  @Post(':id/faucet') faucet(@Req() req: any, @Param('id') id: string) {
+    return this.wallets.faucet(req.user.userId, id);
   }
 }

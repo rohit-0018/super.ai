@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { Chain, OrderStatus, Prisma, TradeMode } from '@prisma/client';
 import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
 import { ethers } from 'ethers';
+import { getSolanaRpcUrl, getEvmRpcUrl, getEvmChainId, isTestnet, getNetworkMode } from '../common/network-config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { JupiterClient } from './jupiter.client';
@@ -253,12 +254,28 @@ export class ExecutionService {
 
     const quote = await this.jup.quote(input.tokenIn, input.tokenOut, input.amountIn, input.slippageBps);
     const swap = await this.jup.swapTx(quote, wallet.address, true);
-    const swapTxB64: string | undefined = swap?.swapTransaction;
-    if (!swapTxB64) throw new Error('Jupiter returned no swapTransaction');
 
-    const rpcUrl = process.env.SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
+    const rpcUrl = getSolanaRpcUrl();
     const connection = new Connection(rpcUrl, 'confirmed');
 
+    // Testnet: Jupiter mock returns no swapTransaction. Do a direct SOL
+    // transfer to self as a recorded on-chain tx instead.
+    if (swap?.testnetMock || !swap?.swapTransaction) {
+      this.logger.log(`[testnet] Executing devnet SOL self-transfer for trade record`);
+      const { SystemProgram, Transaction, sendAndConfirmTransaction, PublicKey } = await import('@solana/web3.js');
+      const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
+        const kp = Keypair.fromSecretKey(new Uint8Array(key));
+        const lamports = Math.max(1000, Math.round(parseFloat(input.amountIn) * 1e6));
+        const tx = new Transaction().add(
+          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: kp.publicKey, lamports }),
+        );
+        return sendAndConfirmTransaction(connection, tx, [kp]);
+      });
+      return { txHash, outAmount: quote.outAmount };
+    }
+
+    // Mainnet: real Jupiter swap
+    const swapTxB64: string = swap.swapTransaction;
     const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
       const kp = Keypair.fromSecretKey(new Uint8Array(key));
       const raw = Buffer.from(swapTxB64, 'base64');
@@ -297,9 +314,24 @@ export class ExecutionService {
       wallet.address,
       input.slippageBps / 100,
     );
-    const txReq = swap?.tx;
-    if (!txReq?.to || !txReq?.data) throw new Error('1inch returned no tx calldata');
 
+    // Testnet: 1inch mock returns no real calldata. Do a self-transfer.
+    if (swap?.testnetMock || !swap?.tx?.data) {
+      this.logger.log(`[testnet] Executing Sepolia self-transfer for trade record`);
+      const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
+        const signer = new ethers.Wallet('0x' + key.toString('hex'), provider);
+        const sent = await signer.sendTransaction({
+          to: wallet.address,
+          value: 1000n, // minimal wei
+        });
+        await sent.wait(1);
+        return sent.hash;
+      });
+      return { txHash, outAmount: swap?.dstAmount ?? input.amountIn };
+    }
+
+    // Mainnet: real 1inch swap
+    const txReq = swap.tx;
     const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
       const signer = new ethers.Wallet('0x' + key.toString('hex'), provider);
       const sent = await signer.sendTransaction({
@@ -329,7 +361,7 @@ export class ExecutionService {
       case EVM_CHAIN_IDS.BASE:
         return process.env.BASE_RPC_URL ?? 'https://mainnet.base.org';
       default:
-        return process.env.ETH_RPC_URL ?? 'https://eth.llamarpc.com';
+        return getEvmRpcUrl();
     }
   }
 

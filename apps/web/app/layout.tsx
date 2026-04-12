@@ -30,6 +30,24 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body>
         <ErrorSink />
+        {process.env.NEXT_PUBLIC_NETWORK_MODE === 'testnet' && (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, #f59e0b, #d97706)',
+              color: '#000',
+              textAlign: 'center',
+              padding: '6px 16px',
+              fontSize: '12px',
+              fontWeight: 600,
+              letterSpacing: '0.05em',
+              position: 'sticky',
+              top: 0,
+              zIndex: 50,
+            }}
+          >
+            TESTNET MODE — transactions use devnet/Sepolia. Funds are not real.
+          </div>
+        )}
         <Navbar />
         <main className="max-w-7xl mx-auto px-6 py-8">
           <AuthGate>{children}</AuthGate>
