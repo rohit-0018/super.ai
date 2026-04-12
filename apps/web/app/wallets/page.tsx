@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { Skeleton } from '../../components/ui/Skeleton';
+import CexPortfolio from '../../components/CexPortfolio';
 
 export default function Wallets() {
   const [wallets, setWallets] = useState<any[] | null>(null);
@@ -31,6 +32,9 @@ export default function Wallets() {
       </header>
 
       <div className="panel !p-0 overflow-hidden">
+        <div className="px-5 py-3 border-b border-border">
+          <h3 className="section-title">On-chain wallets</h3>
+        </div>
         {wallets === null ? (
           <ul className="divide-y divide-border">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -69,6 +73,8 @@ export default function Wallets() {
           </ul>
         )}
       </div>
+
+      <CexPortfolio />
     </div>
   );
 }

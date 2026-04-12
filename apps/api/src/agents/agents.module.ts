@@ -1,6 +1,7 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { AgentsService } from './agents.service';
 import { AgentsController } from './agents.controller';
+import { AlertsController } from './alerts.controller';
 import { NotificationsService } from './notifications.service';
 import { EmotionalIntelService } from './emotional-intel.service';
 import { WorkerBootstrap } from './worker.bootstrap';
@@ -12,7 +13,7 @@ import { MarketDataModule } from '../market-data/market-data.module';
 @Module({
   imports: [WsModule, PrismaModule, forwardRef(() => ExecutionModule), MarketDataModule],
   providers: [AgentsService, NotificationsService, EmotionalIntelService, WorkerBootstrap],
-  controllers: [AgentsController],
+  controllers: [AgentsController, AlertsController],
   exports: [AgentsService, NotificationsService, EmotionalIntelService],
 })
 export class AgentsModule {}

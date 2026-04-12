@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { Spinner } from './ui/Skeleton';
+import AdvancedOrderBuilder from './AdvancedOrderBuilder';
 
 export default function SwapForm() {
   const [wallets, setWallets] = useState<any[]>([]);
@@ -14,6 +16,7 @@ export default function SwapForm() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     api.get('/wallets').then((r) => {
@@ -50,9 +53,23 @@ export default function SwapForm() {
 
   return (
     <div className="panel">
+      {advancedOpen && <AdvancedOrderBuilder onClose={() => setAdvancedOpen(false)} />}
       <div className="flex items-center justify-between mb-5">
-        <h3 className="section-title">Swap</h3>
-        <span className="chip">{chain}</span>
+        <div>
+          <h3 className="section-title mb-0.5">Swap</h3>
+          <div className="text-[11px] text-[color:var(--text-3)]">Market order · route via Jupiter / 1inch</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="chip">{chain}</span>
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen(true)}
+            className="btn btn-sm"
+            title="Limit, stop, trailing, bracket, DCA"
+          >
+            Advanced
+          </button>
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -120,7 +137,7 @@ export default function SwapForm() {
         </div>
 
         <button onClick={submit} disabled={busy || !walletId} className="btn btn-primary w-full mt-2">
-          {busy ? 'Submitting…' : 'Review swap'}
+          {busy ? <Spinner size={14} /> : 'Review swap'}
         </button>
 
         {result && (

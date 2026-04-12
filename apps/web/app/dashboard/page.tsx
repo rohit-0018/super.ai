@@ -7,6 +7,9 @@ import TokenIntelCard from '../../components/TokenIntelCard';
 import SwapForm from '../../components/SwapForm';
 import AgentsPanel from '../../components/AgentsPanel';
 import RiskMeter from '../../components/RiskMeter';
+import BriefingCard from '../../components/BriefingCard';
+import AlertsFeed from '../../components/AlertsFeed';
+import TrendingMovers from '../../components/TrendingMovers';
 
 export default function Dashboard() {
   return (
@@ -27,7 +30,12 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* Row 1: chart · portfolio · token intel */}
+      {/* Row 1: briefing banner */}
+      <section>
+        <BriefingCard />
+      </section>
+
+      {/* Row 2: chart · portfolio · token intel */}
       <section className="grid grid-cols-12 gap-4">
         <div className="col-span-12 lg:col-span-8 panel !p-0 overflow-hidden">
           <TradingViewChart symbol="BINANCE:SOLUSDT" />
@@ -38,7 +46,7 @@ export default function Dashboard() {
         </div>
       </section>
 
-      {/* Row 2: agents · risk meter */}
+      {/* Row 3: agents · risk meter */}
       <section className="grid grid-cols-12 gap-4">
         <div className="col-span-12 lg:col-span-7">
           <AgentsPanel />
@@ -48,7 +56,17 @@ export default function Dashboard() {
         </div>
       </section>
 
-      {/* Row 3: swap · chat */}
+      {/* Row 4: trending + alerts */}
+      <section className="grid grid-cols-12 gap-4">
+        <div className="col-span-12 lg:col-span-6">
+          <TrendingMovers />
+        </div>
+        <div className="col-span-12 lg:col-span-6">
+          <AlertsFeed />
+        </div>
+      </section>
+
+      {/* Row 5: swap · chat */}
       <section className="grid grid-cols-12 gap-4">
         <div className="col-span-12 lg:col-span-4">
           <SwapForm />
@@ -58,12 +76,15 @@ export default function Dashboard() {
         </div>
       </section>
 
-      {/* Row 4: trade journal */}
+      {/* Row 6: trade journal */}
       <section>
         <div className="panel">
           <div className="flex items-center justify-between mb-4">
             <h3 className="section-title mb-0">Trade journal</h3>
-            <a href="/analytics" className="text-[12px] text-[color:var(--text-3)] hover:text-[color:var(--accent)]">
+            <a
+              href="/analytics"
+              className="text-[12px] text-[color:var(--text-3)] hover:text-[color:var(--accent)]"
+            >
               View analytics →
             </a>
           </div>
