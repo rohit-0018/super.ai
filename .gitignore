@@ -6,6 +6,7 @@ coverage
 *.log
 .env
 .env.local
+.dev.env
 .DS_Store
 .pnpm-store
 prisma/migrations/dev.db*
