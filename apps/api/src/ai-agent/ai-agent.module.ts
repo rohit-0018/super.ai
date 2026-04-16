@@ -10,6 +10,7 @@ import { ExecutionModule } from '../execution/execution.module';
 import { TokenIntelModule } from '../token-intel/token-intel.module';
 import { AgentsModule } from '../agents/agents.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { MarketDataModule } from '../market-data/market-data.module';
 
 @Module({
   imports: [
@@ -18,6 +19,8 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     forwardRef(() => TokenIntelModule),
     forwardRef(() => AgentsModule),
     AnalyticsModule,
+    MarketDataModule,
+    // GuardrailsModule is @Global so no need to import
   ],
   providers: [AiAgentService, LlmService, ConversationMemoryService, TradingDnaService, ToolExecutorService],
   controllers: [AiAgentController],

@@ -1,9 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionService } from '../execution/execution.service';
+import { OrderManagerService } from '../execution/order-manager.service';
 import { TokenIntelService } from '../token-intel/token-intel.service';
 import { AgentsService } from '../agents/agents.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { GuardrailsService } from '../guardrails/guardrails.service';
+import { MarketDataService } from '../market-data/market-data.service';
 
 @Injectable()
 export class ToolExecutorService {
@@ -12,9 +15,12 @@ export class ToolExecutorService {
   constructor(
     private prisma: PrismaService,
     private execution: ExecutionService,
+    private orderManager: OrderManagerService,
     private tokenIntel: TokenIntelService,
     private agents: AgentsService,
     private analytics: AnalyticsService,
+    private guardrails: GuardrailsService,
+    private marketData: MarketDataService,
   ) {}
 
   async execute(
@@ -44,6 +50,24 @@ export class ToolExecutorService {
           return await this.getPortfolio(userId);
         case 'get_performance':
           return await this.getPerformance(userId);
+        case 'list_orders':
+          return await this.listOrders(userId, args);
+        case 'cancel_order':
+          return await this.cancelOrder(userId, args);
+        case 'cancel_all_orders':
+          return await this.cancelAllOrders(userId);
+        case 'get_guardrails':
+          return await this.getGuardrails(userId);
+        case 'update_guardrails':
+          return await this.updateGuardrails(userId, args);
+        case 'kill_switch':
+          return await this.activateKillSwitch(userId);
+        case 'toggle_paper_mode':
+          return await this.togglePaperMode(userId, args);
+        case 'get_market_trending':
+          return await this.getMarketTrending();
+        case 'get_token_price':
+          return await this.getTokenPrice(args);
         default:
           return JSON.stringify({ error: `Unknown tool: ${toolName}` });
       }
@@ -189,5 +213,154 @@ export class ToolExecutorService {
   private async getPerformance(userId: string): Promise<string> {
     const perf = await this.analytics.performance(userId);
     return JSON.stringify(perf);
+  }
+
+  // ─── Order management ───────────────────────────────────────────────
+
+  private async listOrders(userId: string, args: Record<string, any>): Promise<string> {
+    const orders = await this.orderManager.list(userId);
+    const filtered = args.status
+      ? orders.filter((o) => o.status === args.status)
+      : orders;
+    return JSON.stringify({
+      orders: filtered.map((o) => ({
+        id: o.id,
+        type: o.type,
+        status: o.status,
+        chain: o.chain,
+        tokenIn: o.tokenIn,
+        tokenOut: o.tokenOut,
+        amountIn: o.amountIn,
+        source: o.source,
+        createdAt: o.createdAt,
+      })),
+      total: filtered.length,
+    });
+  }
+
+  private async cancelOrder(userId: string, args: Record<string, any>): Promise<string> {
+    const { orderId } = args;
+    const result = await this.orderManager.cancel(userId, orderId);
+    if (result.count === 0) {
+      return JSON.stringify({
+        success: false,
+        error: 'Order not found or already cancelled',
+        chatMessage: `❌ **Could not cancel order**\n\nOrder \`${orderId}\` was not found or is already cancelled/filled.`,
+      });
+    }
+    return JSON.stringify({
+      success: true,
+      orderId,
+      chatMessage: `✅ **Order cancelled**\n\nOrder \`${orderId}\` has been cancelled successfully.`,
+    });
+  }
+
+  private async cancelAllOrders(userId: string): Promise<string> {
+    const orders = await this.orderManager.list(userId);
+    const openOrders = orders.filter((o) => o.status === 'PENDING' || o.status === 'ACTIVE');
+
+    if (openOrders.length === 0) {
+      return JSON.stringify({
+        success: true,
+        cancelled: 0,
+        chatMessage: '📝 **No open orders to cancel**\n\nYou have no pending or active orders.',
+      });
+    }
+
+    let cancelled = 0;
+    for (const order of openOrders) {
+      const result = await this.orderManager.cancel(userId, order.id);
+      if (result.count > 0) cancelled++;
+    }
+
+    return JSON.stringify({
+      success: true,
+      cancelled,
+      total: openOrders.length,
+      chatMessage: `✅ **All orders cancelled**\n\nCancelled **${cancelled}** open order${cancelled !== 1 ? 's' : ''}. Your order book is now clear.`,
+    });
+  }
+
+  // ─── Guardrails & settings ─────────────────────────────────────────
+
+  private async getGuardrails(userId: string): Promise<string> {
+    const cfg = await this.guardrails.config(userId);
+    return JSON.stringify({
+      perTradeUsd: cfg.perTradeUsd,
+      dailyUsd: cfg.dailyUsd,
+      maxSlippageBps: cfg.maxSlippageBps,
+      killSwitch: cfg.killSwitch,
+      whitelist: cfg.whitelist,
+      blacklist: cfg.blacklist,
+    });
+  }
+
+  private async updateGuardrails(userId: string, args: Record<string, any>): Promise<string> {
+    const patch: Record<string, any> = {};
+    if (args.perTradeUsd !== undefined) patch.perTradeUsd = args.perTradeUsd;
+    if (args.dailyUsd !== undefined) patch.dailyUsd = args.dailyUsd;
+    if (args.maxSlippageBps !== undefined) patch.maxSlippageBps = args.maxSlippageBps;
+    if (args.killSwitch !== undefined) patch.killSwitch = args.killSwitch;
+
+    if (Object.keys(patch).length === 0) {
+      return JSON.stringify({ success: false, error: 'No fields to update' });
+    }
+
+    const updated = await this.guardrails.update(userId, patch);
+    const changes = Object.entries(patch)
+      .map(([k, v]) => `- **${k}**: ${v}`)
+      .join('\n');
+
+    return JSON.stringify({
+      success: true,
+      config: {
+        perTradeUsd: updated.perTradeUsd,
+        dailyUsd: updated.dailyUsd,
+        maxSlippageBps: updated.maxSlippageBps,
+        killSwitch: updated.killSwitch,
+      },
+      chatMessage: `✅ **Guardrails updated**\n\n${changes}`,
+    });
+  }
+
+  private async activateKillSwitch(userId: string): Promise<string> {
+    await this.guardrails.kill(userId);
+    return JSON.stringify({
+      success: true,
+      chatMessage: '🚨 **Kill switch activated**\n\nAll trading is now **blocked**. No orders or swaps will execute until you deactivate it.\n\nTo resume trading, update guardrails with `killSwitch: false`.',
+    });
+  }
+
+  private async togglePaperMode(userId: string, args: Record<string, any>): Promise<string> {
+    const { paperMode } = args;
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { paperMode },
+    });
+    const mode = paperMode ? 'Paper' : 'Live';
+    return JSON.stringify({
+      success: true,
+      paperMode,
+      chatMessage: `✅ **Switched to ${mode} mode**\n\n${
+        paperMode
+          ? 'Trades are now simulated — no real funds at risk.'
+          : '⚠️ **Live mode active** — trades use real funds. Make sure your guardrails are configured.'
+      }`,
+    });
+  }
+
+  // ─── Market data ────────────────────────────────────────────────────
+
+  private async getMarketTrending(): Promise<string> {
+    const [trending, movers] = await Promise.all([
+      this.marketData.trending().catch(() => []),
+      this.marketData.topMovers().catch(() => []),
+    ]);
+    return JSON.stringify({ trending, topMovers: movers });
+  }
+
+  private async getTokenPrice(args: Record<string, any>): Promise<string> {
+    const price = await this.marketData.price(args.tokenId);
+    return JSON.stringify({ tokenId: args.tokenId, priceUsd: price });
   }
 }

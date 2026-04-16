@@ -118,4 +118,117 @@ export const TOOL_DEFINITIONS = [
       parameters: { type: 'object', properties: {} },
     },
   },
+
+  // ─── Order management ───────────────────────────────────────────────
+  {
+    type: 'function' as const,
+    function: {
+      name: 'list_orders',
+      description: 'List all orders for the user, optionally filtered by status.',
+      parameters: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: ['PENDING', 'ACTIVE', 'FILLED', 'CANCELLED', 'FAILED'],
+            description: 'Filter by order status (omit for all orders)',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'cancel_order',
+      description: 'Cancel a specific open order by its ID.',
+      parameters: {
+        type: 'object',
+        properties: {
+          orderId: { type: 'string', description: 'The order ID to cancel' },
+        },
+        required: ['orderId'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'cancel_all_orders',
+      description: 'Cancel all open (PENDING or ACTIVE) orders for the user.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+
+  // ─── Settings & guardrails ──────────────────────────────────────────
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_guardrails',
+      description: 'Get the user\'s current guardrail configuration: per-trade limit, daily limit, max slippage, kill switch status, whitelist, blacklist.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'update_guardrails',
+      description: 'Update the user\'s trading guardrails. Only include fields you want to change.',
+      parameters: {
+        type: 'object',
+        properties: {
+          perTradeUsd: { type: 'number', description: 'Max USD per single trade' },
+          dailyUsd: { type: 'number', description: 'Max total USD per day' },
+          maxSlippageBps: { type: 'number', description: 'Max slippage in basis points' },
+          killSwitch: { type: 'boolean', description: 'Emergency kill switch — true blocks ALL trades' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'kill_switch',
+      description: 'Activate the emergency kill switch — immediately blocks ALL trading.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'toggle_paper_mode',
+      description: 'Switch between paper (simulated) and live trading mode.',
+      parameters: {
+        type: 'object',
+        properties: {
+          paperMode: { type: 'boolean', description: 'true = paper trading, false = live trading' },
+        },
+        required: ['paperMode'],
+      },
+    },
+  },
+
+  // ─── Market data ────────────────────────────────────────────────────
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_market_trending',
+      description: 'Get trending tokens and top movers in the market.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_token_price',
+      description: 'Get the current USD price of a token by its CoinGecko ID or address.',
+      parameters: {
+        type: 'object',
+        properties: {
+          tokenId: { type: 'string', description: 'CoinGecko token ID or contract address (e.g. "solana", "bitcoin")' },
+        },
+        required: ['tokenId'],
+      },
+    },
+  },
 ];
