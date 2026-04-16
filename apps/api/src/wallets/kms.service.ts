@@ -19,6 +19,15 @@ export class KmsService {
     ? new KMSClient({ region: process.env.AWS_REGION ?? 'us-east-1' })
     : null;
 
+  // DEK cache: only the unwrapped data-encryption key is cached (keyed by its
+  // encrypted form). The full private-key plaintext is still decrypted and
+  // zeroed on every use — this just avoids a KMS round-trip per signature.
+  private dekCache = new Map<string, { dek: Buffer; expiresAt: number }>();
+  private readonly dekCacheTtlMs: number = parseInt(
+    process.env.FAST_LANE_DEK_CACHE_TTL_MS ?? '60000',
+    10,
+  );
+
   async encrypt(plaintext: Buffer): Promise<EnvelopeCiphertext> {
     const { dataKey, encryptedDek } = await this.generateDataKey();
     const iv = randomBytes(12);
@@ -32,7 +41,7 @@ export class KmsService {
   }
 
   async decrypt(envelope: EnvelopeCiphertext): Promise<Buffer> {
-    const dataKey = await this.unwrapDataKey(envelope.encryptedDek);
+    const dataKey = await this.unwrapDekCached(envelope.encryptedDek);
     const buf = Buffer.from(envelope.ciphertext, 'base64');
     const iv = buf.subarray(0, 12);
     const tag = buf.subarray(12, 28);
@@ -58,10 +67,38 @@ export class KmsService {
     return { dataKey, encryptedDek: wrapped };
   }
 
-  private async unwrapDataKey(encryptedDek: string): Promise<Buffer> {
+  /**
+   * Cached DEK unwrap — checks the in-memory cache before hitting KMS/local.
+   * Cache is keyed by the encrypted DEK blob so each wallet has its own entry.
+   */
+  private async unwrapDekCached(encryptedDek: string): Promise<Buffer> {
+    const now = Date.now();
+    const cached = this.dekCache.get(encryptedDek);
+    if (cached && cached.expiresAt > now) {
+      return cached.dek;
+    }
+    // Evict if expired
+    if (cached) {
+      this.dekCache.delete(encryptedDek);
+    }
+
+    const dek = await this.unwrapDekFresh(encryptedDek);
+    if (this.dekCacheTtlMs > 0) {
+      this.dekCache.set(encryptedDek, {
+        dek,
+        expiresAt: now + this.dekCacheTtlMs,
+      });
+    }
+    return dek;
+  }
+
+  /** Fresh unwrap — always hits AWS KMS (or local fallback). */
+  private async unwrapDekFresh(encryptedDek: string): Promise<Buffer> {
     if (this.kms) {
       const out = await this.kms.send(
-        new DecryptCommand({ CiphertextBlob: Buffer.from(encryptedDek, 'base64') }),
+        new DecryptCommand({
+          CiphertextBlob: Buffer.from(encryptedDek, 'base64'),
+        }),
       );
       return Buffer.from(out.Plaintext as Uint8Array);
     }

@@ -9,8 +9,10 @@ import UserMenu from './UserMenu';
 
 const links: [string, string][] = [
   ['/dashboard', 'Dashboard'],
+  ['/orders', 'Orders'],
+  ['/agents', 'Agents'],
+  ['/market', 'Market'],
   ['/wallets', 'Wallets'],
-  ['/chat', 'Chat'],
   ['/analytics', 'Analytics'],
   ['/social', 'Social'],
   ['/settings', 'Settings'],

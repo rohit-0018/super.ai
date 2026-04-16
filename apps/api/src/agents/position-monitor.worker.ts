@@ -61,6 +61,7 @@ export function startPositionMonitorWorker(deps: WorkerDeps): Worker {
           notionalUsd: price * Number(order.amountIn) / 1e6,
           slippageBps: params.slippageBps ?? 150,
           orderId: order.id,
+          source: 'AGENT',
         });
         await deps.notifications.emit({
           userId: order.userId,

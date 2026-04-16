@@ -1,3 +1,4 @@
+import { join } from 'path';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
@@ -19,11 +20,16 @@ import { WsModule } from './ws/ws.module';
 import { UsersModule } from './users/users.module';
 import { NewsModule } from './news/news.module';
 import { SecurityModule } from './security/security.module';
+import { FastLaneModule } from './fast-lane/fast-lane.module';
+import { ActivityModule } from './activity/activity.module';
 import { HealthController } from './health.controller';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [join(__dirname, '../../../.env'), join(process.cwd(), '.env')],
+    }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     SecurityModule,
     PrismaModule,
@@ -42,6 +48,8 @@ import { HealthController } from './health.controller';
     WsModule,
     UsersModule,
     NewsModule,
+    FastLaneModule,
+    ActivityModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

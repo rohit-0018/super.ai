@@ -86,6 +86,7 @@ model User {
   priceAlerts     PriceAlert[]
   audit           AuditLog[]
   guardrails      GuardrailConfig?
+  fastLaneConfig  FastLaneConfig?
   cexConnections  CexConnection[]
   paperBalances   PaperBalance[]
 }
@@ -172,10 +173,14 @@ model Order {
   amountIn  String      // bigint as string
   params    Json
   txHash    String?
+  // Where this order came from. Free-form so we can extend without migrations.
+  // Conventional values: WEB | CHAT | TELEGRAM | AGENT | DCA | SCHEDULED | FAST_LANE | API
+  source    String?
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
   trades    Trade[]
   @@index([userId, status])
+  @@index([userId, createdAt])
 }
 
 model Trade {
@@ -194,6 +199,8 @@ model Trade {
   pnlUsd    Float?
   mode      TradeMode @default(LIVE)
   txHash    String?
+  // Origin of the swap that produced this trade. See Order.source for values.
+  source    String?
   createdAt DateTime  @default(now())
   @@index([userId, createdAt])
 }
@@ -270,6 +277,24 @@ model CexConnection {
   readOnly        Boolean  @default(true)
   createdAt       DateTime @default(now())
   @@unique([userId, exchange])
+}
+
+model FastLaneConfig {
+  userId              String   @id
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enabled             Boolean  @default(false)
+  trustedChannels     String[] // e.g. ["telegram", "discord"]
+  maxPerTradeUsd      Float    @default(500)
+  maxDailyUsd         Float    @default(2000)
+  skipWashTradeCheck  Boolean  @default(true)
+  skipRiskEngine      Boolean  @default(true)
+  skipGuardrails      Boolean  @default(false)
+  skipInjectionDetect Boolean  @default(true)
+  skipDuplicateDetect Boolean  @default(true)
+  defaultSlippageBps  Int      @default(200)
+  defaultWalletId     String?
+  allowedTokens       String[] // empty = allow any
+  updatedAt           DateTime @updatedAt
 }
 
 model PaperBalance {

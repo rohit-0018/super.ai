@@ -17,17 +17,23 @@ export class ToolExecutorService {
     private analytics: AnalyticsService,
   ) {}
 
-  async execute(userId: string, toolName: string, args: Record<string, any>): Promise<string> {
-    this.logger.log(`Tool call: ${toolName} for user=${userId}`);
+  async execute(
+    userId: string,
+    toolName: string,
+    args: Record<string, any>,
+    channel: 'web' | 'telegram' | string = 'web',
+  ): Promise<string> {
+    this.logger.log(`Tool call: ${toolName} for user=${userId} channel=${channel}`);
+    const source = channel === 'telegram' ? 'TELEGRAM' : 'CHAT';
 
     try {
       switch (toolName) {
         case 'execute_swap':
-          return await this.executeSwap(userId, args);
+          return await this.executeSwap(userId, args, source);
         case 'analyze_token':
           return await this.analyzeToken(args);
         case 'place_order':
-          return await this.placeOrder(userId, args);
+          return await this.placeOrder(userId, args, source);
         case 'list_agents':
           return await this.listAgents(userId);
         case 'manage_agent':
@@ -47,34 +53,60 @@ export class ToolExecutorService {
     }
   }
 
-  private async executeSwap(userId: string, args: Record<string, any>): Promise<string> {
+  private async executeSwap(userId: string, args: Record<string, any>, source = 'CHAT'): Promise<string> {
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, chain: args.chain, isPrimary: true },
     });
     if (!wallet) {
       const any = await this.prisma.wallet.findFirst({ where: { userId, chain: args.chain } });
-      if (!any) return JSON.stringify({ error: `No ${args.chain} wallet found. Create one first.` });
+      if (!any) {
+        return JSON.stringify({
+          success: false,
+          error: `No ${args.chain} wallet found. Create one first.`,
+          chatMessage: `❌ **Can't place that trade**\n\nYou don't have a \`${args.chain}\` wallet yet. Create one first from the Wallets tab, then try again.`,
+        });
+      }
     }
     const w = wallet ?? await this.prisma.wallet.findFirst({ where: { userId, chain: args.chain } });
 
-    const result = await this.execution.swap({
-      userId,
-      walletId: w!.id,
-      chain: args.chain,
-      tokenIn: args.tokenIn,
-      tokenOut: args.tokenOut,
-      amountIn: args.amountIn,
-      notionalUsd: args.notionalUsd ?? 0,
-      slippageBps: args.slippageBps ?? 150,
-    });
+    try {
+      const result = await this.execution.swap({
+        userId,
+        walletId: w!.id,
+        chain: args.chain,
+        tokenIn: args.tokenIn,
+        tokenOut: args.tokenOut,
+        amountIn: args.amountIn,
+        notionalUsd: args.notionalUsd ?? 0,
+        slippageBps: args.slippageBps ?? 150,
+        source,
+      });
 
-    return JSON.stringify({
-      success: true,
-      tradeId: result.tradeId,
-      txHash: result.txHash,
-      amountOut: result.amountOut,
-      mode: result.mode,
-    });
+      return JSON.stringify({
+        success: true,
+        tradeId: result.tradeId,
+        status: result.status,
+        simulated: result.simulated,
+        network: result.network,
+        mode: result.mode,
+        side: result.side,
+        txHash: result.txHash,
+        explorerUrl: result.explorerUrl,
+        amountOut: result.amountOut,
+        // The pre-formatted markdown message — use this verbatim in chat.
+        chatMessage: result.message,
+      });
+    } catch (err: any) {
+      // Pull the structured failure body that ExecutionService throws
+      // via BadGatewayException — the chatMessage is already formatted.
+      const body = err?.response ?? {};
+      return JSON.stringify({
+        success: false,
+        error: body.reason ?? err?.message ?? 'unknown',
+        reason: body.reason,
+        chatMessage: body.chatMessage ?? `❌ **Swap failed**\n\n\`${err?.message ?? 'unknown error'}\``,
+      });
+    }
   }
 
   private async analyzeToken(args: Record<string, any>): Promise<string> {
@@ -82,11 +114,14 @@ export class ToolExecutorService {
     return JSON.stringify(result);
   }
 
-  private async placeOrder(userId: string, args: Record<string, any>): Promise<string> {
+  private async placeOrder(userId: string, args: Record<string, any>, source = 'CHAT'): Promise<string> {
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, chain: args.chain },
     });
     if (!wallet) return JSON.stringify({ error: `No ${args.chain} wallet found.` });
+
+    // DCA / interval orders are scheduled, not one-shot.
+    const effectiveSource = args.interval ? 'SCHEDULED' : (args.type === 'DCA' ? 'DCA' : source);
 
     const order = await this.prisma.order.create({
       data: {
@@ -105,6 +140,7 @@ export class ToolExecutorService {
           trailBps: args.trailingPct ? args.trailingPct * 100 : undefined,
           interval: args.interval,
         },
+        source: effectiveSource,
       },
     });
 

@@ -32,14 +32,14 @@ export class ExecutionController {
 
   @Post('swap')
   swap(@Req() req: any, @Body() dto: SwapDto) {
-    return this.exec.swap({ userId: req.user.userId, ...dto });
+    return this.exec.swap({ userId: req.user.userId, ...dto, source: 'WEB' });
   }
 
   @Get('orders') list(@Req() req: any) { return this.orders.list(req.user.userId); }
 
   @Post('orders')
   place(@Req() req: any, @Body() dto: OrderDto) {
-    return this.orders.place({ userId: req.user.userId, ...dto });
+    return this.orders.place({ userId: req.user.userId, ...dto, source: 'WEB' });
   }
 
   @Delete('orders/:id')

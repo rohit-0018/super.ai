@@ -25,41 +25,123 @@ function formatTime(iso?: string) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-/** Minimal markdown: **bold**, `inline code`, ```fenced``` blocks, line breaks. */
+/** Pick a status accent color from the leading emoji of a paragraph. */
+function statusAccent(line: string): string | null {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith('✅')) return 'var(--ok)';
+  if (trimmed.startsWith('🚀')) return 'var(--accent)';
+  if (trimmed.startsWith('🧪')) return '#a78bfa';
+  if (trimmed.startsWith('📝')) return 'var(--text-3)';
+  if (trimmed.startsWith('❌')) return 'var(--bad)';
+  if (trimmed.startsWith('⚠️')) return '#f59e0b';
+  return null;
+}
+
+/**
+ * Markdown supported:
+ *   - **bold**
+ *   - `inline code`
+ *   - ```fenced code```
+ *   - [text](https://url)  → opens in new tab
+ *   - paragraph breaks (blank line) → separate <p> blocks
+ *   - single newlines → <br />
+ *   - leading status emoji on a paragraph → colored left border
+ */
 function renderContent(text: string): React.ReactNode {
   if (!text) return null;
-  const parts: React.ReactNode[] = [];
+
+  // Split out fenced code blocks first — they're rendered as their own block
+  // and never wrapped in paragraphs.
+  const blocks: React.ReactNode[] = [];
   const fenceRe = /```([\s\S]*?)```/g;
   let lastIdx = 0;
   let key = 0;
   let m: RegExpExecArray | null;
   while ((m = fenceRe.exec(text)) !== null) {
-    if (m.index > lastIdx) parts.push(renderInline(text.slice(lastIdx, m.index), key++));
-    parts.push(<pre key={`p${key++}`}>{m[1].replace(/^\n|\n$/g, '')}</pre>);
+    if (m.index > lastIdx) {
+      blocks.push(...renderProse(text.slice(lastIdx, m.index), `b${key++}`));
+    }
+    blocks.push(<pre key={`pre${key++}`}>{m[1].replace(/^\n|\n$/g, '')}</pre>);
     lastIdx = m.index + m[0].length;
   }
-  if (lastIdx < text.length) parts.push(renderInline(text.slice(lastIdx), key++));
-  return parts;
+  if (lastIdx < text.length) {
+    blocks.push(...renderProse(text.slice(lastIdx), `b${key++}`));
+  }
+  return blocks;
 }
 
-function renderInline(text: string, key: number): React.ReactNode {
+/** Render a prose region (no fenced blocks) as one or more paragraph blocks. */
+function renderProse(text: string, keyPrefix: string): React.ReactNode[] {
+  const paragraphs = text.split(/\n{2,}/);
+  const out: React.ReactNode[] = [];
+  paragraphs.forEach((para, i) => {
+    if (!para.trim()) return;
+    const accent = statusAccent(para);
+    const lines = para.split('\n');
+    const inner: React.ReactNode[] = [];
+    lines.forEach((line, j) => {
+      if (j > 0) inner.push(<br key={`br-${keyPrefix}-${i}-${j}`} />);
+      inner.push(<span key={`ln-${keyPrefix}-${i}-${j}`}>{renderInline(line)}</span>);
+    });
+    out.push(
+      <p
+        key={`${keyPrefix}-p${i}`}
+        className="chat-para"
+        style={
+          accent
+            ? {
+                borderLeft: `2px solid ${accent}`,
+                paddingLeft: 10,
+                marginLeft: -2,
+              }
+            : undefined
+        }
+      >
+        {inner}
+      </p>,
+    );
+  });
+  return out;
+}
+
+/** Inline tokens: **bold**, `code`, [text](url). */
+function renderInline(text: string): React.ReactNode {
   const nodes: React.ReactNode[] = [];
-  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let k = 0;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) nodes.push(<span key={`t${k++}`}>{text.slice(last, m.index)}</span>);
     const tok = m[0];
-    if (tok.startsWith('**')) nodes.push(<strong key={`b${k++}`}>{tok.slice(2, -2)}</strong>);
-    else nodes.push(<code key={`c${k++}`}>{tok.slice(1, -1)}</code>);
+    if (tok.startsWith('**')) {
+      nodes.push(<strong key={`b${k++}`}>{tok.slice(2, -2)}</strong>);
+    } else if (tok.startsWith('`')) {
+      nodes.push(<code key={`c${k++}`}>{tok.slice(1, -1)}</code>);
+    } else {
+      // [text](url)
+      const closeBracket = tok.indexOf(']');
+      const label = tok.slice(1, closeBracket);
+      const url = tok.slice(closeBracket + 2, -1);
+      nodes.push(
+        <a
+          key={`a${k++}`}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="chat-link"
+        >
+          {label}
+        </a>,
+      );
+    }
     last = m.index + tok.length;
   }
   if (last < text.length) nodes.push(<span key={`t${k++}`}>{text.slice(last)}</span>);
-  return <span key={`frag${key}`}>{nodes}</span>;
+  return <>{nodes}</>;
 }
 
-export default function ChatPanel() {
+export default function ChatPanel({ onClose }: { onClose?: () => void } = {}) {
   const { data: history, loading: loadingHistory } = useApi<Msg[]>('/chat/history');
   const [localMsgs, setLocalMsgs] = useState<Msg[] | null>(null);
   const msgs = localMsgs ?? (Array.isArray(history) ? history : []);
@@ -212,7 +294,7 @@ export default function ChatPanel() {
   const isEmpty = useMemo(() => !loadingHistory && msgs.length === 0, [loadingHistory, msgs.length]);
 
   return (
-    <div className="glass glass-sheen flex flex-col h-[560px] overflow-hidden">
+    <div className="glass glass-sheen flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[color:var(--border)]">
         <div className="flex items-center gap-3 min-w-0">
@@ -244,6 +326,15 @@ export default function ChatPanel() {
               title="Clear conversation"
             >
               Clear
+            </button>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="btn btn-ghost btn-sm"
+              title="Close chat"
+            >
+              ✕
             </button>
           )}
         </div>

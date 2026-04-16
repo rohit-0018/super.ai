@@ -66,6 +66,28 @@ export function getOneInchApiBase(): string {
   return 'https://api.1inch.dev/swap/v6.0';
 }
 
+// ── Explorer URLs ──
+
+export function getSolanaExplorerUrl(signature: string): string {
+  const cluster = isTestnet() ? '?cluster=devnet' : '';
+  return `https://solscan.io/tx/${signature}${cluster}`;
+}
+
+export function getEvmExplorerUrl(chainId: number, txHash: string): string {
+  const base = (() => {
+    switch (chainId) {
+      case 1: return 'https://etherscan.io';
+      case 42161: return 'https://arbiscan.io';
+      case 8453: return 'https://basescan.org';
+      case 11155111: return 'https://sepolia.etherscan.io';
+      case 421614: return 'https://sepolia.arbiscan.io';
+      case 84532: return 'https://sepolia.basescan.org';
+      default: return 'https://etherscan.io';
+    }
+  })();
+  return `${base}/tx/${txHash}`;
+}
+
 // ── Summary ──
 
 export function getNetworkConfig() {

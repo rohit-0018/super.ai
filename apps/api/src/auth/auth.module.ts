@@ -10,9 +10,11 @@ import { TelegramLinkService } from './telegram-link.service';
 @Module({
   imports: [
     PassportModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET ?? 'dev-secret-change-me-32-bytes-min!!',
-      signOptions: { expiresIn: process.env.JWT_EXPIRES_IN ?? '15m' },
+    JwtModule.registerAsync({
+      useFactory: () => ({
+        secret: process.env.JWT_SECRET ?? 'dev-secret-change-me-32-bytes-min!!',
+        signOptions: { expiresIn: process.env.JWT_EXPIRES_IN ?? '15m' },
+      }),
     }),
   ],
   providers: [AuthService, JwtStrategy, WalletVerifier, TelegramLinkService],

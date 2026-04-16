@@ -52,6 +52,7 @@ export function startDcaWorker(deps: WorkerDeps): Worker {
           amountIn,
           notionalUsd: params.amountUsd,
           slippageBps: params.slippageBps ?? 100,
+          source: 'DCA',
         });
         await deps.prisma.agent.update({
           where: { id: agent.id },

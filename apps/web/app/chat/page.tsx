@@ -1,4 +1,9 @@
-import ChatPanel from '../../components/ChatPanel';
+'use client';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+
 export default function ChatPage() {
-  return <div className="max-w-3xl mx-auto"><ChatPanel /></div>;
+  const router = useRouter();
+  useEffect(() => { router.replace('/dashboard'); }, [router]);
+  return null;
 }

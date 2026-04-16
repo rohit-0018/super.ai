@@ -11,6 +11,8 @@ export interface PlaceOrderInput {
   tokenOut: string;
   amountIn: string;
   params: Record<string, unknown>; // limitPrice, stopPrice, trailBps, takeProfit, dcaInterval, etc.
+  /** WEB | CHAT | TELEGRAM | AGENT | DCA | SCHEDULED | API */
+  source?: string;
 }
 
 @Injectable()
@@ -19,7 +21,12 @@ export class OrderManagerService {
 
   place(input: PlaceOrderInput) {
     return this.prisma.order.create({
-      data: { ...input, params: input.params as any, status: OrderStatus.PENDING },
+      data: {
+        ...input,
+        params: input.params as any,
+        status: OrderStatus.PENDING,
+        source: input.source ?? 'API',
+      },
     });
   }
 

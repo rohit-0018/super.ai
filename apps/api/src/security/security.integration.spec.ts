@@ -15,6 +15,7 @@ import { MarketDataGuardService } from './market-data-guard.service';
 import { SecurityAuditService } from './security-audit.service';
 import { SecurityAlertService } from './security-alert.service';
 import { SecurityRedisService } from './security-redis.service';
+import { SecurityInitService } from './security-init.service';
 
 // ─── In-memory Redis mock (same pattern as scenario test harness) ──────────
 
@@ -204,11 +205,14 @@ async function buildModule(
       SecurityComplianceService,
       MarketDataGuardService,
       SecurityAuditService,
+      SecurityInitService,
       { provide: MARKET_DATA_PORT, useValue: { getCurrentPrice: async () => 100 } },
     ],
   }).compile();
 
   await module.init();
+  // Explicitly trigger safeInit() on each service (SecurityInitService does this
+  // via its own onModuleInit, but module.init() calls it in order)
   return { module, redis };
 }
 

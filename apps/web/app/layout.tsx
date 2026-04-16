@@ -4,6 +4,7 @@ import { Inter, JetBrains_Mono } from 'next/font/google';
 import Navbar from '../components/Navbar';
 import AuthGate from '../components/AuthGate';
 import ErrorSink from '../components/ErrorSink';
+import GlobalChatFab from '../components/GlobalChatFab';
 
 const sans = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono', display: 'swap' });
@@ -52,6 +53,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <main className="max-w-7xl mx-auto px-6 py-8">
           <AuthGate>{children}</AuthGate>
         </main>
+        <GlobalChatFab />
       </body>
     </html>
   );
