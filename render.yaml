@@ -1,0 +1,129 @@
+# QWAI — Render deployment manifest.
+# One static FE, one Node BE (API + workers + Telegram webhook), managed Postgres, managed Redis.
+# Deploy via Render Blueprint. Migrations + seed run in preDeployCommand on every deploy.
+
+databases:
+  - name: qwai-db
+    databaseName: qwai
+    user: qwai
+    plan: free
+    postgresMajorVersion: 16
+
+services:
+  # ────────────────────────────────────────────────────────────────
+  # Managed Redis — BullMQ queues + LLM cache + session nonces.
+  # ────────────────────────────────────────────────────────────────
+  - type: redis
+    name: qwai-redis
+    plan: free
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+  # ────────────────────────────────────────────────────────────────
+  # Backend — NestJS API + BullMQ workers + Telegram webhook, one process.
+  # Workers run inline when QWAI_ROLE=all (default on Render).
+  # ────────────────────────────────────────────────────────────────
+  - type: web
+    name: qwai-api
+    runtime: node
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: ./scripts/render-build.sh
+    preDeployCommand: ./scripts/render-predeploy.sh
+    startCommand: node apps/api/dist/main.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4400
+      - key: QWAI_ROLE
+        value: all
+      - key: NETWORK_MODE
+        value: testnet
+      - key: LOG_LEVEL
+        value: info
+      - key: DATABASE_URL
+        fromDatabase:
+          name: qwai-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: qwai-redis
+          property: connectionString
+      - key: WEB_ORIGIN
+        value: https://qwai-web.onrender.com
+      - key: TELEGRAM_WEBHOOK_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LLM_PROVIDER
+        value: openai
+      - key: AWS_REGION
+        value: us-west-2
+      - key: AWS_KMS_KEY_ID
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: COINGECKO_API_KEY
+        sync: false
+      - key: BIRDEYE_API_KEY
+        sync: false
+      - key: GOPLUS_API_KEY
+        sync: false
+      - key: RUGCHECK_API_KEY
+        sync: false
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: ETH_RPC_URL
+        sync: false
+      - key: ARBITRUM_RPC_URL
+        sync: false
+      - key: BASE_RPC_URL
+        sync: false
+      - key: ONEINCH_API_KEY
+        sync: false
+      - key: JITO_BUNDLE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DATADOG_API_KEY
+        sync: false
+      - key: SEED_DB_ON_DEPLOY
+        value: "true"
+
+  # ────────────────────────────────────────────────────────────────
+  # Frontend — Next.js 14 exported to /out, served as a static site.
+  # ────────────────────────────────────────────────────────────────
+  - type: web
+    name: qwai-web
+    runtime: static
+    rootDir: .
+    buildCommand: ./scripts/render-web-build.sh
+    staticPublishPath: apps/web/out
+    pullRequestPreviewsEnabled: false
+    autoDeploy: true
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE
+        value: https://qwai-api.onrender.com/api
+      - key: NEXT_PUBLIC_WS_BASE
+        value: wss://qwai-api.onrender.com
+      - key: NEXT_PUBLIC_NETWORK_MODE
+        value: testnet
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=0, must-revalidate
+      - path: /_next/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

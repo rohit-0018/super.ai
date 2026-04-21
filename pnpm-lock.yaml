@@ -20,6 +20,9 @@ importers:
       prisma:
         specifier: ^5.14.0
         version: 5.22.0
+      tsx:
+        specifier: ^4.7.0
+        version: 4.21.0
       turbo:
         specifier: ^2.0.0
         version: 2.9.6
@@ -83,12 +86,18 @@ importers:
       class-validator:
         specifier: ^0.14.0
         version: 0.14.4
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.4.5
       ethers:
         specifier: ^6.12.0
         version: 6.16.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       express:
         specifier: ^4.19.0
         version: 4.22.1
+      grammy:
+        specifier: ^1.27.0
+        version: 1.42.0
       helmet:
         specifier: ^7.1.0
         version: 7.2.0
@@ -147,31 +156,6 @@ importers:
       supertest:
         specifier: ^7.0.0
         version: 7.2.2
-      ts-jest:
-        specifier: ^29.1.0
-        version: 29.4.9(@babel/core@7.29.0)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.0))(jest-util@29.7.0)(jest@29.7.0(@types/node@20.19.39))(typescript@5.9.3)
-      tsx:
-        specifier: ^4.7.0
-        version: 4.21.0
-      typescript:
-        specifier: ^5.4.0
-        version: 5.9.3
-
-  apps/telegram-bot:
-    dependencies:
-      dotenv:
-        specifier: ^16.4.0
-        version: 16.6.1
-      grammy:
-        specifier: ^1.27.0
-        version: 1.42.0
-    devDependencies:
-      '@types/node':
-        specifier: ^20.12.0
-        version: 20.19.39
-      jest:
-        specifier: ^29.7.0
-        version: 29.7.0(@types/node@20.19.39)
       ts-jest:
         specifier: ^29.1.0
         version: 29.4.9(@babel/core@7.29.0)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.0))(jest-util@29.7.0)(jest@29.7.0(@types/node@20.19.39))(typescript@5.9.3)
@@ -2845,10 +2829,6 @@ packages:
 
   dotenv@16.4.5:
     resolution: {integrity: sha512-ZmdL2rui+eB2YwhsWzjInR8LldtZHGDoQ1ugH85ppHKwpUHL7j7rN0Ti9NCnGiQbhaZ11FpR+7ao1dNsmduNUg==}
-    engines: {node: '>=12'}
-
-  dotenv@16.6.1:
-    resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
     engines: {node: '>=12'}
 
   dunder-proto@1.0.1:
@@ -8541,8 +8521,6 @@ snapshots:
   dotenv-expand@10.0.0: {}
 
   dotenv@16.4.5: {}
-
-  dotenv@16.6.1: {}
 
   dunder-proto@1.0.1:
     dependencies:
