@@ -1,12 +1,29 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { AgentStatus } from '@prisma/client';
+import { AgentKind, AgentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+
+export interface CreateAgentInput {
+  userId: string;
+  kind: AgentKind;
+  params: Record<string, any>;
+}
 
 @Injectable()
 export class AgentsService {
   constructor(private prisma: PrismaService) {}
 
   list(userId: string) { return this.prisma.agent.findMany({ where: { userId } }); }
+
+  async create(input: CreateAgentInput) {
+    return this.prisma.agent.create({
+      data: {
+        userId: input.userId,
+        kind: input.kind,
+        status: AgentStatus.RUNNING,
+        params: input.params as any,
+      },
+    });
+  }
 
   async setStatus(userId: string, agentId: string, status: AgentStatus) {
     const a = await this.prisma.agent.findFirst({ where: { id: agentId, userId } });

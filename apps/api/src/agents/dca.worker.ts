@@ -39,7 +39,29 @@ export function startDcaWorker(deps: WorkerDeps): Worker {
 
       const intervalMs = INTERVAL_MS[params.interval] ?? INTERVAL_MS.daily;
       const lastRun = agent.lastRunAt?.getTime() ?? 0;
-      if (now - lastRun < intervalMs) continue;
+      const timeUntilNext = Math.max(0, intervalMs - (now - lastRun));
+      const due = now - lastRun >= intervalMs;
+
+      // Emit a heartbeat so the UI shows the agent is alive and when it fires next
+      if (!due) {
+        const minsLeft = Math.ceil(timeUntilNext / 60_000);
+        const hrsLeft = Math.ceil(timeUntilNext / 3_600_000);
+        const eta = minsLeft > 120 ? `${hrsLeft}h` : `${minsLeft}m`;
+        await deps.notifications.emit({
+          userId: agent.userId,
+          kind: 'DCA_HEARTBEAT',
+          severity: 'INFO',
+          payload: {
+            agentId: agent.id,
+            tokenOut: params.tokenOut,
+            amountUsd: params.amountUsd,
+            interval: params.interval,
+            nextRunIn: eta,
+            message: `DCA ${params.tokenOut?.slice(0, 8)} — next buy ($${params.amountUsd}) in ${eta}`,
+          },
+        });
+        continue;
+      }
 
       try {
         const amountIn = Math.floor(params.amountUsd * 1_000_000).toString(); // assume USDC 6 decimals as base

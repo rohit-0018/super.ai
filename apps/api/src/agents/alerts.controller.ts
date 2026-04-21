@@ -65,4 +65,25 @@ export class AlertsController {
       orderBy: { createdAt: 'desc' },
     });
   }
+
+  /** Events linked to a specific agent (by agentId in payload). */
+  @Get('agent-log')
+  async agentLog(
+    @Req() req: any,
+    @Query('agentId') agentId: string,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    if (!agentId) return [];
+    // AlertEvent.payload is JSONB — filter rows whose payload contains the agentId.
+    return this.prisma.$queryRawUnsafe(
+      `SELECT id, kind, severity, payload, "createdAt"
+       FROM "AlertEvent"
+       WHERE "userId" = $1 AND payload::text LIKE $2
+       ORDER BY "createdAt" DESC
+       LIMIT $3`,
+      req.user.userId,
+      `%${agentId}%`,
+      Math.min(limit, 50),
+    );
+  }
 }

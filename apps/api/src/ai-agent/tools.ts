@@ -73,6 +73,36 @@ export const TOOL_DEFINITIONS = [
   {
     type: 'function' as const,
     function: {
+      name: 'create_agent',
+      description: 'Create and start an autonomous agent that runs in a loop. Supports DCA (dollar-cost averaging), STOP_LOSS (auto-sell on drop), COPY_TRADE (mirror a wallet), POSITION_MONITOR (watch positions), and SNIPE (new token sniping).',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            enum: ['DCA', 'STOP_LOSS', 'COPY_TRADE', 'POSITION_MONITOR', 'SNIPE'],
+            description: 'Type of autonomous agent to create',
+          },
+          chain: { type: 'string', enum: ['SOLANA', 'EVM'], description: 'Blockchain to operate on' },
+          tokenIn: { type: 'string', description: 'Token to spend (e.g. USDC mint address)' },
+          tokenOut: { type: 'string', description: 'Token to buy/monitor' },
+          amountUsd: { type: 'number', description: 'USD amount per execution (for DCA, per interval)' },
+          interval: {
+            type: 'string',
+            enum: ['hourly', 'daily', 'weekly', 'monthly'],
+            description: 'Execution interval for DCA agents',
+          },
+          stopPrice: { type: 'number', description: 'Stop-loss trigger price in USD' },
+          slippageBps: { type: 'number', description: 'Max slippage in basis points (default 100)' },
+          srcWallet: { type: 'string', description: 'Source wallet address to copy (for COPY_TRADE)' },
+        },
+        required: ['kind', 'chain'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'manage_agent',
       description: 'Pause, resume, or kill a running agent.',
       parameters: {

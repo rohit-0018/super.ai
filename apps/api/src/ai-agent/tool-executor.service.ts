@@ -42,6 +42,8 @@ export class ToolExecutorService {
           return await this.placeOrder(userId, args, source);
         case 'list_agents':
           return await this.listAgents(userId);
+        case 'create_agent':
+          return await this.createAgent(userId, args);
         case 'manage_agent':
           return await this.manageAgent(userId, args);
         case 'set_price_alert':
@@ -142,10 +144,16 @@ export class ToolExecutorService {
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, chain: args.chain },
     });
-    if (!wallet) return JSON.stringify({ error: `No ${args.chain} wallet found.` });
+    if (!wallet) {
+      return JSON.stringify({
+        success: false,
+        error: `No ${args.chain} wallet found.`,
+        chatMessage: `❌ **Can't place order**\n\nNo \`${args.chain}\` wallet found. Create one in the Wallets tab first.`,
+      });
+    }
 
-    // DCA / interval orders are scheduled, not one-shot.
-    const effectiveSource = args.interval ? 'SCHEDULED' : (args.type === 'DCA' ? 'DCA' : source);
+    const isDca = args.type === 'DCA' || args.interval;
+    const effectiveSource = isDca ? 'DCA' : source;
 
     const order = await this.prisma.order.create({
       data: {
@@ -163,30 +171,150 @@ export class ToolExecutorService {
           stopLoss: args.stopLoss,
           trailBps: args.trailingPct ? args.trailingPct * 100 : undefined,
           interval: args.interval,
+          notionalUsd: args.notionalUsd,
         },
         source: effectiveSource,
       },
     });
 
+    // For DCA orders, also create an Agent row so the DCA worker picks it up
+    let agentId: string | null = null;
+    if (isDca) {
+      const agent = await this.agents.create({
+        userId,
+        kind: 'DCA',
+        params: {
+          walletId: wallet.id,
+          tokenIn: args.tokenIn,
+          tokenOut: args.tokenOut,
+          amountUsd: args.notionalUsd ?? parseFloat(args.amountIn) / 1e6,
+          interval: args.interval ?? 'daily',
+          chain: args.chain,
+          slippageBps: args.slippageBps ?? 100,
+          orderId: order.id,
+        },
+      });
+      agentId = agent.id;
+    }
+
+    const typeLabel = args.type?.replace('_', ' ').toLowerCase() ?? 'order';
+    const inSym = (args.tokenIn ?? '').length > 10 ? (args.tokenIn ?? '').slice(0, 6) + '…' : (args.tokenIn ?? '');
+    const outSym = (args.tokenOut ?? '').length > 10 ? (args.tokenOut ?? '').slice(0, 6) + '…' : (args.tokenOut ?? '');
+    const details = [
+      `- **Type**: ${args.type}`,
+      `- **Pair**: ${inSym} → ${outSym}`,
+      `- **Amount**: ${args.amountIn}`,
+      args.triggerPrice ? `- **Trigger**: $${args.triggerPrice}` : null,
+      args.takeProfit ? `- **Take profit**: $${args.takeProfit}` : null,
+      args.stopLoss ? `- **Stop loss**: $${args.stopLoss}` : null,
+      args.trailingPct ? `- **Trailing**: ${args.trailingPct}%` : null,
+      args.interval ? `- **Interval**: ${args.interval}` : null,
+      agentId ? `- **Agent**: \`${agentId}\` (running autonomously)` : null,
+    ].filter(Boolean).join('\n');
+
     return JSON.stringify({
       success: true,
       orderId: order.id,
+      agentId,
       type: args.type,
       status: 'ACTIVE',
+      chatMessage: `✅ **${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} placed**\n\nOrder \`${order.id}\`\n${details}\n\nYou can track it in the **Orders** tab.`,
     });
   }
 
   private async listAgents(userId: string): Promise<string> {
-    const agents = await this.agents.list(userId);
-    return JSON.stringify(agents);
+    const agentList = await this.agents.list(userId);
+    if (agentList.length === 0) {
+      return JSON.stringify({
+        agents: [],
+        total: 0,
+        chatMessage: '📝 **No agents running**\n\nYou have no autonomous agents. Create one with a DCA strategy, stop-loss, or copy-trade.',
+      });
+    }
+    const lines = agentList.map((a) => {
+      const status = a.status === 'RUNNING' ? '🟢' : a.status === 'PAUSED' ? '⏸️' : '⛔';
+      return `${status} **${a.kind}** — \`${a.id}\` (${a.status})`;
+    });
+    return JSON.stringify({
+      agents: agentList.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        status: a.status,
+        params: a.params,
+        lastRunAt: a.lastRunAt,
+        createdAt: a.createdAt,
+      })),
+      total: agentList.length,
+      chatMessage: `🤖 **${agentList.length} agent${agentList.length !== 1 ? 's' : ''}**\n\n${lines.join('\n')}`,
+    });
+  }
+
+  private async createAgent(userId: string, args: Record<string, any>): Promise<string> {
+    const wallet = await this.prisma.wallet.findFirst({
+      where: { userId, chain: args.chain },
+    });
+    if (!wallet) {
+      return JSON.stringify({
+        success: false,
+        chatMessage: `❌ **Can't create agent**\n\nNo \`${args.chain}\` wallet found. Create one in the Wallets tab first.`,
+      });
+    }
+
+    const agent = await this.agents.create({
+      userId,
+      kind: args.kind,
+      params: {
+        walletId: wallet.id,
+        tokenIn: args.tokenIn,
+        tokenOut: args.tokenOut,
+        amountUsd: args.amountUsd,
+        interval: args.interval ?? 'daily',
+        chain: args.chain,
+        slippageBps: args.slippageBps ?? 100,
+        stopPrice: args.stopPrice,
+        srcWallet: args.srcWallet,
+      },
+    });
+
+    const kindLabel = args.kind.replace('_', ' ');
+    const details = [
+      args.tokenOut ? `- **Token**: ${args.tokenOut}` : null,
+      args.amountUsd ? `- **Amount**: $${args.amountUsd} per cycle` : null,
+      args.interval ? `- **Interval**: ${args.interval}` : null,
+      args.stopPrice ? `- **Stop price**: $${args.stopPrice}` : null,
+      args.srcWallet ? `- **Copy wallet**: \`${args.srcWallet}\`` : null,
+    ].filter(Boolean).join('\n');
+
+    return JSON.stringify({
+      success: true,
+      agentId: agent.id,
+      kind: args.kind,
+      status: 'RUNNING',
+      chatMessage: `🚀 **${kindLabel} agent created**\n\nAgent \`${agent.id}\` is now **running autonomously**.\n${details}\n\nManage it from the **Agents** tab or tell me to pause/kill it.`,
+    });
   }
 
   private async manageAgent(userId: string, args: Record<string, any>): Promise<string> {
     const { agentId, action } = args;
-    if (action === 'pause') await this.agents.pause(userId, agentId);
-    else if (action === 'resume') await this.agents.resume(userId, agentId);
-    else if (action === 'kill') await this.agents.kill(userId, agentId);
-    return JSON.stringify({ success: true, agentId, action });
+    try {
+      if (action === 'pause') await this.agents.pause(userId, agentId);
+      else if (action === 'resume') await this.agents.resume(userId, agentId);
+      else if (action === 'kill') await this.agents.kill(userId, agentId);
+
+      const emoji = action === 'pause' ? '⏸️' : action === 'resume' ? '▶️' : '⛔';
+      const verb = action === 'pause' ? 'Paused' : action === 'resume' ? 'Resumed' : 'Killed';
+      return JSON.stringify({
+        success: true,
+        agentId,
+        action,
+        chatMessage: `${emoji} **Agent ${verb.toLowerCase()}**\n\nAgent \`${agentId}\` has been ${verb.toLowerCase()}.`,
+      });
+    } catch {
+      return JSON.stringify({
+        success: false,
+        chatMessage: `❌ **Agent not found**\n\nCouldn't find agent \`${agentId}\`. Use **list agents** to see your active agents.`,
+      });
+    }
   }
 
   private async setPriceAlert(userId: string, args: Record<string, any>): Promise<string> {
@@ -199,7 +327,11 @@ export class ToolExecutorService {
         direction: args.direction,
       },
     });
-    return JSON.stringify({ success: true, alertId: alert.id, token: args.token, targetUsd: args.targetUsd, direction: args.direction });
+    return JSON.stringify({
+      success: true,
+      alertId: alert.id,
+      chatMessage: `🔔 **Price alert set**\n\n\`${args.token}\` — alert when price goes **${args.direction}** $${args.targetUsd}\n\nAlert ID: \`${alert.id}\``,
+    });
   }
 
   private async getPortfolio(userId: string): Promise<string> {
@@ -207,7 +339,22 @@ export class ToolExecutorService {
       where: { userId },
       select: { id: true, chain: true, address: true, isPrimary: true },
     });
-    return JSON.stringify({ wallets, count: wallets.length });
+    if (wallets.length === 0) {
+      return JSON.stringify({
+        wallets: [],
+        count: 0,
+        chatMessage: '📝 **No wallets**\n\nYou haven\'t created any wallets yet. Head to the **Wallets** tab to create one.',
+      });
+    }
+    const lines = wallets.map((w) => {
+      const primary = w.isPrimary ? ' ⭐' : '';
+      return `- **${w.chain}**${primary}: \`${w.address}\``;
+    });
+    return JSON.stringify({
+      wallets,
+      count: wallets.length,
+      chatMessage: `💰 **${wallets.length} wallet${wallets.length !== 1 ? 's' : ''}**\n\n${lines.join('\n')}`,
+    });
   }
 
   private async getPerformance(userId: string): Promise<string> {
