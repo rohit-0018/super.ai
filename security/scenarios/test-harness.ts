@@ -221,7 +221,7 @@ export class AgentTestHarness {
 
   private currentPrices: Record<string, number> = {
     'BTC-USD': 50000,
-    'ETH-USD': 3000,
+    'ETH-USD': 3001,
     'SOL-USD': 100,
   };
 
@@ -398,7 +398,7 @@ export class AgentTestHarness {
   reset(): void {
     this.redis.clear();
     this.events.clear();
-    this.currentPrices = { 'BTC-USD': 50000, 'ETH-USD': 3000, 'SOL-USD': 100 };
+    this.currentPrices = { 'BTC-USD': 50000, 'ETH-USD': 3001, 'SOL-USD': 100 };
   }
 
   private buildSecurityConfig(): SecurityConfig {
@@ -441,7 +441,7 @@ export class AgentTestHarness {
       deadManSwitchHeartbeatTimeoutSeconds: 60,
       auditLogOutputPath: '/tmp/test-audit.jsonl',
       hmacChainSecret: 'test-secret',
-      corsAllowedOrigins: ['http://localhost:3000'],
+      corsAllowedOrigins: ['http://localhost:3001'],
       alertWebhookUrls: [],
       alertSlackChannel: '',
       alertSlackWebhookUrl: '',

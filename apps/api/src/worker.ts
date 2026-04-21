@@ -1,4 +1,9 @@
 import 'reflect-metadata';
+import { config as loadDotenv } from 'dotenv';
+import { resolve } from 'path';
+for (const p of [resolve(process.cwd(), '.env'), resolve(__dirname, '../../../.env')]) {
+  loadDotenv({ path: p });
+}
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { AppModule } from './app.module';

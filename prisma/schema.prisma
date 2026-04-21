@@ -172,10 +172,12 @@ model Order {
   amountIn  String      // bigint as string
   params    Json
   txHash    String?
+  traceId   String?
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
   trades    Trade[]
   @@index([userId, status])
+  @@index([traceId])
 }
 
 model Trade {
@@ -194,8 +196,10 @@ model Trade {
   pnlUsd    Float?
   mode      TradeMode @default(LIVE)
   txHash    String?
+  traceId   String?
   createdAt DateTime  @default(now())
   @@index([userId, createdAt])
+  @@index([traceId])
 }
 
 model Agent {
@@ -218,6 +222,7 @@ model AlertEvent {
   severity    AlertSeverity @default(INFO)
   payload     Json
   deliveredAt DateTime?
+  traceId     String?
   createdAt   DateTime      @default(now())
   @@index([userId, createdAt])
 }
@@ -243,6 +248,7 @@ model AuditLog {
   target    String?
   payload   Json?
   ip        String?
+  traceId   String?
   createdAt DateTime @default(now())
   @@index([userId, createdAt])
 }

@@ -28,7 +28,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: noFlashScript }} />
       </head>
-      <body>
+      <body suppressHydrationWarning>
         <ErrorSink />
         {process.env.NEXT_PUBLIC_NETWORK_MODE === 'testnet' && (
           <div

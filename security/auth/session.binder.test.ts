@@ -48,7 +48,7 @@ function makeConfig(): SecurityConfig {
     deadManSwitchHeartbeatTimeoutSeconds: 120,
     auditLogOutputPath: './logs/audit.jsonl',
     hmacChainSecret: 'a'.repeat(32),
-    corsAllowedOrigins: ['http://localhost:3000'],
+    corsAllowedOrigins: ['http://localhost:3001'],
     alertWebhookUrls: [],
     alertSlackChannel: '#security-alerts',
     encryptionKeyId: 'default-enc-key',

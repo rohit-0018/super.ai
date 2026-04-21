@@ -1,8 +1,9 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { Chain, OrderStatus, Prisma, TradeMode } from '@prisma/client';
 import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
 import { ethers } from 'ethers';
 import { getSolanaRpcUrl, getEvmRpcUrl, getEvmChainId, isTestnet, getNetworkMode } from '../common/network-config';
+import { currentTraceId } from '../common/trace-context';
 import { PrismaService } from '../prisma/prisma.service';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { JupiterClient } from './jupiter.client';
@@ -31,6 +32,8 @@ export interface SwapInput {
   slippageBps: number;
   riskFlags?: string[];
   orderId?: string;
+  /** Optional — if absent, falls back to ambient AsyncLocalStorage traceId. */
+  traceId?: string;
 }
 
 export interface SwapResult {
@@ -38,6 +41,7 @@ export interface SwapResult {
   txHash: string | null;
   amountOut: string;
   mode: TradeMode;
+  traceId?: string;
 }
 
 const EVM_CHAIN_IDS: Record<string, number> = {
@@ -57,6 +61,7 @@ export class ExecutionService {
     private oneinch: OneInchClient,
     private wallets: WalletsService,
     private dna: TradingDnaService,
+    @Inject(forwardRef(() => EmotionalIntelService))
     private emotional: EmotionalIntelService,
     private securityCompliance: SecurityComplianceService,
     private riskEngine: RiskEngineService,
@@ -64,6 +69,7 @@ export class ExecutionService {
   ) {}
 
   async swap(input: SwapInput): Promise<SwapResult> {
+    const trace: string | undefined = input.traceId ?? currentTraceId();
     // ── Security layer: audit, compliance, and risk checks ──
     await this.securityAudit.log('SWAP_INITIATED', {
       userId: input.userId,
@@ -73,6 +79,7 @@ export class ExecutionService {
       tokenOut: input.tokenOut,
       amountIn: input.amountIn,
       notionalUsd: input.notionalUsd,
+      traceId: trace,
     }, { userId: input.userId });
 
     const orderAction: PlaceOrderAction = {
@@ -92,8 +99,13 @@ export class ExecutionService {
         userId: input.userId,
         instrument: orderAction.instrument,
         relatedOrderId: washResult.relatedOrderId,
+        traceId: trace,
       }, { userId: input.userId });
-      throw new ForbiddenException('Wash trade detected — swap blocked by compliance');
+      this.logger.warn(`[trc=${trace}] wash trade blocked user=${input.userId} instrument=${orderAction.instrument}`);
+      throw new ForbiddenException({
+        message: 'Wash trade detected — swap blocked by compliance',
+        traceId: trace,
+      });
     }
 
     // Risk engine evaluation
@@ -109,10 +121,13 @@ export class ExecutionService {
         instrument: orderAction.instrument,
         blockReasons: riskResult.blockReasons,
         riskLevel: riskResult.riskLevel,
+        traceId: trace,
       }, { userId: input.userId });
+      this.logger.warn(`[trc=${trace}] risk blocked user=${input.userId} reasons=${(riskResult.blockReasons ?? []).join(',')}`);
       throw new ForbiddenException({
         message: 'Swap blocked by risk engine',
         reasons: riskResult.blockReasons,
+        traceId: trace,
       });
     }
 
@@ -125,7 +140,7 @@ export class ExecutionService {
       slippageBps: input.slippageBps,
       riskFlags: input.riskFlags,
     });
-    if (!decision.ok) throw new ForbiddenException({ guardrail: decision.reason });
+    if (!decision.ok) throw new ForbiddenException({ guardrail: decision.reason, traceId: trace });
 
     const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
     const mode: TradeMode = user?.paperMode ? 'PAPER' : 'LIVE';
@@ -157,28 +172,36 @@ export class ExecutionService {
             outAmount = quote?.dstAmount ?? input.amountIn;
           }
         } catch (quoteErr: any) {
-          this.logger.warn(`Paper mode quote failed (using simulated amount): ${quoteErr.message}`);
+          this.logger.warn(`[trc=${trace}] Paper mode quote failed (using simulated amount): ${quoteErr.message}`);
           outAmount = input.amountIn; // 1:1 simulated ratio
         }
         txHash = `paper-${Date.now().toString(36)}`;
         await this.updatePaperBalance(input.userId, input.tokenOut, outAmount);
       }
     } catch (err: any) {
-      this.logger.error(`swap failed user=${input.userId} chain=${input.chain}: ${err.message}`);
+      this.logger.error(`[trc=${trace}] swap failed user=${input.userId} chain=${input.chain}: ${err.message}`);
       await this.prisma.auditLog.create({
         data: {
           userId: input.userId,
           action: 'execution.swap.failed',
           target: input.tokenOut,
-          payload: { reason: err.message, mode } as unknown as Prisma.InputJsonValue,
+          payload: { reason: err.message, mode, traceId: trace } as unknown as Prisma.InputJsonValue,
         },
       });
       if (input.orderId) {
         await this.prisma.order.update({
           where: { id: input.orderId },
-          data: { status: OrderStatus.FAILED },
+          data: { status: OrderStatus.FAILED, ...(trace ? { traceId: trace } : {}) } as unknown as Prisma.OrderUpdateInput,
         });
       }
+      await this.securityAudit.log('SWAP_FAILED', {
+        userId: input.userId,
+        chain: input.chain,
+        tokenIn: input.tokenIn,
+        tokenOut: input.tokenOut,
+        reason: err.message,
+        traceId: trace,
+      }, { userId: input.userId });
       throw err;
     }
 
@@ -195,13 +218,18 @@ export class ExecutionService {
         priceUsd: input.notionalUsd,
         mode,
         txHash: txHash ?? undefined,
-      },
+        ...(trace ? { traceId: trace } : {}),
+      } as unknown as Prisma.TradeCreateInput,
     });
 
     if (input.orderId) {
       await this.prisma.order.update({
         where: { id: input.orderId },
-        data: { status: OrderStatus.FILLED, txHash: txHash ?? undefined },
+        data: {
+          status: OrderStatus.FILLED,
+          txHash: txHash ?? undefined,
+          ...(trace ? { traceId: trace } : {}),
+        } as unknown as Prisma.OrderUpdateInput,
       });
     }
 
@@ -216,41 +244,46 @@ export class ExecutionService {
       tokenOut: input.tokenOut,
       amountIn: input.amountIn,
       amountOut: outAmount,
+      traceId: trace,
     }, { userId: input.userId });
 
+    this.logger.log(`[trc=${trace}] swap completed user=${input.userId} trade=${trade.id} mode=${mode} txHash=${txHash ?? 'none'}`);
+
     await this.dna.recordTrade(input.userId, { pnlUsd: 0, holdMinutes: 0 });
-    this.emotional.evaluate(input.userId).catch((e) => this.logger.warn(`Emotional eval failed: ${e.message}`));
+    this.emotional.evaluate(input.userId).catch((e) => this.logger.warn(`[trc=${trace}] Emotional eval failed: ${e.message}`));
     await this.prisma.auditLog.create({
       data: {
         userId: input.userId,
         action: 'execution.swap',
         target: input.tokenOut,
-        payload: { mode, txHash, decision } as unknown as Prisma.InputJsonValue,
+        payload: { mode, txHash, decision, traceId: trace } as unknown as Prisma.InputJsonValue,
       },
     });
 
-    return { tradeId: trade.id, txHash, amountOut: outAmount, mode };
+    return { tradeId: trade.id, txHash, amountOut: outAmount, mode, traceId: trace };
   }
 
   async multiWalletBuy(userId: string, walletIds: string[], input: Omit<SwapInput, 'userId' | 'walletId'>): Promise<SwapResult[]> {
+    const trace = input.traceId ?? currentTraceId();
     const results: SwapResult[] = [];
     for (const walletId of walletIds) {
       try {
-        const result = await this.swap({ ...input, userId, walletId });
+        const result = await this.swap({ ...input, userId, walletId, traceId: trace });
         results.push(result);
       } catch (e: any) {
-        this.logger.warn(`Multi-wallet buy wallet=${walletId} failed: ${e.message}`);
-        results.push({ tradeId: '', txHash: null, amountOut: '0', mode: 'PAPER' as TradeMode });
+        this.logger.warn(`[trc=${trace}] Multi-wallet buy wallet=${walletId} failed: ${e.message}`);
+        results.push({ tradeId: '', txHash: null, amountOut: '0', mode: 'PAPER' as TradeMode, traceId: trace });
       }
     }
     return results;
   }
 
   private async executeSolana(input: SwapInput): Promise<{ txHash: string; outAmount: string }> {
+    const trace: string | undefined = input.traceId ?? currentTraceId();
     const wallet = await this.prisma.wallet.findFirst({
       where: { id: input.walletId, userId: input.userId },
     });
-    if (!wallet) throw new ForbiddenException();
+    if (!wallet) throw new ForbiddenException({ message: 'wallet not found', traceId: trace });
 
     const quote = await this.jup.quote(input.tokenIn, input.tokenOut, input.amountIn, input.slippageBps);
     const swap = await this.jup.swapTx(quote, wallet.address, true);
@@ -261,7 +294,7 @@ export class ExecutionService {
     // Testnet: Jupiter mock returns no swapTransaction. Do a direct SOL
     // transfer to self as a recorded on-chain tx instead.
     if (swap?.testnetMock || !swap?.swapTransaction) {
-      this.logger.log(`[testnet] Executing devnet SOL self-transfer for trade record`);
+      this.logger.log(`[trc=${trace}] [testnet] Executing devnet SOL self-transfer for trade record`);
       const { SystemProgram, Transaction, sendAndConfirmTransaction, PublicKey } = await import('@solana/web3.js');
       const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
         const kp = Keypair.fromSecretKey(new Uint8Array(key));
@@ -297,10 +330,11 @@ export class ExecutionService {
   }
 
   private async executeEvm(input: SwapInput): Promise<{ txHash: string; outAmount: string }> {
+    const trace: string | undefined = input.traceId ?? currentTraceId();
     const wallet = await this.prisma.wallet.findFirst({
       where: { id: input.walletId, userId: input.userId },
     });
-    if (!wallet) throw new ForbiddenException();
+    if (!wallet) throw new ForbiddenException({ message: 'wallet not found', traceId: trace });
 
     const chainId = this.resolveEvmChainId(input);
     const rpcUrl = this.resolveEvmRpc(chainId);
@@ -317,7 +351,7 @@ export class ExecutionService {
 
     // Testnet: 1inch mock returns no real calldata. Do a self-transfer.
     if (swap?.testnetMock || !swap?.tx?.data) {
-      this.logger.log(`[testnet] Executing Sepolia self-transfer for trade record`);
+      this.logger.log(`[trc=${trace}] [testnet] Executing Sepolia self-transfer for trade record`);
       const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
         const signer = new ethers.Wallet('0x' + key.toString('hex'), provider);
         const sent = await signer.sendTransaction({

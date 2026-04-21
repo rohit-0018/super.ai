@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { Worker } from 'bullmq';
 import { makeQueue, makeWorker, QUEUES } from './queues';
 import type { WorkerDeps } from './worker.bootstrap';
+import { newTraceId, withTrace } from '../common/trace-context';
 
 const BRIEFING_HOUR = 8; // local 08:00
 
@@ -10,42 +11,52 @@ export function startBriefingWorker(deps: WorkerDeps): Worker {
   const queue = makeQueue(QUEUES.BRIEFING);
 
   return makeWorker(QUEUES.BRIEFING, async (job) => {
+    const jobTrace: string | undefined = (job.data as { traceId?: string } | undefined)?.traceId;
+
     // Per-user briefing job.
     if (job.name === 'briefing-user') {
-      const { userId } = job.data as { userId: string };
-      return deliverBriefing(deps, userId);
+      const { userId } = job.data as { userId: string; traceId?: string };
+      return withTrace(() => deliverBriefing(deps, userId), { traceId: jobTrace, userId });
     }
 
     // Scheduler tick: find users whose local time is 08:00 and enqueue per-user jobs.
-    // Timezone is stored on User.riskProfile.tz (falls back to UTC).
-    const users = await deps.prisma.user.findMany({
-      select: { id: true, riskProfile: true },
-      take: 1000,
-    });
-
-    let queued = 0;
-    for (const u of users) {
-      const tz = extractTz(u.riskProfile) ?? 'UTC';
-      const localHour = currentHourInTz(tz);
-      if (localHour !== BRIEFING_HOUR) continue;
-
-      // Dedupe: one briefing per user per day.
-      const today = new Date().toISOString().slice(0, 10);
-      const already = await deps.prisma.alertEvent.findFirst({
-        where: {
-          userId: u.id,
-          kind: 'BRIEFING',
-          createdAt: { gte: new Date(today + 'T00:00:00Z') },
-        },
+    return withTrace(async () => {
+      const users = await deps.prisma.user.findMany({
+        select: { id: true, riskProfile: true },
+        take: 1000,
       });
-      if (already) continue;
 
-      await queue.add('briefing-user', { userId: u.id }, { removeOnComplete: 50 });
-      queued++;
-    }
+      let queued = 0;
+      for (const u of users) {
+        const tz = extractTz(u.riskProfile) ?? 'UTC';
+        const localHour = currentHourInTz(tz);
+        if (localHour !== BRIEFING_HOUR) continue;
 
-    logger.debug(`briefing scheduler: queued ${queued}/${users.length}`);
-    return { ok: true, queued };
+        // Dedupe: one briefing per user per day.
+        const today = new Date().toISOString().slice(0, 10);
+        const already = await deps.prisma.alertEvent.findFirst({
+          where: {
+            userId: u.id,
+            kind: 'BRIEFING',
+            createdAt: { gte: new Date(today + 'T00:00:00Z') },
+          },
+        });
+        if (already) continue;
+
+        // Each per-user briefing gets its own traceId that follows through to
+        // the AlertEvent, WS push and Telegram message.
+        const userTrace = newTraceId();
+        await queue.add(
+          'briefing-user',
+          { userId: u.id, traceId: userTrace },
+          { removeOnComplete: 50 },
+        );
+        queued++;
+      }
+
+      logger.debug(`[trc=${jobTrace ?? 'tick'}] briefing scheduler: queued ${queued}/${users.length}`);
+      return { ok: true, queued };
+    }, { traceId: jobTrace });
   });
 }
 

@@ -59,7 +59,7 @@ describe('Scenario 1: Happy path — agent places a valid trade', () => {
 
     // Step 3: Output filter validates the order
     const portfolio = harness.buildPortfolio([
-      harness.buildPosition('ETH-USD', 10, 2800, 3000),
+      harness.buildPosition('ETH-USD', 10, 2800, 3001),
     ]);
     const result = await harness.outputFilter.process(agentOutput, portfolio);
 
@@ -177,7 +177,7 @@ describe('Scenario 3: LLM hallucination — impossible order', () => {
 
     // Already have 600K in portfolio
     const portfolio = harness.buildPortfolio([
-      harness.buildPosition('ETH-USD', 200, 2800, 3000), // 200 * 3000 = 600K
+      harness.buildPosition('ETH-USD', 200, 2800, 3001), // 200 * 3001 = 600K
     ]);
 
     const result = await harness.outputFilter.process(largeOrder, portfolio);
@@ -483,7 +483,7 @@ describe('Scenario 10: Short sell blocked for cash account', () => {
       instrument: 'ETH-USD',
       side: OrderSide.SELL,
       quantity: 10,
-      price: 3000,
+      price: 3001,
     });
 
     // Empty portfolio — no ETH held
@@ -499,7 +499,7 @@ describe('Scenario 10: Short sell blocked for cash account', () => {
       instrument: 'ETH-USD',
       side: OrderSide.SELL,
       quantity: 10,
-      price: 3000,
+      price: 3001,
     });
 
     const portfolio = harness.buildPortfolio();
@@ -513,11 +513,11 @@ describe('Scenario 10: Short sell blocked for cash account', () => {
       instrument: 'ETH-USD',
       side: OrderSide.SELL,
       quantity: 5,
-      price: 3000,
+      price: 3001,
     });
 
     const portfolio = harness.buildPortfolio([
-      harness.buildPosition('ETH-USD', 10, 2800, 3000),
+      harness.buildPosition('ETH-USD', 10, 2800, 3001),
     ]);
     const result = await harness.shortSellControl.check(sellOrder, portfolio, AccountType.CASH);
     expect(result.allowed).toBe(true);
@@ -532,7 +532,7 @@ describe('Scenario 10: Short sell blocked for cash account', () => {
 describe('Scenario 11: Multi-turn conversation with escalating risk', () => {
   it('should process a full multi-turn trading session', async () => {
     const portfolio = harness.buildPortfolio([
-      harness.buildPosition('ETH-USD', 10, 2800, 3000), // 30K notional
+      harness.buildPosition('ETH-USD', 10, 2800, 3001), // 30K notional
     ]);
 
     // Turn 1: User asks agent to analyze BTC (safe input)
@@ -560,7 +560,7 @@ describe('Scenario 11: Multi-turn conversation with escalating risk', () => {
       instrument: 'ETH-USD',
       side: OrderSide.BUY,
       quantity: 50,
-      price: 3000,
+      price: 3001,
     });
     const result2 = await harness.outputFilter.process(mediumOrder, portfolio);
     expect(result2.allowed).toBe(true);
@@ -575,7 +575,7 @@ describe('Scenario 11: Multi-turn conversation with escalating risk', () => {
 
     // Update portfolio to reflect prior orders
     const updatedPortfolio = harness.buildPortfolio([
-      harness.buildPosition('ETH-USD', 60, 2900, 3000), // 180K
+      harness.buildPosition('ETH-USD', 60, 2900, 3001), // 180K
       harness.buildPosition('BTC-USD', 1, 50000, 50000), // 50K
     ]);
 

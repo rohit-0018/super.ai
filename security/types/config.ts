@@ -130,7 +130,7 @@ export const SecurityConfigSchema = z.object({
     .describe('HMAC secret for audit log chain integrity (min 32 chars)'),
 
   // ── CORS ───────────────────────────────────────────────────────────────
-  corsAllowedOrigins: z.array(z.string().url()).default(['http://localhost:3000'])
+  corsAllowedOrigins: z.array(z.string().url()).default(['http://localhost:3001'])
     .describe('Array of allowed CORS origins'),
 
   // ── Alerts ─────────────────────────────────────────────────────────────

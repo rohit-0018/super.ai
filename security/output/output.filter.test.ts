@@ -93,7 +93,7 @@ interface TestDeps {
 }
 
 function createOutputFilter(
-  priceMap: Record<string, number> = { 'BTC-USDT': 50000, 'ETH-USDT': 3000 },
+  priceMap: Record<string, number> = { 'BTC-USDT': 50000, 'ETH-USDT': 3001 },
   redisStore: Map<string, string> = new Map(),
 ): TestDeps {
   const logger = createLogger();

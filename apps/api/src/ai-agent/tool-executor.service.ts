@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionService } from '../execution/execution.service';
 import { TokenIntelService } from '../token-intel/token-intel.service';
 import { AgentsService } from '../agents/agents.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { currentTraceId } from '../common/trace-context';
 
 @Injectable()
 export class ToolExecutorService {
@@ -18,7 +20,8 @@ export class ToolExecutorService {
   ) {}
 
   async execute(userId: string, toolName: string, args: Record<string, any>): Promise<string> {
-    this.logger.log(`Tool call: ${toolName} for user=${userId}`);
+    const trace: string | undefined = currentTraceId();
+    this.logger.log(`[trc=${trace ?? 'none'}] Tool call: ${toolName} for user=${userId}`);
 
     try {
       switch (toolName) {
@@ -42,8 +45,8 @@ export class ToolExecutorService {
           return JSON.stringify({ error: `Unknown tool: ${toolName}` });
       }
     } catch (err: any) {
-      this.logger.error(`Tool ${toolName} failed: ${err.message}`);
-      return JSON.stringify({ error: err.message });
+      this.logger.error(`[trc=${trace ?? 'none'}] Tool ${toolName} failed: ${err.message}`);
+      return JSON.stringify({ error: err.message, traceId: trace });
     }
   }
 
@@ -57,6 +60,7 @@ export class ToolExecutorService {
     }
     const w = wallet ?? await this.prisma.wallet.findFirst({ where: { userId, chain: args.chain } });
 
+    const trace: string | undefined = currentTraceId();
     const result = await this.execution.swap({
       userId,
       walletId: w!.id,
@@ -66,6 +70,7 @@ export class ToolExecutorService {
       amountIn: args.amountIn,
       notionalUsd: args.notionalUsd ?? 0,
       slippageBps: args.slippageBps ?? 150,
+      traceId: trace,
     });
 
     return JSON.stringify({
@@ -74,6 +79,7 @@ export class ToolExecutorService {
       txHash: result.txHash,
       amountOut: result.amountOut,
       mode: result.mode,
+      traceId: result.traceId ?? trace,
     });
   }
 
@@ -88,6 +94,7 @@ export class ToolExecutorService {
     });
     if (!wallet) return JSON.stringify({ error: `No ${args.chain} wallet found.` });
 
+    const trace: string | undefined = currentTraceId();
     const order = await this.prisma.order.create({
       data: {
         userId,
@@ -105,7 +112,23 @@ export class ToolExecutorService {
           trailBps: args.trailingPct ? args.trailingPct * 100 : undefined,
           interval: args.interval,
         },
-      },
+        ...(trace ? { traceId: trace } : {}),
+      } as unknown as Prisma.OrderCreateInput,
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId,
+        action: 'tool.place_order',
+        target: order.id,
+        payload: {
+          type: args.type,
+          tokenIn: args.tokenIn,
+          tokenOut: args.tokenOut,
+          traceId: trace,
+        } as unknown as Prisma.InputJsonValue,
+        ...(trace ? { traceId: trace } : {}),
+      } as unknown as Prisma.AuditLogCreateInput,
     });
 
     return JSON.stringify({
@@ -113,6 +136,7 @@ export class ToolExecutorService {
       orderId: order.id,
       type: args.type,
       status: 'ACTIVE',
+      traceId: trace,
     });
   }
 

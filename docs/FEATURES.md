@@ -11,7 +11,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 
 - [x] A1 — Monorepo scaffold (Turborepo)
 - [x] A2 — CI/CD pipeline (GitHub Actions + staging-deploy.yml with staging→prod gate)
-- [x] A3 — Docker configs (api + web + telegram-bot)
+- [x] A3 — Docker configs (api with embedded Telegram + web)
 - [x] A4 — PostgreSQL schema + Prisma migrations
 - [x] A5 — Redis (session, conversation memory, BullMQ)
 - [x] A6 — JWT auth with access + refresh rotation

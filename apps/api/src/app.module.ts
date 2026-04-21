@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { resolve } from 'path';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module';
@@ -19,11 +20,20 @@ import { WsModule } from './ws/ws.module';
 import { UsersModule } from './users/users.module';
 import { NewsModule } from './news/news.module';
 import { SecurityModule } from './security/security.module';
+import { TelegramModule } from './telegram/telegram.module';
 import { HealthController } from './health.controller';
+import { TraceMiddleware } from './common/trace.middleware';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [
+        resolve(process.cwd(), '.env'),
+        resolve(process.cwd(), '../../.env'),
+        resolve(__dirname, '../../../.env'),
+      ],
+    }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     SecurityModule,
     PrismaModule,
@@ -42,8 +52,16 @@ import { HealthController } from './health.controller';
     WsModule,
     UsersModule,
     NewsModule,
+    TelegramModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    // Must run before auth so any generated id is stamped on the response; auth
+    // still runs downstream and populates req.user — but by that point the
+    // traceStore scope is already live, so subsequent services see the traceId.
+    consumer.apply(TraceMiddleware).forRoutes('*');
+  }
+}

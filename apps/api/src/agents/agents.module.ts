@@ -9,9 +9,16 @@ import { WsModule } from '../ws/ws.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ExecutionModule } from '../execution/execution.module';
 import { MarketDataModule } from '../market-data/market-data.module';
+import { TelegramModule } from '../telegram/telegram.module';
 
 @Module({
-  imports: [WsModule, PrismaModule, forwardRef(() => ExecutionModule), MarketDataModule],
+  imports: [
+    WsModule,
+    PrismaModule,
+    forwardRef(() => ExecutionModule),
+    MarketDataModule,
+    forwardRef(() => TelegramModule),
+  ],
   providers: [AgentsService, NotificationsService, EmotionalIntelService, WorkerBootstrap],
   controllers: [AgentsController, AlertsController],
   exports: [AgentsService, NotificationsService, EmotionalIntelService],

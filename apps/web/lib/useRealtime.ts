@@ -60,7 +60,7 @@ async function getSocket(apiBase: string): Promise<any> {
     await new Promise<void>((resolve) => {
       if (socket.connected) { resolve(); return; }
       socket.once('connect', resolve);
-      setTimeout(resolve, 3000);
+      setTimeout(resolve, 3001);
     });
   })();
   await connectPromise;

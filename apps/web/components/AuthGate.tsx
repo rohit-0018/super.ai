@@ -1,14 +1,17 @@
 'use client';
 import { useEffect } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useAuth } from '../lib/auth-store';
 import { useRealtime } from '../lib/useRealtime';
 
-const PUBLIC_ROUTES = ['/', '/login'];
+const PUBLIC_ROUTES = ['/', '/login', '/login/'];
+
+function isPublic(pathname: string) {
+  return PUBLIC_ROUTES.includes(pathname) || pathname.startsWith('/login');
+}
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const { accessToken, hydrated, hydrate } = useAuth();
-  const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
@@ -17,15 +20,15 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    if (!accessToken && !PUBLIC_ROUTES.includes(pathname)) {
-      router.replace('/login');
+    if (!accessToken && !isPublic(pathname)) {
+      window.location.replace('/login/');
     }
-  }, [hydrated, accessToken, pathname, router]);
+  }, [hydrated, accessToken, pathname]);
 
   // Connect to WebSocket for real-time updates (no-op on public pages / when not authed)
   useRealtime('_noop', () => {});
 
-  const blocked = !hydrated || (!accessToken && !PUBLIC_ROUTES.includes(pathname));
+  const blocked = !hydrated || (!accessToken && !isPublic(pathname));
   if (blocked) {
     return <div className="p-8 text-[13px] text-[color:var(--text-3)]">Loading…</div>;
   }

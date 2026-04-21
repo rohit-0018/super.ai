@@ -114,5 +114,5 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO "PriceAlert" (id, "userId", token, chain, "targetUsd", direction, fired, "createdAt") VALUES
 ('pa-seed-01', 'cmnum5z6z0000dxmdronja7ic', 'SOL', 'SOLANA', 160.00, 'above', false, NOW() - INTERVAL '2 days'),
 ('pa-seed-02', 'cmnum5z6z0000dxmdronja7ic', 'SOL', 'SOLANA', 125.00, 'below', false, NOW() - INTERVAL '2 days'),
-('pa-seed-03', 'cmnum5z6z0000dxmdronja7ic', 'ETH', 'EVM',    3000.0, 'above', false, NOW() - INTERVAL '1 day')
+('pa-seed-03', 'cmnum5z6z0000dxmdronja7ic', 'ETH', 'EVM',    3001.0, 'above', false, NOW() - INTERVAL '1 day')
 ON CONFLICT (id) DO NOTHING;

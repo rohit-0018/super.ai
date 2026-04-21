@@ -2,9 +2,13 @@
 	prisma-generate prisma-migrate prisma-studio prisma-reset \
 	infra-up infra-down infra-restart infra-logs infra-ps infra-nuke \
 	logs-postgres logs-redis \
-	dev dev-api dev-worker dev-web dev-bot dev-all dev-stop
+	dev dev-api dev-worker dev-web dev-all dev-stop
 
 SHELL := /bin/bash
+# Make every recipe source nvm so pnpm/node resolve even if make is invoked
+# from a non-interactive shell (IDE terminals, root sudo, etc).
+export BASH_ENV := $(HOME)/.nvm/nvm.sh
+.SHELLFLAGS := -c
 COMPOSE ?= docker compose
 PNPM ?= pnpm
 
@@ -62,8 +66,9 @@ db-seed: ## Seed database with test data (trades, agents, alerts, orders)
 	@echo ">> Seeded: trades, agents, alerts, orders, trading DNA, paper balances, chat history"
 
 # ---------- infra (postgres + redis only, in docker) ----------
-# App services (api, worker, web, telegram-bot) run natively on the host
-# with hot reload. Docker is only used for the data stores.
+# App services (api, worker, web) run natively on the host with hot reload.
+# The Telegram bot is embedded in the API process. Docker is only used for
+# the data stores.
 infra-up: ## Start postgres + redis
 	$(COMPOSE) up -d --remove-orphans
 
@@ -93,14 +98,12 @@ dev-worker: ## Run worker with hot reload (nest --watch, worker entry)
 	$(PNPM) --filter @qwai/api dev:worker
 dev-web: ## Run web with hot reload (next dev / fast refresh)
 	$(PNPM) --filter @qwai/web dev
-dev-bot: ## Run telegram bot with hot reload (tsx watch)
-	$(PNPM) --filter @qwai/telegram-bot dev
 
-dev-kill: ## Kill anything on dev ports (3000, 4400) before starting
-	@-lsof -ti:3000 2>/dev/null | xargs kill -9 2>/dev/null || true
+dev-kill: ## Kill anything on dev ports (3001, 4400) before starting
+	@-lsof -ti:3001 2>/dev/null | xargs kill -9 2>/dev/null || true
 	@-lsof -ti:4400 2>/dev/null | xargs kill -9 2>/dev/null || true
 	@sleep 1
-	@echo ">> ports 3000 + 4400 cleared"
+	@echo ">> ports 3001 + 4400 cleared"
 
 dev-stop: ## Kill stray host dev processes
 	-pkill -f "nest start --watch" 2>/dev/null || true
@@ -108,13 +111,12 @@ dev-stop: ## Kill stray host dev processes
 	-pkill -f "tsx watch" 2>/dev/null || true
 	@$(MAKE) dev-kill
 
-dev-all: infra-up dev-kill ## Start infra + api + worker + web + bot with hot reload
-	@echo ">> infra up. starting api, worker, web, bot on host. Ctrl+C stops all."
+dev-all: infra-up dev-kill ## Start infra + api (with bot) + worker + web with hot reload
+	@echo ">> infra up. starting api, worker, web on host. Ctrl+C stops all."
 	@trap 'kill 0' INT TERM; \
 		( $(PNPM) --filter @qwai/api dev          2>&1 | awk '{print "[api]    " $$0; fflush()}' ) & \
 		( $(PNPM) --filter @qwai/api dev:worker   2>&1 | awk '{print "[worker] " $$0; fflush()}' ) & \
 		( $(PNPM) --filter @qwai/web dev          2>&1 | awk '{print "[web]    " $$0; fflush()}' ) & \
-		( $(PNPM) --filter @qwai/telegram-bot dev 2>&1 | awk '{print "[bot]    " $$0; fflush()}' ) & \
 		wait
 
 dev: dev-all ## Alias for dev-all

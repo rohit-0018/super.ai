@@ -8,9 +8,8 @@ QWAI is a personal AI trading agent for crypto markets. Web dashboard + Telegram
 apps/
   api/           NestJS backend (auth, wallets/KMS, market-data, token-intel,
                  ai-agent, execution, guardrails, paper-trading, agents,
-                 analytics, social, cex, ws)
+                 analytics, social, cex, ws, telegram)
   web/           Next.js 14 dashboard
-  telegram-bot/  Grammy bot
 prisma/          Prisma schema (Postgres)
 docs/            REQUIREMENTS.md, ARCHITECTURE.md
 .github/         CI workflow
@@ -24,11 +23,11 @@ pnpm install
 cp .env.example .env          # fill in secrets — see "Required secrets" below
 pnpm docker:up                # postgres + redis
 pnpm prisma:migrate           # initial DB schema
-pnpm dev                      # turbo runs api, web, telegram-bot
+pnpm dev                      # turbo runs api (with Telegram bot embedded) + web
 ```
 
 API → http://localhost:4000/api
-Web → http://localhost:3000
+Web → http://localhost:3001
 
 ## Required secrets (set in `.env`)
 - `JWT_SECRET` — ≥32 bytes

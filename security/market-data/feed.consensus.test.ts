@@ -143,7 +143,7 @@ describe('FeedConsensus', () => {
 
     // Override get: binance returns price, coinbase returns null (expired)
     redis.get.mockImplementation(async (key: string) => {
-      if (key.includes('binance')) return '3000';
+      if (key.includes('binance')) return '3001';
       return null;
     });
 

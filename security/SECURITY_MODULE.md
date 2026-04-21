@@ -423,7 +423,7 @@ const config: SecurityConfig = {
 | `deadManSwitchHeartbeatTimeoutSeconds` | `number` | `120` | Heartbeat timeout before kill switch triggers |
 | `auditLogOutputPath` | `string` | `./logs/audit.jsonl` | Path for HMAC-chained audit log |
 | `hmacChainSecret` | `string` | (required, min 32 chars) | HMAC secret for audit chain integrity |
-| `corsAllowedOrigins` | `string[]` | `['http://localhost:3000']` | Allowed CORS origins |
+| `corsAllowedOrigins` | `string[]` | `['http://localhost:3001']` | Allowed CORS origins |
 | `alertWebhookUrls` | `string[]` | `[]` | Webhook URLs for alerts |
 | `alertSlackChannel` | `string` | `'#security-alerts'` | Slack channel for alerts |
 | `alertSlackWebhookUrl` | `string?` | (optional) | Slack webhook URL |
@@ -483,7 +483,7 @@ async function main() {
   //   security.complianceServices.shortSellControl
   //   security.complianceServices.tradeReporter
 
-  app.listen(3000, () => {
+  app.listen(3001, () => {
     console.log('Server running with security middleware');
   });
 }

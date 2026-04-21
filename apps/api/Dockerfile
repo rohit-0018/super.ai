@@ -7,7 +7,6 @@ FROM base AS build
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml .npmrc* turbo.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
-COPY apps/telegram-bot/package.json apps/telegram-bot/
 COPY prisma ./prisma
 RUN pnpm install --frozen-lockfile || pnpm install
 COPY apps/api ./apps/api

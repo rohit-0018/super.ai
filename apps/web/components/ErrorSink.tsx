@@ -10,13 +10,9 @@ export default function ErrorSink() {
   useEffect(() => {
     const onRejection = (e: PromiseRejectionEvent) => {
       console.error('[unhandled rejection]', e.reason);
-      e.preventDefault();
     };
     const onError = (e: ErrorEvent) => {
-      // React render errors still reach the error boundary; this only catches
-      // stray window.onerror (script loads, extension noise, async callbacks).
       console.error('[window error]', e.error ?? e.message);
-      e.preventDefault();
     };
     window.addEventListener('unhandledrejection', onRejection);
     window.addEventListener('error', onError);

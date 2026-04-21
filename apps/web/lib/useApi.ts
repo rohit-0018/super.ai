@@ -99,7 +99,7 @@ export function useApi<T = any>(
   error: string | null;
   refresh: () => Promise<void>;
 } {
-  const { auth = true, pollMs, ttlMs = 3000, enabled = true } = opts;
+  const { auth = true, pollMs, ttlMs = 3001, enabled = true } = opts;
   const { accessToken, hydrated } = useAuth();
   const [, setTick] = useState(0);
   const mounted = useRef(true);

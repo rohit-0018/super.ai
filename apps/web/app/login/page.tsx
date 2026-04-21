@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { ethers } from 'ethers';
+import bs58 from 'bs58';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth-store';
 import { useRouter } from 'next/navigation';
@@ -75,11 +76,10 @@ export default function Login() {
       const address = resp.publicKey.toString();
       const { data: { nonce, message } } = await api.post('/auth/nonce', { address, chain: 'SOLANA' });
       const sig = await provider.signMessage(new TextEncoder().encode(message));
-      const bs58 = await import('bs58');
       const { data } = await api.post('/auth/verify', {
         address,
         chain: 'SOLANA',
-        signature: bs58.default.encode(sig.signature),
+        signature: bs58.encode(sig.signature),
         nonce,
       });
       setTokens(data.accessToken, data.refreshToken, data.expiresIn);

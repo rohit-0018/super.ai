@@ -10,6 +10,9 @@
     "test:e2e": "turbo run test:e2e",
     "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema=./prisma/schema.prisma",
+    "prisma:deploy": "prisma migrate deploy --schema=./prisma/schema.prisma",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "render:predeploy": "./scripts/render-predeploy.sh",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"
   },
@@ -17,9 +20,13 @@
     "turbo": "^2.0.0",
     "typescript": "^5.4.0",
     "prisma": "^5.14.0",
+    "tsx": "^4.7.0",
     "@types/node": "^20.12.0",
     "eslint": "^8.57.0",
     "prettier": "^3.2.0"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "engines": { "node": ">=20" },
   "packageManager": "pnpm@9.1.0"

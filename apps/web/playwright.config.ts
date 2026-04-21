@@ -6,13 +6,13 @@ export default defineConfig({
   fullyParallel: true,
   reporter: 'list',
   use: {
-    baseURL: process.env.WEB_BASE_URL ?? 'http://localhost:3000',
+    baseURL: process.env.WEB_BASE_URL ?? 'http://localhost:3001',
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     command: 'pnpm dev',
-    port: 3000,
+    port: 3001,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

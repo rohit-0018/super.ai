@@ -1,5 +1,11 @@
 import { Queue, QueueEvents, Worker, Processor } from 'bullmq';
 import IORedis from 'ioredis';
+import { config as loadDotenv } from 'dotenv';
+import { resolve } from 'path';
+for (const p of [resolve(process.cwd(), '.env'), resolve(__dirname, '../../../../.env')]) {
+  loadDotenv({ path: p });
+}
+import { currentTraceId, newTraceId } from '../common/trace-context';
 
 export const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
   maxRetriesPerRequest: null,
@@ -13,6 +19,7 @@ export const QUEUES = {
   SNIPE: 'snipe',
   BRIEFING: 'briefing',
   NOTIFICATIONS: 'notifications',
+  TELEGRAM_SEND: 'telegram-send',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -25,4 +32,30 @@ export function makeWorker(name: QueueName, processor: Processor) {
 }
 export function makeEvents(name: QueueName) {
   return new QueueEvents(name, { connection });
+}
+
+/**
+ * Enrich arbitrary job data with a traceId so the producing request's trace
+ * continues across the BullMQ boundary. If no ambient traceId is active
+ * (e.g. a scheduled tick) a fresh one is generated so the job still has a
+ * handle consumers can re-enter a trace scope with.
+ */
+export function makeJobData<T extends Record<string, unknown>>(
+  data: T = {} as T,
+): T & { traceId: string } {
+  const traceId = currentTraceId() ?? newTraceId();
+  return { ...data, traceId };
+}
+
+/**
+ * Convenience wrapper that returns both merged `data` (with traceId) and
+ * untouched `opts`, for use with `queue.add(name, data, opts)`.
+ */
+export function makeJobOpts<T extends Record<string, unknown>>(
+  input: { data?: T; opts?: Record<string, unknown> } = {},
+): { data: T & { traceId: string }; opts: Record<string, unknown> } {
+  return {
+    data: makeJobData<T>((input.data ?? {}) as T),
+    opts: input.opts ?? {},
+  };
 }

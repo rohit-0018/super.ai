@@ -56,7 +56,7 @@ function makeConfig(overrides: Partial<SecurityConfig> = {}): SecurityConfig {
     deadManSwitchHeartbeatTimeoutSeconds: 120,
     auditLogOutputPath: './logs/audit.jsonl',
     hmacChainSecret: HMAC_SECRET,
-    corsAllowedOrigins: ['http://localhost:3000'],
+    corsAllowedOrigins: ['http://localhost:3001'],
     alertWebhookUrls: [],
     alertSlackChannel: '#security-alerts',
     encryptionKeyId: 'default-enc-key',
