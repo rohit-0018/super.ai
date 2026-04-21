@@ -7,20 +7,26 @@ FROM base AS build
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml .npmrc* turbo.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
+COPY security/package.json security/
 COPY prisma ./prisma
 RUN pnpm install --frozen-lockfile || pnpm install
+COPY security ./security
 COPY apps/api ./apps/api
 RUN pnpm prisma:generate
+RUN pnpm --filter @super-ai/security build
 RUN pnpm --filter @qwai/api build
-# pnpm deploy produces a self-contained app dir with a flat node_modules
-# containing all production deps (reflect-metadata, @nestjs/*, etc.) resolved.
-RUN pnpm --filter @qwai/api deploy --prod /prod/api
 
 FROM node:20-alpine AS run
-WORKDIR /app
+WORKDIR /workspace
 RUN apk add --no-cache openssl
+RUN corepack enable
 ENV NODE_ENV=production
-COPY --from=build /prod/api ./
-COPY --from=build /workspace/prisma ./prisma
+
+# Copy the workspace (with resolved node_modules symlinks intact) from the
+# build stage. pnpm's hoisted store + symlinks mean we must preserve the full
+# workspace layout rather than trying to prune with `pnpm deploy` — that path
+# collides with the root-level prisma CLI during symlink rewrite.
+COPY --from=build /workspace ./
+
 EXPOSE 4400
-CMD ["node", "dist/main.js"]
+CMD ["node", "apps/api/dist/main.js"]
