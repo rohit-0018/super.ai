@@ -28,6 +28,9 @@ NODE_ENV=development pnpm install --frozen-lockfile --prod=false --ignore-script
   || { echo "⚠ lockfile drift — retrying with --no-frozen-lockfile"; \
        NODE_ENV=development pnpm install --no-frozen-lockfile --prod=false --ignore-scripts=false; }
 
+echo "▶ prisma validate (fail fast on syntax errors)"
+NODE_ENV=development pnpm prisma validate --schema=./prisma/schema.prisma
+
 echo "▶ prisma generate"
 NODE_ENV=development pnpm prisma generate --schema=./prisma/schema.prisma
 
