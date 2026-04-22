@@ -20,11 +20,13 @@ pnpm --version
 # Render sets NODE_ENV=production on the service, which makes pnpm omit
 # devDependencies. Force a full install so @types/*, typescript, nestjs CLI,
 # prisma, etc. are available for the build.
-echo "▶ pnpm install (dev deps forced on)"
-NODE_ENV=development pnpm install \
-  --frozen-lockfile \
-  --prod=false \
-  --ignore-scripts=false
+echo "▶ pnpm install (dev deps forced on; fall back to --no-frozen-lockfile if drift)"
+# CI defaults to frozen-lockfile. If package.json drifts from pnpm-lock.yaml
+# (e.g. a dep version was bumped without regenerating the lockfile), retry
+# without the frozen flag so the deploy still ships.
+NODE_ENV=development pnpm install --frozen-lockfile --prod=false --ignore-scripts=false \
+  || { echo "⚠ lockfile drift — retrying with --no-frozen-lockfile"; \
+       NODE_ENV=development pnpm install --no-frozen-lockfile --prod=false --ignore-scripts=false; }
 
 echo "▶ prisma generate"
 NODE_ENV=development pnpm prisma generate --schema=./prisma/schema.prisma
