@@ -35,6 +35,8 @@ services:
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
+      - key: NODE_VERSION
+        value: 20.12.2
       - key: NODE_ENV
         value: production
       - key: PORT
@@ -113,6 +115,8 @@ services:
     pullRequestPreviewsEnabled: false
     autoDeploy: true
     envVars:
+      - key: NODE_VERSION
+        value: 20.12.2
       - key: NEXT_PUBLIC_API_BASE
         value: https://qwai-api.onrender.com/api
       - key: NEXT_PUBLIC_WS_BASE

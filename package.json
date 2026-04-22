@@ -28,6 +28,6 @@
   "prisma": {
     "seed": "tsx prisma/seed.ts"
   },
-  "engines": { "node": ">=20" },
+  "engines": { "node": "20.x" },
   "packageManager": "pnpm@9.1.0"
 }
