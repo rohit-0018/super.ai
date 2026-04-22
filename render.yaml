@@ -1,6 +1,6 @@
 # QWAI — Render deployment manifest.
 # One static FE, one Node BE (API + workers + Telegram webhook), managed Postgres, managed Redis.
-# Deploy via Render Blueprint. Migrations + seed run in preDeployCommand on every deploy.
+# Deploy via Render Blueprint. Migrations + seed run from startCommand (free plan has no preDeploy).
 
 databases:
   - name: qwai-db
@@ -28,11 +28,10 @@ services:
     name: qwai-api
     runtime: node
     region: oregon
-    plan: starter
+    plan: free
     rootDir: .
     buildCommand: ./scripts/render-build.sh
-    preDeployCommand: ./scripts/render-predeploy.sh
-    startCommand: node apps/api/dist/main.js
+    startCommand: ./scripts/render-start.sh
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
