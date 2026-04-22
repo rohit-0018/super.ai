@@ -13,9 +13,6 @@
     "resolveJsonModule": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "baseUrl": ".",
-    "paths": {
-      "@qwai/shared": ["packages/shared/src"]
-    }
+    "baseUrl": "."
   }
 }

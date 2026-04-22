@@ -10,6 +10,10 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 
+# pnpm is installed under a user-local prefix during build; put it on PATH for runtime too.
+export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
+
 echo "▶ prisma migrate deploy"
 pnpm prisma migrate deploy --schema=./prisma/schema.prisma
 

@@ -4,6 +4,11 @@ dist
 out
 .turbo
 coverage
+# Non-pnpm lockfiles slip in from editors/agents and confuse the workspace.
+package-lock.json
+yarn.lock
+**/package-lock.json
+**/yarn.lock
 *.log
 .env
 .env.*

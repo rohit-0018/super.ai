@@ -12,7 +12,6 @@
     "prisma:migrate": "prisma migrate dev --schema=./prisma/schema.prisma",
     "prisma:deploy": "prisma migrate deploy --schema=./prisma/schema.prisma",
     "prisma:seed": "tsx prisma/seed.ts",
-    "render:predeploy": "./scripts/render-predeploy.sh",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"
   },
