@@ -1,7 +1,7 @@
 import { ConvictionEngine } from './conviction.engine';
 
 describe('ConvictionEngine', () => {
-  const engine = new ConvictionEngine();
+  const engine = new ConvictionEngine({} as any);
 
   it('returns a score in [1,10]', () => {
     const s = engine.score({ securityScore: 80, holderQuality: 70, liquidityScore: 60, sentimentScore: 0.3, momentumScore: 0.5 });

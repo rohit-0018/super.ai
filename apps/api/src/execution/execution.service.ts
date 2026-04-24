@@ -14,6 +14,7 @@ import { EmotionalIntelService } from '../agents/emotional-intel.service';
 import { SecurityComplianceService } from '../security/security-compliance.service';
 import { RiskEngineService } from '../security/risk-engine.service';
 import { SecurityAuditService } from '../security/security-audit.service';
+import { makeQueue, makeJobData, QUEUES } from '../agents/queues';
 import {
   AgentActionType,
   OrderSide,
@@ -32,6 +33,10 @@ export interface SwapInput {
   slippageBps: number;
   riskFlags?: string[];
   orderId?: string;
+  /** Attributed strategy (autonomous-trader path); null for manual/chat trades. */
+  strategyId?: string;
+  /** L5 conviction breakdown snapshot; autonomous-trader path only. */
+  convictionBreakdown?: Record<string, unknown>;
   /** Optional — if absent, falls back to ambient AsyncLocalStorage traceId. */
   traceId?: string;
 }
@@ -218,6 +223,11 @@ export class ExecutionService {
         priceUsd: input.notionalUsd,
         mode,
         txHash: txHash ?? undefined,
+        ...(input.strategyId ? { strategyId: input.strategyId } : {}),
+        ...(input.convictionBreakdown ? {
+          convictionBreakdown: input.convictionBreakdown as any,
+          convictionVersion: (input.convictionBreakdown as any).weightsVersion ?? null,
+        } : {}),
         ...(trace ? { traceId: trace } : {}),
       } as unknown as Prisma.TradeCreateInput,
     });
@@ -251,6 +261,48 @@ export class ExecutionService {
 
     await this.dna.recordTrade(input.userId, { pnlUsd: 0, holdMinutes: 0 });
     this.emotional.evaluate(input.userId).catch((e) => this.logger.warn(`[trc=${trace}] Emotional eval failed: ${e.message}`));
+
+    // Fan out learning observation. Gated by LearningConfig.enabled inside the
+    // worker so it is always safe to enqueue; failures here must never affect
+    // the trade result path.
+    try {
+      const queue = makeQueue(QUEUES.LEARNING_INGEST);
+      await queue.add(
+        'ingest',
+        makeJobData({ userId: input.userId, tradeId: trade.id }),
+        { removeOnComplete: 500, removeOnFail: 100 },
+      );
+    } catch (e: any) {
+      this.logger.warn(`[trc=${trace}] learning enqueue failed: ${e.message}`);
+    }
+
+    // L2 episodic memory fan-out. Also gated inside the worker on
+    // EPISODIC_MEMORY_ENABLED + LearningConfig.enabled.
+    if (process.env.EPISODIC_MEMORY_ENABLED === 'true') {
+      try {
+        const q = makeQueue(QUEUES.EPISODE_INGEST);
+        await q.add(
+          'ingest',
+          makeJobData({
+            userId: input.userId,
+            tradeId: trade.id,
+            kind: mode === 'PAPER' ? 'PAPER' : 'EXECUTED',
+            chain: input.chain,
+            token: input.tokenOut,
+            side: 'buy',
+            decisionSeed: {
+              notionalUsd: input.notionalUsd,
+              slippageBps: input.slippageBps,
+              amountIn: input.amountIn,
+              riskFlags: input.riskFlags ?? [],
+            },
+          }),
+          { removeOnComplete: 500, removeOnFail: 100 },
+        );
+      } catch (e: any) {
+        this.logger.warn(`[trc=${trace}] episode enqueue failed: ${e.message}`);
+      }
+    }
     await this.prisma.auditLog.create({
       data: {
         userId: input.userId,

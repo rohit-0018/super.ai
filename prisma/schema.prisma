@@ -44,6 +44,32 @@ enum AgentKind {
   POSITION_MONITOR
   SNIPE
   BRIEFING
+  LEARNING
+  STRATEGY
+}
+
+enum AutonomyLevel {
+  MANUAL
+  GUIDED
+  SEMI_AUTO
+  FULL_AUTO
+}
+
+enum StrategySource {
+  LEARNED
+  USER_DEFINED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum ApprovalChannel {
+  WEB
+  TELEGRAM
 }
 
 enum AgentStatus {
@@ -62,6 +88,65 @@ enum Exchange {
   BINANCE
   BYBIT
   OKX
+}
+
+enum RejectCategory {
+  TOO_RISKY
+  WRONG_TOKEN
+  BAD_TIMING
+  WRONG_SIZE
+  OTHER
+}
+
+enum IntentSource {
+  CHAT
+  REJECTION
+  MANUAL
+  ONBOARDING
+  BACKFILL
+}
+
+enum IntentScope {
+  BLOCKLIST
+  ALLOWLIST
+  SIZING
+  TIMING
+  RISK
+  PREFERENCE
+}
+
+enum IntentStatus {
+  ACTIVE
+  PROPOSED
+  CONFLICTED
+  RETIRED
+}
+
+enum ChatChannel {
+  WEB
+  TELEGRAM
+  API
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+enum NoteCategory {
+  PREFERENCE
+  CONTEXT
+  AVOIDANCE
+  GOAL
+  TRADING_STYLE
+  OTHER
+}
+
+enum NoteStatus {
+  ACTIVE
+  RETIRED
 }
 
 model User {
@@ -89,6 +174,16 @@ model User {
   guardrails      GuardrailConfig?
   cexConnections  CexConnection[]
   paperBalances   PaperBalance[]
+  learningConfig  LearningConfig?
+  strategies      UserStrategy[]
+  approvalRequests ApprovalRequest[]
+  intentRules      UserIntentRule[]
+  conversations    Conversation[]
+  chatMessages     ChatMessage[]
+  notes            UserNote[]
+  episodes         TradeEpisode[]
+  convictionWeights UserConvictionWeights?
+  convictionHistory ConvictionWeightsHistory[]
 }
 
 model Wallet {
@@ -182,25 +277,93 @@ model Order {
 }
 
 model Trade {
-  id        String    @id @default(cuid())
-  orderId   String?
-  order     Order?    @relation(fields: [orderId], references: [id])
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  side      String    // "buy" | "sell"
-  chain     Chain
-  tokenIn   String
-  tokenOut  String
-  amountIn  String
-  amountOut String
-  priceUsd  Float?
-  pnlUsd    Float?
-  mode      TradeMode @default(LIVE)
-  txHash    String?
-  traceId   String?
-  createdAt DateTime  @default(now())
+  id         String        @id @default(cuid())
+  orderId    String?
+  order      Order?        @relation(fields: [orderId], references: [id])
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  strategyId String?
+  strategy   UserStrategy? @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  side       String        // "buy" | "sell"
+  chain      Chain
+  tokenIn    String
+  tokenOut   String
+  amountIn   String
+  amountOut  String
+  priceUsd   Float?
+  pnlUsd     Float?
+  mode       TradeMode     @default(LIVE)
+  txHash     String?
+  traceId    String?
+  createdAt  DateTime      @default(now())
+  episode    TradeEpisode?
+  convictionBreakdown Json?
+  convictionVersion   Int?
   @@index([userId, createdAt])
+  @@index([userId, strategyId])
   @@index([traceId])
+}
+
+// L5 — per-user ConvictionEngine weight personalization. Sum should stay at
+// 1.0 at all times; service layer enforces + clamps. Learner updates every
+// 6h (or at milestone trade counts) using gradient steps on factor edges
+// derived from winner/loser trades.
+model UserConvictionWeights {
+  userId         String    @id
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  security       Float     @default(0.30)
+  holders        Float     @default(0.20)
+  liquidity      Float     @default(0.15)
+  sentiment      Float     @default(0.20)
+  momentum       Float     @default(0.15)
+  version        Int       @default(1)
+  sampleCount    Int       @default(0)
+  manualOverride Boolean   @default(false)
+  learnedAt      DateTime?
+  updatedAt      DateTime  @updatedAt
+}
+
+model ConvictionWeightsHistory {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  version     Int
+  security    Float
+  holders     Float
+  liquidity   Float
+  sentiment   Float
+  momentum    Float
+  sampleCount Int
+  reason      String
+  createdAt   DateTime @default(now())
+  @@index([userId, createdAt])
+  @@unique([userId, version])
+}
+
+// L2 — episodic memory. One row per decision the agent participates in
+// (executed, approval-pending, or blocked-candidate). `embedding` is a
+// pgvector(1536) column — Prisma reads/writes the embedding only via
+// $queryRawUnsafe / $executeRawUnsafe because `Unsupported(...)` columns
+// are opaque to the typed client. Outcome columns filled in later by the
+// episode-outcome worker once 1h / 24h have elapsed.
+model TradeEpisode {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tradeId         String?   @unique
+  trade           Trade?    @relation(fields: [tradeId], references: [id], onDelete: SetNull)
+  chain           Chain
+  token           String
+  side            String
+  kind            String    // EXECUTED | PAPER | APPROVED | REJECTED
+  decisionContext Json
+  rationale       String
+  outcome1h       Json?
+  outcome24h      Json?
+  embedding       Unsupported("vector(1536)")?
+  createdAt       DateTime  @default(now())
+  @@index([userId, createdAt])
+  @@index([userId, chain, token])
 }
 
 model Agent {
@@ -286,4 +449,171 @@ model PaperBalance {
   token   String
   amount  String  // bigint string
   @@unique([userId, token])
+}
+
+// Progressive learning system — per-user switches that gate autonomous behavior.
+// Defaults are deliberately safe: learning off, autonomy MANUAL, approval required.
+model LearningConfig {
+  userId              String          @id
+  user                User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enabled             Boolean         @default(false)
+  autonomyLevel       AutonomyLevel   @default(MANUAL)
+  maxTradeUsd         Float           @default(100)
+  dailyLimit          Int             @default(3)
+  dailyUsedCount      Int             @default(0)
+  dailyResetAt        DateTime?
+  approvalRequired    Boolean         @default(true)
+  approvalTimeoutMin  Int             @default(5)
+  approvalChannels    ApprovalChannel[]
+  onTimeout           String          @default("reject") // "reject" | "execute"
+  chatMemoryEnabled   Boolean         @default(true)
+  noteExtractionEnabled Boolean       @default(true)
+  updatedAt           DateTime        @updatedAt
+}
+
+model UserStrategy {
+  id             String               @id @default(cuid())
+  userId         String
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  source         StrategySource
+  definition     Json                 // { prompt?: string, trigger?: {...}, notes?: string }
+  enabled        Boolean              @default(false)
+  score          Float?               // 0..1, grounded composite (Sharpe + winRate + acceptRate + LLM). 0..10 pre-L3.
+  scoreBreakdown Json?                // { sharpeNorm, winRate, acceptRate, llmQualitative, sampleCount, flags[] }
+  lastRationale  String?
+  lastScoredAt   DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  approvals      ApprovalRequest[]
+  trades         Trade[]
+  performance    StrategyPerformance?
+  @@index([userId, enabled])
+}
+
+// Rolling performance aggregates per strategy, recomputed every 10 min by
+// strategy-performance.worker from attributed trades + approval outcomes.
+// `sampleCount` is the 30-day trade count; all-time is separate. Nullable
+// `approvalAcceptRate` when fewer than 3 approvals in the window.
+model StrategyPerformance {
+  strategyId         String       @id
+  strategy           UserStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  userId             String
+  sampleCount        Int          @default(0)
+  sampleCountAllTime Int          @default(0)
+  wins               Int          @default(0)
+  losses             Int          @default(0)
+  totalPnlUsd        Float        @default(0)
+  totalPnlUsdAllTime Float        @default(0)
+  avgPnlUsd          Float        @default(0)
+  stdevPnlUsd        Float        @default(0)
+  maxDrawdownUsd     Float        @default(0)
+  avgHoldMinutes     Float        @default(0)
+  approvalsAccepted  Int          @default(0)
+  approvalsRejected  Int          @default(0)
+  approvalAcceptRate Float?
+  lastTradeAt        DateTime?
+  lastComputedAt     DateTime     @default(now())
+  @@index([userId])
+}
+
+model ApprovalRequest {
+  id             String           @id @default(cuid())
+  userId         String
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  strategyId     String?
+  strategy       UserStrategy?    @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  agentId        String?
+  tradeIntent    Json             // { chain, tokenIn, tokenOut, amountIn, side, reason }
+  status         ApprovalStatus   @default(PENDING)
+  expiresAt      DateTime
+  respondedAt    DateTime?
+  respondedVia   ApprovalChannel?
+  rejectReason   String?
+  rejectCategory RejectCategory?
+  traceId        String?
+  createdAt      DateTime         @default(now())
+  @@index([userId, status])
+  @@index([status, expiresAt])
+}
+
+// L6 — conversational long-term memory. New Conversation/ChatMessage pair
+// replaces flat ConversationMessage usage. UserNote stores durable facts
+// extracted by the note-extractor after each summary.
+model Conversation {
+  id                  String        @id @default(cuid())
+  userId              String
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel             ChatChannel
+  title               String?
+  summary             String?
+  summarizedThroughId String?
+  lastMessageAt       DateTime      @default(now())
+  messageCount        Int           @default(0)
+  approxTokenCount    Int           @default(0)
+  createdAt           DateTime      @default(now())
+  closedAt            DateTime?
+  messages            ChatMessage[]
+  @@index([userId, lastMessageAt])
+  @@index([userId, channel, closedAt])
+}
+
+model ChatMessage {
+  id             String        @id @default(cuid())
+  conversationId String
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           ChatRole
+  content        String
+  toolCalls      Json?
+  toolResults    Json?
+  meta           Json?
+  tokensIn       Int?
+  tokensOut      Int?
+  createdAt      DateTime      @default(now())
+  @@index([userId, createdAt])
+  @@index([conversationId, createdAt])
+}
+
+model UserNote {
+  id                    String        @id @default(cuid())
+  userId                String
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category              NoteCategory
+  content               String
+  sourceConversationIds String[]
+  confidence            Float         @default(0.7)
+  confirmCount          Int           @default(1)
+  lastConfirmedAt       DateTime      @default(now())
+  status                NoteStatus    @default(ACTIVE)
+  retiredAt             DateTime?
+  retiredReason         String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  @@index([userId, status, category])
+  @@index([userId, lastConfirmedAt])
+}
+
+// L4 — declarative intent memory. Natural-language rules extracted from chat
+// or rejections, stored with both human text and a machine DSL. Enforced by
+// IntentRuleEnforcer in the autonomous-trader before guardrails.
+model UserIntentRule {
+  id                String        @id @default(cuid())
+  userId            String
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  text              String        // original user phrasing
+  rule              Json          // structured DSL — see intent-rule.dsl.ts
+  source            IntentSource
+  scope             IntentScope
+  status            IntentStatus  @default(ACTIVE)
+  priority          Int           @default(50)
+  confidence        Float         @default(1.0)
+  lastAppliedAt     DateTime?
+  retiredReason     String?
+  sourceApprovalId  String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  @@index([userId, status, scope])
+  @@index([userId, lastAppliedAt])
 }

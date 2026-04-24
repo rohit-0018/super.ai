@@ -20,6 +20,21 @@ export const QUEUES = {
   BRIEFING: 'briefing',
   NOTIFICATIONS: 'notifications',
   TELEGRAM_SEND: 'telegram-send',
+  LEARNING_INGEST: 'learning-ingest',
+  STRATEGY_SCORER: 'strategy-scorer',
+  STRATEGY_PERFORMANCE: 'strategy-performance',
+  AUTONOMOUS_TRADER: 'autonomous-trader',
+  APPROVAL_EXPIRER: 'approval-expirer',
+  INTENT_EXTRACT_CHAT: 'intent-extract-chat',
+  INTENT_EXTRACT_REJECTION: 'intent-extract-rejection',
+  INTENT_RETIRE_STALE: 'intent-retire-stale',
+  CONVERSATION_SUMMARIZE: 'conversation-summarize',
+  CONVERSATION_IDLE_SWEEP: 'conversation-idle-sweep',
+  NOTE_EXTRACT: 'note-extract',
+  NOTE_RETIRE_STALE: 'note-retire-stale',
+  EPISODE_INGEST: 'episode-ingest',
+  EPISODE_OUTCOME: 'episode-outcome',
+  CONVICTION_LEARNER: 'conviction-learner',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];

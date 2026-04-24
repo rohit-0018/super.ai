@@ -2,6 +2,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { AiAgentModule } from '../ai-agent/ai-agent.module';
+import { ApprovalsModule } from '../approvals/approvals.module';
 import { TelegramBot } from './telegram.bot';
 import { TelegramService } from './telegram.service';
 import { TelegramController } from './telegram.controller';
@@ -17,6 +18,7 @@ import { TelegramController } from './telegram.controller';
     PrismaModule,
     AuthModule,
     forwardRef(() => AiAgentModule),
+    forwardRef(() => ApprovalsModule),
   ],
   providers: [TelegramBot, TelegramService],
   controllers: [TelegramController],

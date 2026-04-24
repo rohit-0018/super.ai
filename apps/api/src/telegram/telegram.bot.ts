@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { Bot, InlineKeyboard } from 'grammy';
+import { ApprovalChannel, RejectCategory } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { TelegramLinkService } from '../auth/telegram-link.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 
 const NOT_LINKED_TEXT =
   '🔗 This Telegram is not linked to a QWAI account. Open web dashboard → Settings → "Link Telegram" to get a code, then send /link <code> here.';
@@ -25,6 +27,8 @@ export class TelegramBot {
     private readonly prisma: PrismaService,
     private readonly agent: AiAgentService,
     private readonly tgLink: TelegramLinkService,
+    @Inject(forwardRef(() => ApprovalsService))
+    private readonly approvals: ApprovalsService,
   ) {}
 
   get bot(): Bot | null {
@@ -223,6 +227,50 @@ export class TelegramBot {
       try {
         const reply = await this.chat(ctx.chat!.id, `Confirmed — ${action} ${args}. Execute now.`);
         return ctx.reply(reply);
+      } catch (e: any) {
+        return ctx.reply(`Error: ${e.message}`);
+      }
+    });
+
+    // Autonomous-trade approval buttons. "Approve" is a one-tap; "Reject" opens
+    // a 5-category preset picker so rejection reasons feed the L3 scorer.
+    bot.callbackQuery(/^approve:([\w-]+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const [, requestId] = ctx.match;
+      const userId = await this.resolveUserId(ctx.chat!.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      try {
+        await this.approvals.respond(userId, requestId, true, ApprovalChannel.TELEGRAM);
+        return ctx.reply('✅ Approved. Executing.');
+      } catch (e: any) {
+        return ctx.reply(`Error: ${e.message}`);
+      }
+    });
+
+    bot.callbackQuery(/^reject:([\w-]+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const [, requestId] = ctx.match;
+      const keyboard = new InlineKeyboard()
+        .text('Too risky', `reject_reason:${requestId}:TOO_RISKY`)
+        .text('Wrong token', `reject_reason:${requestId}:WRONG_TOKEN`)
+        .row()
+        .text('Bad timing', `reject_reason:${requestId}:BAD_TIMING`)
+        .text('Wrong size', `reject_reason:${requestId}:WRONG_SIZE`)
+        .row()
+        .text('Other', `reject_reason:${requestId}:OTHER`);
+      return ctx.reply('Why are you rejecting?', { reply_markup: keyboard });
+    });
+
+    bot.callbackQuery(/^reject_reason:([\w-]+):(TOO_RISKY|WRONG_TOKEN|BAD_TIMING|WRONG_SIZE|OTHER)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const [, requestId, category] = ctx.match;
+      const userId = await this.resolveUserId(ctx.chat!.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      try {
+        await this.approvals.respond(userId, requestId, false, ApprovalChannel.TELEGRAM, {
+          rejectCategory: category as RejectCategory,
+        });
+        return ctx.reply(`❌ Rejected (${category.toLowerCase().replace('_', ' ')}).`);
       } catch (e: any) {
         return ctx.reply(`Error: ${e.message}`);
       }

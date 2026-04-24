@@ -7,6 +7,7 @@ import TradeJournal from '../../components/TradeJournal';
 import TokenIntelCard from '../../components/TokenIntelCard';
 import SwapForm from '../../components/SwapForm';
 import AgentsPanel from '../../components/AgentsPanel';
+import LearningAgentCard from '../../components/LearningAgentCard';
 import RiskMeter from '../../components/RiskMeter';
 import BriefingCard from '../../components/BriefingCard';
 import AlertsFeed from '../../components/AlertsFeed';
@@ -87,6 +88,7 @@ export default function Dashboard() {
 
           {tab === 'agents' && (
             <div className="space-y-4 fade-in">
+              <LearningAgentCard />
               <AgentsPanel />
               <AlertsFeed />
             </div>

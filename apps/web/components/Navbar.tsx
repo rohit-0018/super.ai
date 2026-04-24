@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import ThemeToggle from './ThemeToggle';
 import PaperModePill from './PaperModePill';
+import LearningModePill from './LearningModePill';
 import NotificationBell from './NotificationBell';
 import UserMenu from './UserMenu';
 
@@ -63,6 +64,7 @@ export default function Navbar() {
 
         <div className="ml-auto flex items-center gap-1.5 md:gap-2">
           <PaperModePill />
+          <LearningModePill />
           <NotificationBell />
           <UserMenu />
           <ThemeToggle />

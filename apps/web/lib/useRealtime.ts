@@ -57,6 +57,16 @@ async function getSocket(apiBase: string): Promise<any> {
       emit('order_triggered', data);
     });
 
+    socket.on('approval_pending', (data: any) => {
+      invalidate('/approvals/pending');
+      emit('approval_pending', data);
+    });
+
+    socket.on('approval_resolved', (data: any) => {
+      invalidate('/approvals/pending');
+      emit('approval_resolved', data);
+    });
+
     await new Promise<void>((resolve) => {
       if (socket.connected) { resolve(); return; }
       socket.once('connect', resolve);

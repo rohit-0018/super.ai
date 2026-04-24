@@ -21,6 +21,11 @@ import { UsersModule } from './users/users.module';
 import { NewsModule } from './news/news.module';
 import { SecurityModule } from './security/security.module';
 import { TelegramModule } from './telegram/telegram.module';
+import { StrategiesModule } from './strategies/strategies.module';
+import { ApprovalsModule } from './approvals/approvals.module';
+import { IntentModule } from './intent/intent.module';
+import { ConversationsModule } from './conversations/conversations.module';
+import { EpisodesModule } from './episodes/episodes.module';
 import { HealthController } from './health.controller';
 import { TraceMiddleware } from './common/trace.middleware';
 
@@ -53,6 +58,11 @@ import { TraceMiddleware } from './common/trace.middleware';
     UsersModule,
     NewsModule,
     TelegramModule,
+    StrategiesModule,
+    ApprovalsModule,
+    IntentModule,
+    ConversationsModule,
+    EpisodesModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

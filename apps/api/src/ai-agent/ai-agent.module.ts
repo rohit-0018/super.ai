@@ -10,6 +10,8 @@ import { ExecutionModule } from '../execution/execution.module';
 import { TokenIntelModule } from '../token-intel/token-intel.module';
 import { AgentsModule } from '../agents/agents.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { EpisodesModule } from '../episodes/episodes.module';
+import { ConvictionLearnerService } from './conviction-learner.service';
 
 @Module({
   imports: [
@@ -18,9 +20,10 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     forwardRef(() => TokenIntelModule),
     forwardRef(() => AgentsModule),
     AnalyticsModule,
+    forwardRef(() => EpisodesModule),
   ],
-  providers: [AiAgentService, LlmService, ConversationMemoryService, TradingDnaService, ToolExecutorService],
+  providers: [AiAgentService, LlmService, ConversationMemoryService, TradingDnaService, ToolExecutorService, ConvictionLearnerService],
   controllers: [AiAgentController],
-  exports: [AiAgentService, TradingDnaService, ConversationMemoryService, LlmService],
+  exports: [AiAgentService, TradingDnaService, ConversationMemoryService, LlmService, ConvictionLearnerService],
 })
 export class AiAgentModule {}
