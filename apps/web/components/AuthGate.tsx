@@ -4,10 +4,10 @@ import { usePathname } from 'next/navigation';
 import { useAuth } from '../lib/auth-store';
 import { useRealtime } from '../lib/useRealtime';
 
-const PUBLIC_ROUTES = ['/', '/login', '/login/'];
+const PUBLIC_ROUTES = ['/', '/login', '/login/', '/design', '/design/'];
 
 function isPublic(pathname: string) {
-  return PUBLIC_ROUTES.includes(pathname) || pathname.startsWith('/login');
+  return PUBLIC_ROUTES.includes(pathname) || pathname.startsWith('/login') || pathname.startsWith('/design');
 }
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {

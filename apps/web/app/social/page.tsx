@@ -47,64 +47,62 @@ export default function Social() {
   const loading = rows === null;
 
   return (
-    <div className="space-y-6">
+    <div className="page space-y-4">
       <header>
-        <h1 className="text-[22px] font-semibold tracking-tight">Social</h1>
-        <p className="text-[13px] text-[color:var(--text-2)] mt-1">
-          Anonymized leaderboard and wallet copy-trading.
-        </p>
+        <div className="section-eyebrow">Social</div>
+        <h1 className="page-title">Leaderboard &amp; copy</h1>
+        <p className="page-subtitle">Anonymized leaderboard and wallet copy-trading.</p>
       </header>
 
       {/* Copy trade quick start */}
-      <section className="panel">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="section-title mb-0.5">Copy a wallet</h3>
-            <div className="text-[11px] text-[color:var(--text-3)]">
+      <section className="section">
+        <div className="section-header">
+          <div className="min-w-0">
+            <h3 className="section-title">Copy a wallet</h3>
+            <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>
               Mirror a wallet's trades with your own risk guardrails
             </div>
           </div>
         </div>
-        <div className="flex gap-2">
-          <input
-            value={copyTarget}
-            onChange={(e) => setCopyTarget(e.target.value)}
-            placeholder="Source wallet address"
-            className="input font-mono"
-          />
-          <button
-            onClick={startCopy}
-            disabled={copyBusy || !copyTarget.trim()}
-            className="btn btn-primary"
-          >
-            {copyBusy ? 'Starting…' : 'Start copy'}
-          </button>
+        <div className="section-body">
+          <div className="flex gap-2 flex-wrap">
+            <input
+              value={copyTarget}
+              onChange={(e) => setCopyTarget(e.target.value)}
+              placeholder="Source wallet address"
+              className="input font-mono"
+              style={{ flex: '1 1 220px', minWidth: 0 }}
+            />
+            <button
+              onClick={startCopy}
+              disabled={copyBusy || !copyTarget.trim()}
+              className="btn btn-primary"
+            >
+              {copyBusy ? 'Starting…' : 'Start copy'}
+            </button>
+          </div>
+          {copyMsg && (
+            <p className="text-[12px] mt-3" style={{ color: copyMsg.includes('started') ? 'var(--ok)' : 'var(--bad)' }}>
+              {copyMsg}
+            </p>
+          )}
         </div>
-        {copyMsg && (
-          <p
-            className="text-[12px] mt-3"
-            style={{ color: copyMsg.includes('started') ? 'var(--ok)' : 'var(--bad)' }}
-          >
-            {copyMsg}
-          </p>
-        )}
       </section>
 
       {/* Leaderboard */}
-      <section className="panel">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="section-title mb-0.5">Leaderboard · 30 days</h3>
-            <div className="text-[11px] text-[color:var(--text-3)]">
-              Top anonymized P&L. Names hidden by design.
+      <section className="section">
+        <div className="section-header">
+          <div className="min-w-0">
+            <h3 className="section-title">Leaderboard · 30 days</h3>
+            <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+              Top anonymized P&amp;L. Names hidden by design.
             </div>
           </div>
         </div>
-
-        {error && <p className="text-[12px] text-[color:var(--bad)] mb-3">{error}</p>}
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-[13px]">
+        <div className="section-body-flush">
+          {error && <p className="text-[12px] px-4 pt-3" style={{ color: 'var(--bad)' }}>{error}</p>}
+        <div className="table-scroll">
+          <table className="table" style={{ minWidth: 560 }}>
             <thead>
               <tr className="text-left">
                 <Th>Rank</Th>
@@ -164,6 +162,7 @@ export default function Social() {
             </tbody>
           </table>
         </div>
+        </div>
       </section>
     </div>
   );
@@ -175,15 +174,21 @@ function Th({ children }: { children: React.ReactNode }) {
 
 function RankBadge({ rank }: { rank: number }) {
   if (rank <= 3) {
-    const colors = ['#f0c420', '#d4d4d4', '#cd7f32'];
+    // Gold / silver / bronze — token-agnostic, visible in both themes
+    const tones = [
+      { bg: 'color-mix(in srgb, var(--warn) 30%, var(--surface-2))', border: 'color-mix(in srgb, var(--warn) 60%, var(--border))', color: 'var(--warn)' },
+      { bg: 'var(--surface-hover)', border: 'var(--border-2)', color: 'var(--text)' },
+      { bg: 'color-mix(in srgb, var(--bad) 22%, var(--surface-2))', border: 'color-mix(in srgb, var(--bad) 45%, var(--border))', color: 'var(--bad)' },
+    ];
+    const t = tones[rank - 1];
     return (
       <span
-        className="inline-flex w-6 h-6 rounded-full items-center justify-center text-[11px] font-semibold"
-        style={{ background: colors[rank - 1], color: '#000' }}
+        className="inline-flex w-6 h-6 rounded-full items-center justify-center text-[11px] font-semibold font-mono"
+        style={{ background: t.bg, color: t.color, border: `1px solid ${t.border}` }}
       >
         {rank}
       </span>
     );
   }
-  return <span className="text-[color:var(--text-3)]">#{rank}</span>;
+  return <span className="font-mono text-[12px]" style={{ color: 'var(--text-3)' }}>#{rank}</span>;
 }

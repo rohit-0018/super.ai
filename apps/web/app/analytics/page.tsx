@@ -65,13 +65,12 @@ export default function Analytics() {
   const loading = perf === null || trades === null;
 
   return (
-    <div className="space-y-6">
-      <header className="flex items-end justify-between gap-4 flex-wrap">
+    <div className="page space-y-4">
+      <header className="page-header">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Analytics</h1>
-          <p className="text-[13px] text-[color:var(--text-2)] mt-1">
-            Performance, PnL, and trade diagnostics.
-          </p>
+          <div className="section-eyebrow">Analytics</div>
+          <h1 className="page-title">Performance</h1>
+          <p className="page-subtitle">P&amp;L, win rate, and trade diagnostics.</p>
         </div>
         <a
           href={`${process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:4400/api'}/analytics/tax`}
@@ -84,13 +83,13 @@ export default function Analytics() {
       </header>
 
       {error && (
-        <div className="panel" style={{ color: 'var(--bad)' }}>
-          {error}
+        <div className="section" style={{ color: 'var(--bad)' }}>
+          <div className="section-body">{error}</div>
         </div>
       )}
 
       {/* Stats grid */}
-      <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 md:gap-4">
         <StatCard label="Total P&L" value={loading ? null : fmtUsd(perf!.totalPnl)} accent={loading ? undefined : (perf!.totalPnl >= 0 ? 'var(--ok)' : 'var(--bad)')} />
         <StatCard label="Win rate" value={loading ? null : `${(perf!.winRate * 100).toFixed(1)}%`} />
         <StatCard label="Trades" value={loading ? null : `${perf!.totalTrades}`} sub={loading ? undefined : `${perf!.wins}W · ${perf!.losses}L`} />

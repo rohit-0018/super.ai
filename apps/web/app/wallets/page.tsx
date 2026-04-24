@@ -51,24 +51,25 @@ export default function Wallets() {
   const isTestnet = process.env.NEXT_PUBLIC_NETWORK_MODE === 'testnet';
 
   return (
-    <div className="space-y-6">
-      <header className="flex items-end justify-between">
+    <div className="page space-y-4">
+      <header className="page-header">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Wallets</h1>
-          <p className="text-[13px] text-[color:var(--text-2)] mt-1">
-            Manage wallets across Solana and EVM chains.
-            {isTestnet && <span className="ml-2 chip" style={{ color: 'var(--warn)', fontSize: 10 }}>devnet / Sepolia</span>}
+          <div className="section-eyebrow">Wallets</div>
+          <h1 className="page-title">On-chain wallets</h1>
+          <p className="page-subtitle">
+            Manage wallets across Solana and EVM.
+            {isTestnet && <span className="ml-2 chip chip-warn">devnet / Sepolia</span>}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button onClick={() => create('SOLANA')} className="btn">+ Solana</button>
           <button onClick={() => create('EVM')} className="btn">+ EVM</button>
         </div>
       </header>
 
       {/* Total portfolio value */}
-      <div className="panel">
-        <div className="flex items-center justify-between">
+      <section className="section">
+        <div className="section-body flex items-center justify-between gap-4 flex-wrap">
           <div>
             <div className="stat-label mb-1">Total on-chain value</div>
             {balLoading && !balances ? (
@@ -88,12 +89,12 @@ export default function Wallets() {
             )}
           </div>
         </div>
-      </div>
+      </section>
 
       {/* Wallet list */}
-      <div className="panel !p-0 overflow-hidden">
-        <div className="px-5 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="section-title">On-chain wallets</h3>
+      <section className="section">
+        <div className="section-header">
+          <h3 className="section-title">Wallets</h3>
           <button onClick={() => { invalidate('/wallets'); invalidate('/wallets/balances'); }} className="btn btn-ghost btn-sm">Refresh</button>
         </div>
         {loading && !wallets ? (
@@ -121,12 +122,12 @@ export default function Wallets() {
         ) : (
           <ul className="divide-y divide-border fade-in">
             {wallets.map((w) => (
-              <li key={w.id} className="px-5 py-4">
+              <li key={w.id} className="px-3.5 md:px-5 py-4">
                 {/* Row 1: chain + address + balance + actions */}
-                <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div className="flex items-center gap-3 min-w-0">
                     <div
-                      className="w-10 h-10 rounded-lg flex items-center justify-center text-[13px] font-semibold shrink-0"
+                      className="w-10 h-10 rounded-lg flex items-center justify-center text-[12px] font-semibold shrink-0"
                       style={{
                         background: w.chain === 'SOLANA'
                           ? 'linear-gradient(135deg, #9945FF 0%, #14F195 100%)'
@@ -137,13 +138,13 @@ export default function Wallets() {
                       {w.chain === 'SOLANA' ? 'SOL' : 'ETH'}
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[13px] truncate max-w-[200px]">{w.address}</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-[12.5px] truncate max-w-[120px] md:max-w-[260px]">{w.address}</span>
                         {w.isPrimary && (
-                          <span className="chip" style={{ color: 'var(--accent)', fontSize: 10 }}>Primary</span>
+                          <span className="chip chip-accent">Primary</span>
                         )}
                       </div>
-                      <div className="text-[11px] text-[color:var(--text-3)] mt-0.5">
+                      <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
                         {w.chain} · {isTestnet ? (w.chain === 'SOLANA' ? 'devnet' : 'Sepolia') : 'mainnet'}
                       </div>
                     </div>
@@ -250,7 +251,7 @@ export default function Wallets() {
             ))}
           </ul>
         )}
-      </div>
+      </section>
 
       <CexPortfolio />
     </div>

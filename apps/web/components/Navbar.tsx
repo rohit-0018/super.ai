@@ -22,24 +22,20 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <nav className="sticky top-0 z-40 border-b border-border bg-[color:color-mix(in_srgb,var(--bg)_92%,transparent)] backdrop-blur-md">
+    <nav
+      className="sticky top-0 z-40 backdrop-blur-xl"
+      style={{
+        background: 'color-mix(in srgb, var(--bg) 72%, transparent)',
+        borderBottom: '1px solid color-mix(in srgb, var(--border) 75%, transparent)',
+        boxShadow: '0 1px 0 0 color-mix(in srgb, var(--accent) 5%, transparent)',
+      }}
+    >
       <div className="max-w-7xl mx-auto px-4 md:px-6 h-14 flex items-center">
-        <Link href="/" className="flex items-center gap-2 mr-6 md:mr-8">
-          <div
-            className="w-6 h-6 rounded-md flex items-center justify-center"
-            style={{
-              background:
-                'linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 60%, black) 100%)',
-            }}
-          >
-            <span
-              className="font-bold text-[11px]"
-              style={{ color: 'white', fontFamily: 'var(--font-mono)' }}
-            >
-              Q
-            </span>
-          </div>
-          <span className="font-semibold text-[15px] tracking-tight">QWAI</span>
+        <Link href="/" className="flex items-center gap-2.5 mr-6 md:mr-8 group">
+          <QwaiMark />
+          <span className="font-display font-semibold text-[15px] tracking-tight">
+            QWAI
+          </span>
         </Link>
 
         {/* Desktop links */}
@@ -50,11 +46,17 @@ export default function Navbar() {
               <Link
                 key={href}
                 href={href}
-                className={`px-3 h-8 flex items-center rounded-md text-[13px] font-medium transition-colors ${
+                className="relative px-3 h-8 flex items-center rounded-md text-[13px] font-medium transition-all"
+                style={
                   active
-                    ? 'text-text bg-[color:var(--surface-hover)]'
-                    : 'text-[color:var(--text-2)] hover:text-text hover:bg-[color:var(--surface-hover)]'
-                }`}
+                    ? {
+                        color: 'var(--text)',
+                        background: 'color-mix(in srgb, var(--accent) 10%, var(--surface-hover) 85%)',
+                        boxShadow:
+                          'inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent), 0 0 18px -6px var(--glow-cyan)',
+                      }
+                    : { color: 'var(--text-2)' }
+                }
               >
                 {label}
               </Link>
@@ -81,7 +83,14 @@ export default function Navbar() {
 
       {/* Mobile drawer */}
       {mobileOpen && (
-        <div className="md:hidden border-t border-border bg-[color:var(--bg)] fade-in">
+        <div
+          className="md:hidden fade-in"
+          style={{
+            borderTop: '1px solid var(--border)',
+            background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
+            backdropFilter: 'blur(18px)',
+          }}
+        >
           <div className="max-w-7xl mx-auto px-4 py-3">
             <div className="grid gap-0.5">
               {links.map(([href, label]) => {
@@ -91,11 +100,16 @@ export default function Navbar() {
                     key={href}
                     href={href}
                     onClick={() => setMobileOpen(false)}
-                    className={`px-3 h-10 flex items-center rounded-md text-[14px] font-medium transition-colors ${
+                    className="px-3 h-10 flex items-center rounded-md text-[14px] font-medium transition-colors"
+                    style={
                       active
-                        ? 'text-text bg-[color:var(--surface-hover)]'
-                        : 'text-[color:var(--text-2)] hover:text-text hover:bg-[color:var(--surface-hover)]'
-                    }`}
+                        ? {
+                            color: 'var(--text)',
+                            background: 'color-mix(in srgb, var(--accent) 10%, var(--surface-hover) 85%)',
+                            boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent)',
+                          }
+                        : { color: 'var(--text-2)' }
+                    }
                   >
                     {label}
                   </Link>
@@ -106,6 +120,30 @@ export default function Navbar() {
         </div>
       )}
     </nav>
+  );
+}
+
+function QwaiMark() {
+  return (
+    <span className="hex-mark" aria-hidden>
+      <svg viewBox="0 0 64 64" width="24" height="24">
+        <defs>
+          <linearGradient id="nav-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#22d3ee" />
+            <stop offset="1" stopColor="#c084fc" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M32 10 L52 22 L52 42 L32 54 L12 42 L12 22 Z"
+          fill="none"
+          stroke="url(#nav-grad)"
+          strokeWidth="3.5"
+          strokeLinejoin="round"
+        />
+        <circle cx="32" cy="32" r="5" fill="url(#nav-grad)" />
+        <path d="M36 36 L48 48" stroke="url(#nav-grad)" strokeWidth="3.5" strokeLinecap="round" />
+      </svg>
+    </span>
   );
 }
 

@@ -1,16 +1,31 @@
 import './globals.css';
 import type { ReactNode } from 'react';
-import { Inter, JetBrains_Mono } from 'next/font/google';
-import Navbar from '../components/Navbar';
+import type { Metadata, Viewport } from 'next';
+import { Inter, JetBrains_Mono, Space_Grotesk } from 'next/font/google';
+import AppShell from '../components/AppShell';
 import AuthGate from '../components/AuthGate';
 import ErrorSink from '../components/ErrorSink';
 
 const sans = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono', display: 'swap' });
+const display = Space_Grotesk({
+  subsets: ['latin'],
+  variable: '--font-display',
+  display: 'swap',
+  weight: ['400', '500', '600', '700'],
+});
 
-export const metadata = {
+export const metadata: Metadata = {
   title: 'QWAI — Your Personal AI Trading Agent',
-  description: 'AI trading agent for crypto.',
+  description:
+    'QWAI learns your trading style, executes on Solana and EVM 24/7, monitors positions while you sleep, and chats naturally on web and Telegram.',
+  applicationName: 'QWAI',
+};
+
+export const viewport: Viewport = {
+  themeColor: '#0a0d14',
+  width: 'device-width',
+  initialScale: 1,
 };
 
 // Prevent theme flash on first paint.
@@ -24,7 +39,12 @@ const noFlashScript = `
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" data-theme="dark" suppressHydrationWarning className={`${sans.variable} ${mono.variable}`}>
+    <html
+      lang="en"
+      data-theme="dark"
+      suppressHydrationWarning
+      className={`${sans.variable} ${mono.variable} ${display.variable}`}
+    >
       <head>
         <script dangerouslySetInnerHTML={{ __html: noFlashScript }} />
       </head>
@@ -33,25 +53,25 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         {process.env.NEXT_PUBLIC_NETWORK_MODE === 'testnet' && (
           <div
             style={{
-              background: 'linear-gradient(90deg, #f59e0b, #d97706)',
-              color: '#000',
+              background: 'var(--warn)',
+              color: '#0a0d14',
               textAlign: 'center',
-              padding: '6px 16px',
-              fontSize: '12px',
-              fontWeight: 600,
-              letterSpacing: '0.05em',
+              padding: '5px 16px',
+              fontSize: '11px',
+              fontWeight: 700,
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
               position: 'sticky',
               top: 0,
-              zIndex: 50,
+              zIndex: 60,
             }}
           >
-            TESTNET MODE — transactions use devnet/Sepolia. Funds are not real.
+            Testnet mode · devnet / Sepolia · funds are not real
           </div>
         )}
-        <Navbar />
-        <main className="max-w-7xl mx-auto px-6 py-8">
+        <AppShell>
           <AuthGate>{children}</AuthGate>
-        </main>
+        </AppShell>
       </body>
     </html>
   );

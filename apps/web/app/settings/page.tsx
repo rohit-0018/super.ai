@@ -197,12 +197,11 @@ export default function Settings() {
   const loading = gLoading || meLoading;
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="page page-narrow space-y-4">
       <header>
-        <h1 className="text-[22px] font-semibold tracking-tight">Settings</h1>
-        <p className="text-[13px] text-[color:var(--text-2)] mt-1">
-          Guardrails, trading mode, notifications, and account.
-        </p>
+        <div className="section-eyebrow">Settings</div>
+        <h1 className="page-title">Preferences</h1>
+        <p className="page-subtitle">Guardrails, trading mode, notifications, and account.</p>
       </header>
 
       {/* Guardrails */}
