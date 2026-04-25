@@ -62,6 +62,7 @@ export default function Wallets() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
+          <a href="/wallets/analyze" className="btn btn-primary">Analyze wallet →</a>
           <button onClick={() => create('SOLANA')} className="btn">+ Solana</button>
           <button onClick={() => create('EVM')} className="btn">+ EVM</button>
         </div>

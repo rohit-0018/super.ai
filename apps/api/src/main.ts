@@ -8,8 +8,14 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { getNetworkMode } from './common/network-config';
 
 async function bootstrap() {
+  // Loud boot banner — misconfigured deploys (mainnet + local KMS fallback) should be obvious.
+  const mode = getNetworkMode();
+  const kms = process.env.AWS_KMS_KEY_ID ? 'AWS-KMS' : 'LOCAL-FALLBACK';
+  Logger.log(`[QWAI] network=${mode.toUpperCase()}  kms=${kms}`, 'Bootstrap');
+
   const app = await NestFactory.create(AppModule, { cors: true });
   app.use(helmet());
   app.setGlobalPrefix('api');

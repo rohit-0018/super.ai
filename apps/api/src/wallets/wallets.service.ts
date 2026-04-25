@@ -6,12 +6,17 @@ import bs58 from 'bs58';
 import { getSolanaRpcUrl, getEvmRpcUrl, isTestnet } from '../common/network-config';
 import { PrismaService } from '../prisma/prisma.service';
 import { KmsService } from './kms.service';
+import { LiveTradeGuardService } from '../common/live-trade-guard.service';
 
 const MAX_WALLETS_PER_USER = 5;
 
 @Injectable()
 export class WalletsService {
-  constructor(private prisma: PrismaService, private kms: KmsService) {}
+  constructor(
+    private prisma: PrismaService,
+    private kms: KmsService,
+    private liveGuard: LiveTradeGuardService,
+  ) {}
 
   /** Fast list — no RPC calls, returns instantly from DB. */
   async list(userId: string) {
@@ -216,6 +221,7 @@ export class WalletsService {
   }
 
   async withdraw(userId: string, walletId: string, toAddress: string, tokenMint: string, amount: number) {
+    await this.liveGuard.checkLiveWithdraw({ userId });
     const wallet = await this.prisma.wallet.findFirst({ where: { id: walletId, userId } });
     if (!wallet) throw new ForbiddenException();
     const key = await this.kms.decrypt({

@@ -57,7 +57,12 @@ function makeService(overrides: {
   const securityAudit: any = {
     log: jest.fn().mockResolvedValue(undefined),
   };
-  const svc = new ExecutionService(prisma, guardrails, jup, oneinch, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit);
+  const liveGuard: any = {
+    checkLiveSwap: jest.fn().mockResolvedValue(undefined),
+    checkLiveWithdraw: jest.fn().mockResolvedValue(undefined),
+    invalidate: jest.fn(),
+  };
+  const svc = new ExecutionService(prisma, guardrails, jup, oneinch, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit, liveGuard);
   return { svc, prisma, guardrails, jup, oneinch, wallets, dna, trades, audits, paperBalances };
 }
 

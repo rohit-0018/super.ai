@@ -29,10 +29,12 @@ export const viewport: Viewport = {
 };
 
 // Prevent theme flash on first paint.
+// qwai is dark-first by design — we ignore prefers-color-scheme and persist 'dark'
+// unless the user has explicitly toggled to light via the in-app theme switch.
 const noFlashScript = `
 (function(){try{
   var t = localStorage.getItem('theme');
-  if(!t){ t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; }
+  if(t !== 'light' && t !== 'dark'){ t = 'dark'; localStorage.setItem('theme','dark'); }
   document.documentElement.setAttribute('data-theme', t);
 }catch(e){ document.documentElement.setAttribute('data-theme','dark'); }})();
 `;

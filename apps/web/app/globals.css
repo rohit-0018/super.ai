@@ -47,34 +47,76 @@
 }
 
 :root[data-theme='light'] {
-  --bg:              #f4f5f9;
-  --bg-2:            #eceef4;
+  /* Slightly darker, cooler canvas so white cards have something to sit on. */
+  --bg:              #e9ecf3;
+  --bg-2:            #dfe3ec;
   --surface:         #ffffff;
-  --surface-2:       #f6f7fb;
-  --surface-hover:   #eef0f7;
+  --surface-2:       #f3f5fa;
+  --surface-hover:   #ebeef6;
   --surface-solid:   #ffffff;
-  --border:          rgba(15,23,42,0.08);
-  --border-2:        rgba(15,23,42,0.14);
-  --border-strong:   rgba(15,23,42,0.14);
-  --highlight:       rgba(255,255,255,0.8);
+  /* Stronger borders so cards/inputs read as bounded objects, not floating text. */
+  --border:          rgba(15,23,42,0.12);
+  --border-2:        rgba(15,23,42,0.20);
+  --border-strong:   rgba(15,23,42,0.22);
+  /* On light, "highlight" is a subtle grey wash for section headers.
+     The dark-mode white-alpha trick is invisible on white, so we use a
+     surface tint instead and rely on shadow for elevation. */
+  --highlight:       rgba(15,23,42,0.03);
   --text:            #0c1220;
   --text-2:          #4b5168;
-  --text-3:          #8088a0;
+  --text-3:          #7a819b;
   --text-muted:      #4b5168;
-  --text-dim:        #8088a0;
+  --text-dim:        #7a819b;
   --accent:          #2563eb;
   --accent-hover:    #1d4ed8;
   --accent-2:        #9333ea;
   --accent-2-hover:  #7e22ce;
   --accent-fg:       #ffffff;
-  --ok:              #16a34a;
-  --warn:            #d97706;
-  --bad:             #dc2626;
-  --ring:            rgba(37,99,235,0.22);
-  --shadow-card:     0 1px 0 rgba(15,23,42,0.04), 0 1px 2px rgba(15,23,42,0.05);
-  --shadow-raised:   0 1px 0 rgba(15,23,42,0.04), 0 8px 24px -10px rgba(15,23,42,0.15);
-  --shadow-lg:       0 24px 48px -12px rgba(15,23,42,0.15);
+  --ok:              #15803d;
+  --warn:            #b45309;
+  --bad:             #b91c1c;
+  --ring:            rgba(37,99,235,0.28);
+  /* Real elevation in light mode comes from a soft drop shadow + crisp 1px border. */
+  --shadow-card:     0 1px 2px rgba(15,23,42,0.06), 0 1px 1px rgba(15,23,42,0.04);
+  --shadow-raised:   0 1px 2px rgba(15,23,42,0.06), 0 12px 32px -10px rgba(15,23,42,0.18);
+  --shadow-lg:       0 24px 48px -12px rgba(15,23,42,0.18);
   --shadow-glow:     0 0 0 1px rgba(37,99,235,0.3);
+}
+
+/* Light-mode tweaks where dark-mode primitives don't translate cleanly. */
+:root[data-theme='light'] .section-header {
+  /* Use a flat tinted strip instead of the white-on-white gradient. */
+  background: var(--surface-2);
+}
+:root[data-theme='light'] .input,
+:root[data-theme='light'] .textarea,
+:root[data-theme='light'] .select {
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 rgba(15,23,42,0.04);
+}
+:root[data-theme='light'] .btn {
+  background: var(--surface);
+  box-shadow: 0 1px 0 rgba(15,23,42,0.04);
+}
+:root[data-theme='light'] .btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+:root[data-theme='light'] .statusbar {
+  /* Keep the topbar opaque enough that the ticker doesn't bleed into page content. */
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border-bottom: 1px solid var(--border);
+}
+:root[data-theme='light'] .rail {
+  background: var(--surface);
+}
+:root[data-theme='light'] .mobile-tabbar {
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+}
+:root[data-theme='light'] .agent-drawer {
+  background: var(--surface);
+}
+:root[data-theme='light'] .table th {
+  background: var(--surface-2);
 }
 
 html { color-scheme: dark; }
@@ -334,31 +376,55 @@ body { position: relative; overflow-x: hidden; }
   .link:hover { text-decoration: underline; text-underline-offset: 2px; }
 
   /* ---------- Stat (number hierarchy) ---------- */
-  .stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;             /* required so grid/flex parents constrain us */
+    overflow: hidden;
+    max-width: 100%;
+  }
+  .stat > .flex { min-width: 0; max-width: 100%; }   /* the value+delta row */
   .stat-label {
     font-size: 11px;
     color: var(--text-3);
     text-transform: uppercase;
     letter-spacing: 0.14em;
     font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .stat-value {
-    font-size: 22px;
+    font-size: clamp(18px, 1.7vw, 22px);
     font-weight: 600;
     letter-spacing: -0.02em;
     font-family: var(--font-mono);
     font-feature-settings: 'tnum' 1;
     color: var(--text);
     line-height: 1.1;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .stat-value-hero {
-    font-size: 44px;
+    /* Was a fixed 44px which overflowed narrow grid cells and bled into the
+       neighbouring stat. Clamp scales between 26px and 38px so the hero
+       number never blows past its column. */
+    font-size: clamp(26px, 3.2vw, 38px);
     font-weight: 600;
     letter-spacing: -0.03em;
     font-family: var(--font-mono);
     font-feature-settings: 'tnum' 1;
     color: var(--text);
-    line-height: 1.0;
+    line-height: 1.05;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .stat-value-sm {
     font-size: 14px;
@@ -367,6 +433,11 @@ body { position: relative; overflow-x: hidden; }
     font-family: var(--font-mono);
     font-feature-settings: 'tnum' 1;
     color: var(--text);
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .stat-delta {
     display: inline-flex;
@@ -743,7 +814,10 @@ body { position: relative; overflow-x: hidden; }
     gap: 16px;
   }
   @media (min-width: 640px)  { .grid-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (min-width: 1024px) { .grid-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px; } }
+  @media (min-width: 1024px) { .grid-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; } }
+  @media (min-width: 1280px) { .grid-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px; } }
+  /* Cells must constrain their children — grid items default to min-content width. */
+  .grid-stats > * { min-width: 0; }
 
   /* Section-header: actions stack below title on tiny screens */
   @media (max-width: 520px) {

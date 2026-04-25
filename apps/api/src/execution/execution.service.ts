@@ -14,6 +14,7 @@ import { EmotionalIntelService } from '../agents/emotional-intel.service';
 import { SecurityComplianceService } from '../security/security-compliance.service';
 import { RiskEngineService } from '../security/risk-engine.service';
 import { SecurityAuditService } from '../security/security-audit.service';
+import { LiveTradeGuardService } from '../common/live-trade-guard.service';
 import { makeQueue, makeJobData, QUEUES } from '../agents/queues';
 import {
   AgentActionType,
@@ -71,6 +72,7 @@ export class ExecutionService {
     private securityCompliance: SecurityComplianceService,
     private riskEngine: RiskEngineService,
     private securityAudit: SecurityAuditService,
+    private liveGuard: LiveTradeGuardService,
   ) {}
 
   async swap(input: SwapInput): Promise<SwapResult> {
@@ -150,6 +152,11 @@ export class ExecutionService {
     const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
     const mode: TradeMode = user?.paperMode ? 'PAPER' : 'LIVE';
 
+    // LiveTradeGuard — per-user rate limit + first-live-trade cap.
+    if (mode === 'LIVE') {
+      await this.liveGuard.checkLiveSwap({ userId: input.userId, notionalUsd: input.notionalUsd });
+    }
+
     let txHash: string | null = null;
     let outAmount = input.amountIn;
 
@@ -210,6 +217,7 @@ export class ExecutionService {
       throw err;
     }
 
+    if (mode === 'LIVE') this.liveGuard.invalidate(input.userId);
     const trade = await this.prisma.trade.create({
       data: {
         userId: input.userId,

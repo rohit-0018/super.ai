@@ -4,10 +4,13 @@ import { resolve } from 'path';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module';
+import { LiveGuardModule } from './common/live-guard.module';
 import { AuthModule } from './auth/auth.module';
 import { WalletsModule } from './wallets/wallets.module';
 import { MarketDataModule } from './market-data/market-data.module';
 import { TokenIntelModule } from './token-intel/token-intel.module';
+import { TokenAnalysisModule } from './token-analysis/token-analysis.module';
+import { WalletAnalysisModule } from './wallet-analysis/wallet-analysis.module';
 import { AiAgentModule } from './ai-agent/ai-agent.module';
 import { ExecutionModule } from './execution/execution.module';
 import { GuardrailsModule } from './guardrails/guardrails.module';
@@ -42,10 +45,13 @@ import { TraceMiddleware } from './common/trace.middleware';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     SecurityModule,
     PrismaModule,
+    LiveGuardModule,
     AuthModule,
     WalletsModule,
     MarketDataModule,
     TokenIntelModule,
+    TokenAnalysisModule,
+    WalletAnalysisModule,
     AiAgentModule,
     ExecutionModule,
     GuardrailsModule,

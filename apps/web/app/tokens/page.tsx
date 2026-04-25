@@ -6,12 +6,15 @@ import { Section } from '../../components/ui/Section';
 export default function TokensPage() {
   return (
     <div className="page space-y-4">
-      <header>
-        <div className="section-eyebrow">Tokens</div>
-        <h1 className="page-title">Token intel</h1>
-        <p className="page-subtitle">
-          Conviction scores, rug checks, holder analytics — across Solana and EVM.
-        </p>
+      <header className="page-header">
+        <div>
+          <div className="section-eyebrow">Tokens</div>
+          <h1 className="page-title">Token intel</h1>
+          <p className="page-subtitle">
+            Conviction scores, rug checks, holder analytics — across Solana and EVM.
+          </p>
+        </div>
+        <a href="/tokens/analyze" className="btn btn-primary">Analyze by address →</a>
       </header>
 
       <TrendingMovers />

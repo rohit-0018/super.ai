@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { KMSClient, GenerateDataKeyCommand, DecryptCommand } from '@aws-sdk/client-kms';
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypto';
+import { getNetworkMode, isTestnet } from '../common/network-config';
 
 export interface EnvelopeCiphertext {
   ciphertext: string; // base64
@@ -9,15 +10,57 @@ export interface EnvelopeCiphertext {
 
 /**
  * AWS KMS envelope encryption with AES-256-GCM data key.
- * Falls back to a deterministic local key derived from JWT_SECRET when AWS_KMS_KEY_ID is unset
- * (development only — never enable in production).
+ *
+ * Production (mainnet): AWS_KMS_KEY_ID MUST be set. Boot fails otherwise.
+ * Dev/testnet: falls back to a deterministic key from JWT_SECRET if no KMS key
+ * configured. This fallback is NEVER allowed on mainnet because a leaked
+ * JWT_SECRET would decrypt every wallet.
  */
 @Injectable()
-export class KmsService {
+export class KmsService implements OnModuleInit {
   private readonly logger = new Logger(KmsService.name);
   private kms = process.env.AWS_KMS_KEY_ID
     ? new KMSClient({ region: process.env.AWS_REGION ?? 'us-east-1' })
     : null;
+
+  onModuleInit() {
+    const mode = getNetworkMode();
+    const unsafeOptIn = process.env.ALLOW_UNSAFE_LOCAL_KMS === '1';
+
+    if (mode === 'mainnet' && !this.kms && !unsafeOptIn) {
+      const msg =
+        '[KMS] FATAL: NETWORK_MODE=mainnet but AWS_KMS_KEY_ID is not set. ' +
+        'Refusing to boot — local key fallback would decrypt real wallets with a leaked JWT_SECRET. ' +
+        'For solo-dev mainnet testing with throwaway wallets, set ALLOW_UNSAFE_LOCAL_KMS=1.';
+      this.logger.error(msg);
+      throw new Error(msg);
+    }
+
+    if (mode === 'mainnet' && !this.kms && unsafeOptIn) {
+      // Loud, ugly, repeated warnings so this is impossible to miss in logs.
+      const warn = () => this.logger.warn(
+        '╔══════════════════════════════════════════════════════════════════════╗\n' +
+        '║ [KMS] UNSAFE: mainnet + local JWT_SECRET fallback. ALLOW_UNSAFE_LOCAL_KMS=1.  ║\n' +
+        '║ Anyone who learns JWT_SECRET can decrypt every wallet on this server.        ║\n' +
+        '║ NEVER set this flag in production. Throwaway/test wallets only.              ║\n' +
+        '╚══════════════════════════════════════════════════════════════════════╝',
+      );
+      warn();
+      // Repeat every 5 minutes so it stays visible across long sessions.
+      setInterval(warn, 5 * 60_000).unref?.();
+      return;
+    }
+
+    if (!this.kms) {
+      this.logger.warn(
+        `[KMS] Using local JWT_SECRET fallback — DEV/TESTNET ONLY. NETWORK_MODE=${mode}`,
+      );
+    } else {
+      this.logger.log(
+        `[KMS] Using AWS KMS (${process.env.AWS_REGION ?? 'us-east-1'}) — mainnet-safe. NETWORK_MODE=${mode}`,
+      );
+    }
+  }
 
   async encrypt(plaintext: Buffer): Promise<EnvelopeCiphertext> {
     const { dataKey, encryptedDek } = await this.generateDataKey();
@@ -52,7 +95,11 @@ export class KmsService {
         encryptedDek: Buffer.from(out.CiphertextBlob as Uint8Array).toString('base64'),
       };
     }
-    this.logger.warn('Using local KMS fallback — DEV ONLY');
+    // Safety net — onModuleInit has already either thrown OR opted in via
+    // ALLOW_UNSAFE_LOCAL_KMS. We only refuse here if the flag is missing.
+    if (!isTestnet() && process.env.ALLOW_UNSAFE_LOCAL_KMS !== '1') {
+      throw new Error('[KMS] Refused to generate data key: mainnet without AWS_KMS_KEY_ID');
+    }
     const dataKey = randomBytes(32);
     const wrapped = this.localWrap(dataKey);
     return { dataKey, encryptedDek: wrapped };

@@ -11,6 +11,6 @@ import { PrismaModule } from '../prisma/prisma.module';
   imports: [PrismaModule, forwardRef(() => AgentsModule)],
   providers: [TokenIntelService, GoPlusProvider, RugCheckProvider, ConvictionEngine],
   controllers: [TokenIntelController],
-  exports: [TokenIntelService, ConvictionEngine],
+  exports: [TokenIntelService, ConvictionEngine, GoPlusProvider, RugCheckProvider],
 })
 export class TokenIntelModule {}
