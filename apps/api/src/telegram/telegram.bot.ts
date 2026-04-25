@@ -1,23 +1,15 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Bot, InlineKeyboard } from 'grammy';
 import { ApprovalChannel, RejectCategory } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { TelegramLinkService } from '../auth/telegram-link.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { SnipeGroupService } from '../snipe/snipe-group.service';
 
 const NOT_LINKED_TEXT =
   '🔗 This Telegram is not linked to a QWAI account. Open web dashboard → Settings → "Link Telegram" to get a code, then send /link <code> here.';
 
-/**
- * Grammy bot wrapper. Registers the same command + callback handlers that
- * the standalone `apps/telegram-bot/src/index.ts` exposed, but calls internal
- * services directly instead of HTTP-ing back to the API.
- *
- * NOTE: Construction must be explicit (call `build(token)`) so that Nest DI
- * does not try to instantiate Grammy at module import time when no token
- * is configured.
- */
 @Injectable()
 export class TelegramBot {
   private readonly logger = new Logger(TelegramBot.name);
@@ -29,6 +21,7 @@ export class TelegramBot {
     private readonly tgLink: TelegramLinkService,
     @Inject(forwardRef(() => ApprovalsService))
     private readonly approvals: ApprovalsService,
+    @Optional() private readonly snipeGroup: SnipeGroupService,
   ) {}
 
   get bot(): Bot | null {
@@ -54,10 +47,6 @@ export class TelegramBot {
     return this.tgLink.resolveByChatId(String(chatId));
   }
 
-  /**
-   * Chat on behalf of a telegram chat id. Mirrors the old `/chat/telegram`
-   * endpoint semantics: if the chat is not linked, return the banner text.
-   */
   private async chat(chatId: number, content: string): Promise<string> {
     const userId = await this.resolveUserId(chatId);
     if (!userId) return NOT_LINKED_TEXT;
@@ -81,6 +70,7 @@ export class TelegramBot {
           '/alerts — recent alerts',
           '/kill — emergency kill switch',
           '/paper — toggle paper mode info',
+          '/snipe — sniper bot commands',
           '',
           'Or just talk naturally: "Buy $200 of SOL"',
         ].join('\n'),
@@ -105,22 +95,20 @@ export class TelegramBot {
         await this.tgLink.link(String(ctx.chat.id), code);
         return ctx.reply('✅ Telegram linked! You now share memory + wallets with the web dashboard.');
       } catch (e: any) {
-        const msg = e?.message ?? 'unknown error';
-        return ctx.reply(`❌ Link failed: ${msg}`);
+        return ctx.reply(`❌ Link failed: ${e?.message ?? 'unknown error'}`);
       }
     });
 
     // /portfolio
     bot.command('portfolio', async (ctx) => {
       try {
-        const reply = await this.chat(ctx.chat.id, 'Give me my portfolio summary with current positions and P&L.');
-        return ctx.reply(reply);
+        return ctx.reply(await this.chat(ctx.chat.id, 'Give me my portfolio summary with current positions and P&L.'));
       } catch (e: any) {
         return ctx.reply(`Error: ${e.message}`);
       }
     });
 
-    // /buy <amount> <token> — quick trade
+    // /buy <amount> <token>
     bot.command('buy', async (ctx) => {
       const args = ctx.match?.trim();
       if (!args) return ctx.reply('Usage: /buy 200 SOL');
@@ -157,38 +145,108 @@ export class TelegramBot {
       const args = ctx.match?.trim();
       if (!args) return ctx.reply('Usage: /dca 50 SOL daily');
       try {
-        const reply = await this.chat(ctx.chat.id, `Set up a DCA: buy ${args}`);
-        return ctx.reply(reply);
+        return ctx.reply(await this.chat(ctx.chat.id, `Set up a DCA: buy ${args}`));
       } catch (e: any) {
         return ctx.reply(`Error: ${e.message}`);
       }
     });
 
-    // /alerts — recent alerts
+    // /alerts
     bot.command('alerts', async (ctx) => {
       try {
-        const reply = await this.chat(ctx.chat.id, 'Show me my recent alerts and notifications.');
-        return ctx.reply(reply);
+        return ctx.reply(await this.chat(ctx.chat.id, 'Show me my recent alerts and notifications.'));
       } catch (e: any) {
         return ctx.reply(`Error: ${e.message}`);
       }
     });
 
-    // /kill — emergency
-    bot.command('kill', async (ctx) => {
-      return ctx.reply('🚨 Are you sure you want to engage the kill switch? This pauses ALL agents.', {
+    // /kill
+    bot.command('kill', async (ctx) =>
+      ctx.reply('🚨 Are you sure you want to engage the kill switch? This pauses ALL agents.', {
         reply_markup: new InlineKeyboard()
           .text('🛑 Yes, kill all', 'confirm:kill')
           .text('Cancel', 'confirm:cancel'),
-      });
-    });
+      }),
+    );
 
     // /paper
     bot.command('paper', async (ctx) =>
       ctx.reply('Paper mode toggle: open the web /settings page to flip between paper ↔ live. This keeps both interfaces in sync.'),
     );
 
-    // J5: Inline action button handlers (confirm / reject / snooze)
+    // /snipe — show sniper status + help
+    bot.command('snipe', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+
+      const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
+      const lines = [
+        '⚡ *Sniper Bot*',
+        '',
+        config
+          ? [
+              `Status: ${config.enabled ? '🟢 Enabled' : '🔴 Disabled'}`,
+              `Chain: ${config.chain}`,
+              `Buy amount: ${(Number(config.buyAmountRaw) / 1e9).toFixed(4)} SOL`,
+              `Slippage: ${(config.maxSlippageBps / 100).toFixed(0)}%`,
+              `Groups: ${config.groupIds.length} monitored`,
+            ].join('\n')
+          : 'No config yet. Use /snipe\\_start or REST API POST /api/snipe/config',
+        '',
+        'Commands:',
+        '/snipe\\_on — enable + start hot session',
+        '/snipe\\_off — disable + stop session',
+        '/snipe\\_status — session status',
+      ];
+      return ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    });
+
+    // /snipe_on — enable sniper (requires existing config with walletId)
+    bot.command('snipe_on', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      try {
+        const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
+        if (!config) return ctx.reply('No snipe config found. Configure at /api/snipe/config first.');
+        await this.prisma.snipeConfig.update({ where: { userId }, data: { enabled: true } });
+        return ctx.reply(`✅ Sniper enabled. Add this bot to your groups, make sure privacy mode is OFF in BotFather.\n\nHot session starts automatically when the bot receives a group message for your user.`, { parse_mode: 'Markdown' });
+      } catch (e: any) {
+        return ctx.reply(`Error: ${e.message}`);
+      }
+    });
+
+    // /snipe_off — disable sniper
+    bot.command('snipe_off', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      try {
+        await this.prisma.snipeConfig.updateMany({ where: { userId }, data: { enabled: false } });
+        this.snipeGroup?.stopUserSession(userId);
+        return ctx.reply('🔴 Sniper disabled.');
+      } catch (e: any) {
+        return ctx.reply(`Error: ${e.message}`);
+      }
+    });
+
+    // /snipe_status
+    bot.command('snipe_status', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      const status = this.snipeGroup
+        ? this.snipeGroup.getUserSessionStatus(userId)
+        : { active: false };
+      const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
+      return ctx.reply(
+        [
+          `Session: ${status.active ? `🟢 Active (expires ${new Date((status as any).expiresAt).toISOString()})` : '🔴 No hot session'}`,
+          `Sniper: ${config?.enabled ? '🟢 Enabled' : '🔴 Disabled'}`,
+          `Groups: ${config?.groupIds?.join(', ') || 'none'}`,
+        ].join('\n'),
+      );
+    });
+
+    // ── Inline callbacks ──
+
     bot.callbackQuery(/^action:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const action = ctx.match[1];
@@ -209,8 +267,7 @@ export class TelegramBot {
     bot.callbackQuery(/^confirm:kill$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       try {
-        const reply = await this.chat(ctx.chat!.id, 'Engage kill switch immediately. Pause all agents.');
-        return ctx.reply(`🚨 ${reply}`);
+        return ctx.reply(`🚨 ${await this.chat(ctx.chat!.id, 'Engage kill switch immediately. Pause all agents.')}`);
       } catch (e: any) {
         return ctx.reply(`Error: ${e.message}`);
       }
@@ -225,15 +282,12 @@ export class TelegramBot {
       await ctx.answerCallbackQuery();
       const [, action, args] = ctx.match;
       try {
-        const reply = await this.chat(ctx.chat!.id, `Confirmed — ${action} ${args}. Execute now.`);
-        return ctx.reply(reply);
+        return ctx.reply(await this.chat(ctx.chat!.id, `Confirmed — ${action} ${args}. Execute now.`));
       } catch (e: any) {
         return ctx.reply(`Error: ${e.message}`);
       }
     });
 
-    // Autonomous-trade approval buttons. "Approve" is a one-tap; "Reject" opens
-    // a 5-category preset picker so rejection reasons feed the L3 scorer.
     bot.callbackQuery(/^approve:([\w-]+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const [, requestId] = ctx.match;
@@ -276,18 +330,41 @@ export class TelegramBot {
       }
     });
 
-    // Snooze button for alert notifications
     bot.callbackQuery(/^snooze:(\d+)$/, async (ctx) => {
       await ctx.answerCallbackQuery('Snoozed for 1 hour');
       return ctx.reply('🔕 Alert snoozed for 1 hour.');
     });
 
-    // Natural language catch-all
+    // ── Group / channel message handler (sniper hot path) ──
+    // Runs BEFORE the catch-all so group messages never hit the AI.
+
+    bot.on('channel_post:text', async (ctx) => {
+      if (!this.snipeGroup) return;
+      const groupId = String(ctx.chat.id);
+      const text = ctx.channelPost.text ?? '';
+      this.snipeGroup.handleGroupMessage(groupId, text).catch((e) =>
+        this.logger.error(`snipeGroup channel_post error: ${e.message}`),
+      );
+    });
+
+    // Natural language + group catch-all
     bot.on('message:text', async (ctx) => {
+      const chatType = ctx.chat.type;
+
+      // Group/supergroup messages: check for CA and run sniper; don't reply
+      if ((chatType === 'group' || chatType === 'supergroup') && this.snipeGroup) {
+        const groupId = String(ctx.chat.id);
+        const text = ctx.message.text ?? '';
+        this.snipeGroup.handleGroupMessage(groupId, text).catch((e) =>
+          this.logger.error(`snipeGroup message error: ${e.message}`),
+        );
+        return;
+      }
+
+      // Private chat: route to AI as before
       if (ctx.message.text.startsWith('/')) return;
       try {
-        const reply = await this.chat(ctx.chat.id, ctx.message.text);
-        return ctx.reply(reply);
+        return ctx.reply(await this.chat(ctx.chat.id, ctx.message.text));
       } catch (e: any) {
         return ctx.reply('Error talking to QWAI: ' + e.message);
       }

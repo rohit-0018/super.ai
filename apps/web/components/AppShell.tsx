@@ -78,6 +78,7 @@ const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }
   { href: '/dashboard', label: 'Dashboard', icon: IconDashboard },
   { href: '/trade',     label: 'Trade',     icon: IconTrade },
   { href: '/agents',    label: 'Agents',    icon: IconAgents },
+  { href: '/snipe',     label: 'Sniper',    icon: IconSnipe },
   { href: '/tokens',    label: 'Tokens',    icon: IconGem },
   { href: '/wallets',   label: 'Wallets',   icon: IconWallet },
   { href: '/chat',      label: 'Chat',      icon: IconChat },
@@ -405,6 +406,13 @@ function IconTrade({ size }: { size?: number }) {
       <path d="M3 17l6-6 4 4 8-8" />
       <path d="M21 7h-5" />
       <path d="M21 7v5" />
+    </Svg>
+  );
+}
+function IconSnipe({ size }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
     </Svg>
   );
 }

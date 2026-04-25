@@ -184,6 +184,10 @@ model User {
   episodes         TradeEpisode[]
   convictionWeights UserConvictionWeights?
   convictionHistory ConvictionWeightsHistory[]
+  snipeConfig         SnipeConfig?
+  snipeTrades         SnipeTrade[]
+  snipeGroupOverrides SnipeGroupOverride[]
+  tgUserSession       TgUserSession?
 }
 
 model Wallet {
@@ -593,6 +597,110 @@ model UserNote {
   updatedAt             DateTime      @updatedAt
   @@index([userId, status, category])
   @@index([userId, lastConfirmedAt])
+}
+
+// ── Sniper ──
+
+enum SellMode {
+  TRIGGER      // fast path — same execution as buy
+  INTELLIGENT  // routes through AI analysis first
+}
+
+model SnipeConfig {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enabled        Boolean  @default(false)
+  chain          Chain    @default(SOLANA)
+  walletId       String
+  buyAmountRaw   String   @default("100000000")   // lamports (0.1 SOL) or wei
+  maxSlippageBps Int      @default(5000)           // 50 % for sniping
+  groupIds       String[]                           // Telegram chat IDs to monitor (numeric strings)
+  skipSafety     Boolean  @default(true)            // skip rug-check for raw speed
+  dedupeWindowMs Int      @default(30000)           // ignore same address within this window
+  minLiqUsd      Float    @default(0)
+  notifyOnBuy    Boolean  @default(true)            // send Telegram confirmation after each buy
+  matchPattern   String?                            // optional regex/keyword; message must match before CA extraction
+  sessionExpiresAt DateTime?                        // hot-session expiry (null = no active session)
+
+  // Sell config
+  sellEnabled       Boolean   @default(true)
+  sellMode          SellMode  @default(TRIGGER)
+  takeProfitPct     Float?                      // e.g. 100.0 = sell at 2× entry
+  stopLossPct       Float?                      // e.g. -25.0 = sell if down 25%
+  trailingStopPct   Float?                      // e.g. 20.0 = sell if 20% below peak
+  exitAfterMs       Int?                        // auto-exit after N ms (e.g. 1200000 = 20 min)
+  partialExitPct    Float?                      // if set, sell this % at takeProfitPct, trail the rest
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([enabled])
+}
+
+model TgUserSession {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber      String
+  encryptedSession String    // gramjs StringSession ciphertext (KMS envelope)
+  encryptedDek     String    // wrapped DEK
+  isActive         Boolean   @default(true)
+  lastConnectedAt  DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model SnipeTrade {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain     Chain
+  mint      String
+  amountRaw String
+  txHash    String?
+  outAmount String?
+  groupId   String
+  sourceMsg String?  @db.Text
+  status    String   @default("broadcast")  // broadcast | confirmed | failed
+
+  // Sell tracking
+  sellTxHash    String?
+  sellStatus    String?                         // pending | broadcast | confirmed | failed | skip
+  sellReason    String?                         // take_profit | stop_loss | trailing_stop | time_exit | manual | intelligent
+  peakPriceMul  Float?                          // highest price multiple seen (for trailing stop)
+  sellCheckedAt DateTime?                       // last time sell conditions were evaluated
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([mint, createdAt])
+}
+
+// Per-Telegram-group buy/sell overrides. null fields inherit from SnipeConfig.
+model SnipeGroupOverride {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  groupId         String                        // normalized positive Telegram chat ID
+  groupTitle      String    @default("")
+  enabled         Boolean   @default(true)
+
+  // null = inherit global
+  buyAmountRaw    String?
+  maxSlippageBps  Int?
+  sellMode        SellMode?
+  takeProfitPct   Float?
+  stopLossPct     Float?
+  trailingStopPct Float?
+  exitAfterMs     Int?
+  matchPattern    String?  // per-group match filter (overrides global SnipeConfig.matchPattern)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([userId, groupId])
+  @@index([userId])
 }
 
 // L4 — declarative intent memory. Natural-language rules extracted from chat

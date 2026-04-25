@@ -42,8 +42,8 @@ export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 export function makeQueue(name: QueueName) {
   return new Queue(name, { connection });
 }
-export function makeWorker(name: QueueName, processor: Processor) {
-  return new Worker(name, processor, { connection });
+export function makeWorker(name: QueueName, processor: Processor, opts: Record<string, unknown> = {}) {
+  return new Worker(name, processor, { connection, ...opts });
 }
 export function makeEvents(name: QueueName) {
   return new QueueEvents(name, { connection });

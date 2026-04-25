@@ -18,6 +18,7 @@ export class RealtimeGateway {
   @SubscribeMessage('subscribe')
   onSubscribe(@MessageBody() topic: string, @ConnectedSocket() client: Socket) {
     client.join(topic);
+    this.logger.debug(`Client ${client.id} joined room ${topic}`);
     return { ok: true, topic };
   }
 
@@ -27,11 +28,14 @@ export class RealtimeGateway {
    * forgot to include one we add the ambient trace from AsyncLocalStorage.
    */
   emitToUser(userId: string, event: string, payload: unknown): void {
+    if (!this.server) return;
     const envelope = this.ensureTraceEnvelope(payload);
+    this.logger.debug(`emit → user:${userId} [${event}]`);
     this.server.to(`user:${userId}`).emit(event, envelope);
   }
 
   emitPrice(symbol: string, payload: unknown): void {
+    if (!this.server) return;
     const envelope = this.ensureTraceEnvelope(payload);
     this.server.to(`prices:${symbol}`).emit('price', envelope);
   }

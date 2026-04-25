@@ -1,8 +1,10 @@
 .PHONY: help install build lint test test-e2e clean \
 	prisma-generate prisma-migrate prisma-studio prisma-reset \
 	infra-up infra-down infra-restart infra-logs infra-ps infra-nuke \
-	logs-postgres logs-redis \
+	logs-postgres logs-redis logs logs-api logs-worker logs-web \
 	dev dev-api dev-worker dev-web dev-all dev-stop
+
+QWAI_LOG_DIR := /tmp/qwai-logs
 
 SHELL := /bin/bash
 # Make every recipe source nvm so pnpm/node resolve even if make is invoked
@@ -89,15 +91,30 @@ infra-nuke: ## Wipe infra volumes (destructive: DB data is lost)
 logs-postgres: ; $(COMPOSE) logs -f postgres
 logs-redis: ; $(COMPOSE) logs -f redis
 
+# ---------- app logs (tailed from file, written by dev-all) ----------
+logs: logs-api ## Alias — tail API logs
+logs-api: ## Tail live API logs (last 150 lines)
+	@mkdir -p $(QWAI_LOG_DIR)
+	@tail -n 150 -f $(QWAI_LOG_DIR)/api.log 2>/dev/null || echo "No API log yet — run 'make dev' first"
+logs-worker: ## Tail live worker logs
+	@mkdir -p $(QWAI_LOG_DIR)
+	@tail -n 150 -f $(QWAI_LOG_DIR)/worker.log 2>/dev/null || echo "No worker log yet — run 'make dev' first"
+logs-web: ## Tail live web logs
+	@mkdir -p $(QWAI_LOG_DIR)
+	@tail -n 150 -f $(QWAI_LOG_DIR)/web.log 2>/dev/null || echo "No web log yet — run 'make dev' first"
+
 # ---------- per-service dev (host, hot reload) ----------
 # Each target runs the app natively on the host so file saves trigger
 # Next.js fast refresh / Nest --watch / tsx watch. No docker rebuild.
-dev-api: ## Run API with hot reload (nest --watch)
-	$(PNPM) --filter @qwai/api dev
-dev-worker: ## Run worker with hot reload (nest --watch, worker entry)
-	$(PNPM) --filter @qwai/api dev:worker
-dev-web: ## Run web with hot reload (next dev / fast refresh)
-	$(PNPM) --filter @qwai/web dev
+dev-api: ## Run API with hot reload, tee output to /tmp/qwai-logs/api.log
+	@mkdir -p $(QWAI_LOG_DIR)
+	$(PNPM) --filter @qwai/api dev 2>&1 | tee $(QWAI_LOG_DIR)/api.log
+dev-worker: ## Run worker with hot reload, tee output to /tmp/qwai-logs/worker.log
+	@mkdir -p $(QWAI_LOG_DIR)
+	$(PNPM) --filter @qwai/api dev:worker 2>&1 | tee $(QWAI_LOG_DIR)/worker.log
+dev-web: ## Run web with hot reload, tee output to /tmp/qwai-logs/web.log
+	@mkdir -p $(QWAI_LOG_DIR)
+	$(PNPM) --filter @qwai/web dev 2>&1 | tee $(QWAI_LOG_DIR)/web.log
 
 dev-kill: ## Kill anything on dev ports (3001, 4400) before starting
 	@-lsof -ti:3001 2>/dev/null | xargs kill -9 2>/dev/null || true
@@ -112,11 +129,12 @@ dev-stop: ## Kill stray host dev processes
 	@$(MAKE) dev-kill
 
 dev-all: infra-up dev-kill ## Start infra + api (with bot) + worker + web with hot reload
-	@echo ">> infra up. starting api, worker, web on host. Ctrl+C stops all."
+	@mkdir -p $(QWAI_LOG_DIR)
+	@echo ">> infra up. starting api, worker, web. Logs → $(QWAI_LOG_DIR)/  ('make logs' to tail API)"
 	@trap 'kill 0' INT TERM; \
-		( $(PNPM) --filter @qwai/api dev          2>&1 | awk '{print "[api]    " $$0; fflush()}' ) & \
-		( $(PNPM) --filter @qwai/api dev:worker   2>&1 | awk '{print "[worker] " $$0; fflush()}' ) & \
-		( $(PNPM) --filter @qwai/web dev          2>&1 | awk '{print "[web]    " $$0; fflush()}' ) & \
+		( $(PNPM) --filter @qwai/api dev          2>&1 | tee $(QWAI_LOG_DIR)/api.log    | awk '{print "[api]    " $$0; fflush()}' ) & \
+		( $(PNPM) --filter @qwai/api dev:worker   2>&1 | tee $(QWAI_LOG_DIR)/worker.log | awk '{print "[worker] " $$0; fflush()}' ) & \
+		( $(PNPM) --filter @qwai/web dev          2>&1 | tee $(QWAI_LOG_DIR)/web.log    | awk '{print "[web]    " $$0; fflush()}' ) & \
 		wait
 
 dev: dev-all ## Alias for dev-all

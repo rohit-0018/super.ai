@@ -9,13 +9,21 @@ let socket: any = null;
 let listeners = new Map<string, Set<EventHandler>>();
 let connectPromise: Promise<void> | null = null;
 
+function resubscribe() {
+  const userId = (window as any).__qwai_userId;
+  if (userId && socket?.connected) {
+    socket.emit('subscribe', `user:${userId}`);
+  }
+}
+
 async function getSocket(apiBase: string): Promise<any> {
   if (socket?.connected) return socket;
   if (connectPromise) { await connectPromise; return socket; }
 
   connectPromise = (async () => {
     const { io } = await import('socket.io-client');
-    const wsUrl = apiBase.replace(/\/api$/, '').replace(/^http/, 'ws');
+    // socket.io-client expects http:// or https://, not ws:// — keep the protocol as-is
+    const wsUrl = apiBase.replace(/\/api$/, '');
     socket = io(wsUrl, {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -24,47 +32,49 @@ async function getSocket(apiBase: string): Promise<any> {
     });
 
     socket.on('connect', () => {
-      const userId = (window as any).__qwai_userId;
-      if (userId) socket.emit('subscribe', `user:${userId}`);
+      resubscribe();
     });
 
-    socket.on('alert', (data: any) => {
-      invalidate('/alerts?limit=15');
-      emit('alert', data);
+    socket.on('disconnect', () => {
+      // On disconnect, clear the promise so next getSocket() re-creates if needed
     });
 
-    socket.on('agent_update', (data: any) => {
-      invalidate('/agents');
-      emit('agent_update', data);
-    });
-
-    socket.on('trade_confirmed', (data: any) => {
-      invalidate('/orders');
-      invalidate('/wallets');
-      invalidate('/guardrails');
-      invalidate('/analytics/performance');
-      emit('trade_confirmed', data);
-    });
-
-    socket.on('price', (data: any) => {
-      emit('price', data);
-    });
-
-    socket.on('order_triggered', (data: any) => {
-      invalidate('/orders');
-      invalidate('/agents');
-      invalidate('/alerts?limit=15');
-      emit('order_triggered', data);
-    });
-
-    socket.on('approval_pending', (data: any) => {
-      invalidate('/approvals/pending');
-      emit('approval_pending', data);
-    });
-
-    socket.on('approval_resolved', (data: any) => {
-      invalidate('/approvals/pending');
-      emit('approval_resolved', data);
+    // Catch-all handler: routes every server event through the listener system.
+    // This handles both built-in events (alert, trade_confirmed, …) and
+    // snipe-specific events (snipe_triggered, snipe_sold, tg_status, tg_message)
+    // without requiring a hardcoded list to be maintained here.
+    socket.onAny((event: string, data: any) => {
+      switch (event) {
+        case 'alert':
+          invalidate('/alerts?limit=15');
+          break;
+        case 'agent_update':
+          invalidate('/agents');
+          break;
+        case 'trade_confirmed':
+          invalidate('/orders');
+          invalidate('/wallets');
+          invalidate('/guardrails');
+          invalidate('/analytics/performance');
+          break;
+        case 'order_triggered':
+          invalidate('/orders');
+          invalidate('/agents');
+          invalidate('/alerts?limit=15');
+          break;
+        case 'approval_pending':
+        case 'approval_resolved':
+          invalidate('/approvals/pending');
+          break;
+        case 'snipe_triggered':
+        case 'snipe_sold':
+          invalidate('/snipe/history?limit=50');
+          break;
+        case 'tg_status':
+          invalidate('/snipe/tg/status');
+          break;
+      }
+      emit(event, data);
     });
 
     await new Promise<void>((resolve) => {
@@ -113,6 +123,11 @@ export function useRealtime(event: string, handler: EventHandler) {
     try {
       const jwt = JSON.parse(atob(accessToken.split('.')[1]));
       (window as any).__qwai_userId = jwt.sub;
+      // If socket already connected (race: socket connected before userId decoded),
+      // subscribe immediately so we don't wait for the next reconnect event.
+      if (socket?.connected) {
+        socket.emit('subscribe', `user:${jwt.sub}`);
+      }
     } catch {}
 
     addListener(event, stableHandler);

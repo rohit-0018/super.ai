@@ -1,27 +1,36 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import ChatPanel from './ChatPanel';
 
 /**
- * AgentLauncher — global FAB that opens the real agent chat in a right-side drawer.
+ * AgentLauncher — draggable global FAB that opens the real agent chat in a right-side drawer.
  * Never shown on marketing (/ , /login) or the full /chat route.
- * On lg+ screens the drawer pushes main content left (no disruption); on
- * smaller screens it overlays with a light backdrop.
  * Keyboard: ⌘/  or  Ctrl+/  toggles.  Esc closes.
+ * FAB position persists in localStorage under key `agent-fab-pos`.
  */
 
-const LABEL_BY_ROUTE: Record<string, string> = {
-  '/dashboard': 'Ask your agent',
-  '/trade':     'Trade with agent',
-  '/agents':    'Manage agents',
-  '/tokens':    'Research a token',
-  '/wallets':   'Ask about wallets',
-  '/analytics': 'Ask about performance',
-  '/social':    'Scout traders',
-  '/settings':  'Adjust settings',
-  '/design':    'Ask the design kit',
-};
+const FAB_SIZE = 44;
+const STORAGE_KEY = 'agent-fab-pos';
+
+function getDefaultPos() {
+  if (typeof window === 'undefined') return { x: 0, y: 0 };
+  return { x: window.innerWidth - FAB_SIZE - 20, y: window.innerHeight - FAB_SIZE - 20 };
+}
+
+function loadPos(): { x: number; y: number } | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (typeof p.x === 'number' && typeof p.y === 'number') return p;
+  } catch {}
+  return null;
+}
+
+function savePos(pos: { x: number; y: number }) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(pos)); } catch {}
+}
 
 export default function AgentLauncher() {
   const pathname = usePathname() || '/';
@@ -31,8 +40,21 @@ export default function AgentLauncher() {
   const isFullChat = pathname.startsWith('/chat');
   const hidden = isMarketing || isFullChat;
 
+  // FAB position state
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<{
+    startPx: number; startPy: number;
+    startX: number; startY: number;
+    moved: boolean;
+  } | null>(null);
+
+  // Load position from localStorage on mount
+  useEffect(() => {
+    const saved = loadPos();
+    setPos(saved ?? getDefaultPos());
+  }, []);
+
   // Auto-close whenever the route changes to the full-chat page
-  // (or any page that hides the launcher).
   useEffect(() => {
     if (hidden) setOpen(false);
   }, [hidden]);
@@ -62,24 +84,58 @@ export default function AgentLauncher() {
     return () => { document.body.removeAttribute('data-agent-open'); };
   }, [open, hidden]);
 
-  if (hidden) return null;
+  function onPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!pos) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = {
+      startPx: e.clientX,
+      startPy: e.clientY,
+      startX: pos.x,
+      startY: pos.y,
+      moved: false,
+    };
+  }
 
-  const label =
-    LABEL_BY_ROUTE[Object.keys(LABEL_BY_ROUTE).find((p) => pathname.startsWith(p)) || ''] ||
-    'Ask your agent';
+  function onPointerMove(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!dragRef.current) return;
+    const dx = e.clientX - dragRef.current.startPx;
+    const dy = e.clientY - dragRef.current.startPy;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragRef.current.moved = true;
+    const maxX = window.innerWidth - FAB_SIZE - 4;
+    const maxY = window.innerHeight - FAB_SIZE - 4;
+    const newPos = {
+      x: Math.max(4, Math.min(maxX, dragRef.current.startX + dx)),
+      y: Math.max(4, Math.min(maxY, dragRef.current.startY + dy)),
+    };
+    setPos(newPos);
+  }
+
+  function onPointerUp(e: React.PointerEvent<HTMLButtonElement>) {
+    if (!dragRef.current) return;
+    const wasDrag = dragRef.current.moved;
+    if (pos) savePos(pos);
+    dragRef.current = null;
+    if (!wasDrag) setOpen(true);
+  }
+
+  if (hidden || pos === null) return null;
 
   return (
     <>
       <button
         type="button"
         className="agent-fab"
-        onClick={() => setOpen(true)}
-        aria-label={label}
-        title={`${label}  ·  ⌘/`}
+        style={{ left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        aria-label="Ask your agent"
+        title="Ask your agent  ·  ⌘/"
       >
-        <span className="agent-fab-orb" aria-hidden />
-        <span className="agent-fab-label-full">{label}</span>
-        <span className="agent-fab-kbd" aria-hidden>⌘/</span>
+        {/* Lightning bolt SVG */}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+        </svg>
       </button>
 
       {open && (
@@ -96,11 +152,13 @@ export default function AgentLauncher() {
             aria-label="Agent chat"
           >
             <header className="agent-drawer-header">
-              <span className="agent-fab-orb" aria-hidden style={{ width: 22, height: 22 }} />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden style={{ color: 'var(--accent)', flexShrink: 0 }}>
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              </svg>
               <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-semibold tracking-tight">Agent</div>
                 <div className="text-[11px] truncate" style={{ color: 'var(--text-3)' }}>
-                  {label} · <span className="font-mono">{pathname}</span>
+                  Ask your agent · <span className="font-mono">{pathname}</span>
                 </div>
               </div>
               <a
@@ -129,7 +187,6 @@ export default function AgentLauncher() {
               </button>
             </header>
             <div className="agent-drawer-body">
-              {/* The actual agent — same component as /chat, just stretched to drawer */}
               <ChatPanel />
             </div>
           </aside>

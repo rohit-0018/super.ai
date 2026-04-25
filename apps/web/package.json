@@ -11,27 +11,28 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@solana/wallet-adapter-phantom": "^0.9.24",
+    "@solana/wallet-adapter-react": "^0.15.35",
+    "bs58": "^5.0.0",
+    "ethers": "^6.12.0",
     "next": "^14.2.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-qr-code": "^2.0.18",
     "socket.io-client": "^4.7.0",
-    "zustand": "^4.5.0",
-    "@solana/wallet-adapter-react": "^0.15.35",
-    "@solana/wallet-adapter-phantom": "^0.9.24",
-    "ethers": "^6.12.0",
-    "bs58": "^5.0.0"
+    "zustand": "^4.5.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.0",
-    "@types/node": "^20.12.0",
-    "typescript": "^5.4.0",
-    "tailwindcss": "^3.4.0",
-    "postcss": "^8.4.0",
-    "autoprefixer": "^10.4.0",
-    "@testing-library/react": "^16.0.0",
+    "@playwright/test": "^1.47.0",
     "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/node": "^20.12.0",
+    "@types/react": "^18.3.0",
+    "autoprefixer": "^10.4.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
-    "@playwright/test": "^1.47.0"
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.4.0"
   }
 }

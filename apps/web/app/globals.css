@@ -94,12 +94,18 @@
   background: var(--surface);
   box-shadow: inset 0 1px 0 rgba(15,23,42,0.04);
 }
-:root[data-theme='light'] .btn {
+/* Only override base .btn — never touch colored variants (.btn-primary etc.) */
+:root[data-theme='light'] .btn:not(.btn-primary):not(.btn-accent-2):not(.btn-destructive) {
   background: var(--surface);
+  color: var(--text);
   box-shadow: 0 1px 0 rgba(15,23,42,0.04);
 }
-:root[data-theme='light'] .btn:hover:not(:disabled) {
+:root[data-theme='light'] .btn:not(.btn-primary):not(.btn-accent-2):not(.btn-destructive):hover:not(:disabled) {
   background: var(--surface-hover);
+}
+:root[data-theme='light'] .btn-ghost {
+  background: transparent;
+  box-shadow: none;
 }
 :root[data-theme='light'] .statusbar {
   /* Keep the topbar opaque enough that the ticker doesn't bleed into page content. */
@@ -882,91 +888,37 @@ body { position: relative; overflow-x: hidden; }
     .statusbar .mobile-search-label { display: none; }
   }
 
-  /* ---------- Agent launcher (FAB) ---------- */
+  /* ---------- Agent launcher (FAB) — draggable 44px circle ---------- */
   .agent-fab {
     position: fixed;
-    right: 20px;
-    bottom: 20px;
     z-index: 60;
-    display: inline-flex;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
     align-items: center;
-    gap: 8px;
-    height: 48px;
-    padding: 0 16px 0 14px;
-    border-radius: 999px;
+    justify-content: center;
     color: #fff;
-    font-weight: 600;
-    font-size: 13px;
-    letter-spacing: -0.005em;
-    background:
-      linear-gradient(135deg,
-        color-mix(in srgb, var(--accent) 92%, white 4%) 0%,
-        color-mix(in srgb, var(--accent-2) 92%, white 4%) 100%);
-    border: 1px solid color-mix(in srgb, var(--accent) 55%, black 10%);
+    background: var(--accent-2);
+    border: 1px solid color-mix(in srgb, var(--accent-2) 60%, black 20%);
     box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.22),
-      0 10px 28px -10px color-mix(in srgb, var(--accent) 55%, transparent),
-      0 6px 16px -8px color-mix(in srgb, var(--accent-2) 55%, transparent),
-      0 1px 2px rgba(0,0,0,0.4);
-    cursor: pointer;
-    transition: transform 160ms ease, box-shadow 220ms ease, filter 160ms ease;
+      inset 0 1px 0 rgba(255,255,255,0.14),
+      0 4px 14px -4px rgba(0,0,0,0.45),
+      0 1px 2px rgba(0,0,0,0.25);
+    cursor: grab;
+    touch-action: none;
+    transition: background 120ms ease, box-shadow 160ms ease;
+    user-select: none;
   }
   .agent-fab:hover {
-    transform: translateY(-1px);
-    filter: brightness(1.06);
+    background: var(--accent-2-hover);
     box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.26),
-      0 14px 34px -8px color-mix(in srgb, var(--accent) 60%, transparent),
-      0 10px 22px -8px color-mix(in srgb, var(--accent-2) 60%, transparent),
-      0 1px 2px rgba(0,0,0,0.4);
+      inset 0 1px 0 rgba(255,255,255,0.18),
+      0 8px 20px -6px rgba(0,0,0,0.4),
+      0 1px 2px rgba(0,0,0,0.25);
   }
-  .agent-fab:active { transform: translateY(0); }
+  .agent-fab:active { cursor: grabbing; }
   .agent-fab:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
-  .agent-fab .agent-fab-orb {
-    width: 22px; height: 22px;
-    border-radius: 999px;
-    background:
-      radial-gradient(circle at 35% 30%, #fff 0%, rgba(255,255,255,0.5) 40%, transparent 65%),
-      linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
-    position: relative;
-  }
-  .agent-fab .agent-fab-orb::after {
-    content: '';
-    position: absolute; inset: -4px;
-    border-radius: 999px;
-    background: conic-gradient(from 0deg, transparent 0%, rgba(255,255,255,0.35) 25%, transparent 50%);
-    -webkit-mask: radial-gradient(circle, transparent 55%, #000 58%);
-            mask: radial-gradient(circle, transparent 55%, #000 58%);
-    animation: agent-orb-spin 4s linear infinite;
-  }
-  @keyframes agent-orb-spin { to { transform: rotate(360deg); } }
-  .agent-fab .agent-fab-kbd {
-    display: inline-flex;
-    align-items: center;
-    height: 18px;
-    padding: 0 5px;
-    margin-left: 4px;
-    border-radius: 4px;
-    background: rgba(0,0,0,0.28);
-    border: 1px solid rgba(255,255,255,0.18);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: rgba(255,255,255,0.85);
-  }
-
-  @media (max-width: 767px) {
-    .agent-fab {
-      right: 14px;
-      /* sit above mobile tab bar (56) + safe-area */
-      bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 12px);
-      height: 44px;
-      padding: 0 14px 0 12px;
-      font-size: 12.5px;
-    }
-    .agent-fab-kbd { display: none; }
-    .agent-fab .agent-fab-label-full { display: none; }
-  }
 
   /* ---------- Agent drawer (right-side, non-disruptive) ---------- */
   .agent-drawer {
