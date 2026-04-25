@@ -61,6 +61,7 @@ export class SnipeGroupService {
 
       if (!this.snipeSession.hasActiveSession(config.userId)) {
         this.logger.debug(`No hot session user=${config.userId} — skipping`);
+        this.ws?.emitToUser(config.userId, 'snipe_skipped', { reason: 'no_session', groupId: normId, ts: Date.now() });
         continue;
       }
 

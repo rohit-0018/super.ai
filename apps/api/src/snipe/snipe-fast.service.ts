@@ -1,5 +1,5 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import { VersionedTransaction } from '@solana/web3.js';
+import { Connection, VersionedTransaction } from '@solana/web3.js';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { getJupiterApiBase } from '../common/network-config';
@@ -125,23 +125,85 @@ export class SnipeFastService {
 
       // Emit real-time event to web UI
       this.ws?.emitToUser(config.userId, 'snipe_triggered', {
-        mint,
-        txHash: sig,
-        durationMs,
-        amountRaw: config.buyAmountRaw,
-        outAmount,
-        groupId,
-        status: 'broadcast',
-        ts: Date.now(),
+        mint, txHash: sig, durationMs,
+        amountRaw: config.buyAmountRaw, outAmount,
+        groupId, status: 'broadcast', ts: Date.now(),
       });
+
+      // Background: poll for on-chain confirmation and update status
+      this.confirmInBackground(session.connection, config.userId, sig, traceId);
 
       return { txHash: sig, outAmount, traceId, durationMs };
     } catch (err: any) {
       const durationMs = Date.now() - t0;
-      this.logger.error(`[trc=${traceId}] snipe failed mint=${mint} err=${err.message} duration=${durationMs}ms`);
-      this.recordTrade(config, mint, '0', null, groupId, sourceMsg, 'failed').catch(() => {});
+      const errMsg: string = err.message ?? 'Unknown error';
+      this.logger.error(`[trc=${traceId}] snipe failed mint=${mint} err=${errMsg} duration=${durationMs}ms`);
+      this.recordTrade(config, mint, '0', null, groupId, sourceMsg, 'failed', errMsg).catch(() => {});
+      this.ws?.emitToUser(config.userId, 'snipe_triggered', {
+        mint, txHash: null, durationMs,
+        amountRaw: config.buyAmountRaw, outAmount: '0',
+        groupId, status: 'failed',
+        error: errMsg.slice(0, 200), ts: Date.now(),
+      });
       return { txHash: null, outAmount: '0', traceId, durationMs };
     }
+  }
+
+  /**
+   * Polls Solana for tx confirmation for up to 90 s, then updates the DB record
+   * and emits a WS event so the UI refreshes without user action.
+   *
+   * Common failure: wallet has 0 SOL → tx is accepted by RPC but dropped by
+   * validators. Solscan never sees it. We detect this via a 90 s timeout and
+   * mark the trade failed with a helpful message.
+   */
+  private confirmInBackground(connection: Connection, userId: string, sig: string, traceId: string): void {
+    (async () => {
+      const deadline = Date.now() + 90_000;
+      let attempts = 0;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, attempts < 5 ? 3_000 : 6_000));
+        attempts++;
+        try {
+          const resp = await connection.getSignatureStatuses([sig], { searchTransactionHistory: true });
+          const status = resp.value?.[0];
+          if (!status) continue; // not yet indexed
+
+          const errInfo = status.err ? JSON.stringify(status.err) : null;
+          const landed = status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized';
+
+          if (landed && !errInfo) {
+            this.logger.log(`[trc=${traceId}] ✓ confirmed sig=${sig.slice(0, 16)}…`);
+            await this.prisma.snipeTrade.updateMany({
+              where: { txHash: sig, status: 'broadcast' },
+              data: { status: 'confirmed' },
+            });
+            this.ws?.emitToUser(userId, 'snipe_update', { txHash: sig, status: 'confirmed' });
+            return;
+          }
+
+          if (errInfo) {
+            const msg = `On-chain failure: ${errInfo}`;
+            this.logger.warn(`[trc=${traceId}] ✗ tx failed on-chain sig=${sig.slice(0, 16)}… err=${errInfo}`);
+            await this.prisma.snipeTrade.updateMany({
+              where: { txHash: sig, status: 'broadcast' },
+              data: { status: 'failed', errorMsg: msg },
+            });
+            this.ws?.emitToUser(userId, 'snipe_update', { txHash: sig, status: 'failed', error: msg });
+            return;
+          }
+        } catch { /* RPC hiccup — retry */ }
+      }
+
+      // Timeout — tx was never indexed (almost always = dropped due to 0 SOL balance)
+      const msg = 'Transaction dropped — wallet likely has insufficient SOL for fees. Fund the wallet and try again.';
+      this.logger.warn(`[trc=${traceId}] ✗ tx timed out sig=${sig.slice(0, 16)}…`);
+      await this.prisma.snipeTrade.updateMany({
+        where: { txHash: sig, status: 'broadcast' },
+        data: { status: 'failed', errorMsg: msg },
+      });
+      this.ws?.emitToUser(userId, 'snipe_update', { txHash: sig, status: 'failed', error: msg });
+    })().catch(() => {});
   }
 
   private async recordTrade(
@@ -152,6 +214,7 @@ export class SnipeFastService {
     groupId: string,
     sourceMsg: string,
     status: string,
+    errorMsg?: string,
   ) {
     await this.prisma.snipeTrade.create({
       data: {
@@ -164,6 +227,7 @@ export class SnipeFastService {
         groupId,
         sourceMsg: sourceMsg.slice(0, 500),
         status,
+        errorMsg: errorMsg ? errorMsg.slice(0, 1000) : null,
       },
     });
   }

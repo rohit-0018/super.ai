@@ -10,6 +10,7 @@ export interface HotSession {
   walletId: string;
   address: string;
   expiresAt: number;
+  balanceLamports?: number;
 }
 
 export interface CachedSnipeConfig {
@@ -62,7 +63,7 @@ export class SnipeSessionService implements OnModuleDestroy {
     this.sessions.clear();
   }
 
-  async startSession(userId: string, walletId: string): Promise<{ address: string; expiresAt: number }> {
+  async startSession(userId: string, walletId: string): Promise<{ address: string; expiresAt: number; balanceLamports: number }> {
     const wallet = await this.prisma.wallet.findFirst({ where: { id: walletId, userId } });
     if (!wallet) throw new Error('Wallet not found');
     if (wallet.chain !== 'SOLANA') throw new Error('Only SOLANA wallets supported for hot sessions right now');
@@ -94,8 +95,12 @@ export class SnipeSessionService implements OnModuleDestroy {
       },
     });
 
-    this.logger.log(`Hot session started: user=${userId} wallet=${wallet.address} expires=${new Date(expiresAt).toISOString()}`);
-    return { address: wallet.address, expiresAt };
+    // Fetch balance (non-blocking)
+    let balanceLamports = 0;
+    try { balanceLamports = await connection.getBalance(keypair.publicKey); } catch {}
+
+    this.logger.log(`Hot session started: user=${userId} wallet=${wallet.address} balance=${balanceLamports} expires=${new Date(expiresAt).toISOString()}`);
+    return { address: wallet.address, expiresAt, balanceLamports };
   }
 
   stopSession(userId: string) {
@@ -198,5 +203,13 @@ export class SnipeSessionService implements OnModuleDestroy {
     const s = this.sessions.get(userId);
     if (!s || s.expiresAt < Date.now()) return { active: false };
     return { active: true, address: s.address, expiresAt: new Date(s.expiresAt) };
+  }
+
+  async sessionStatusWithBalance(userId: string) {
+    const s = this.sessions.get(userId);
+    if (!s || s.expiresAt < Date.now()) return { active: false };
+    let balanceLamports = 0;
+    try { balanceLamports = await s.connection.getBalance(s.keypair.publicKey); } catch {}
+    return { active: true, address: s.address, expiresAt: new Date(s.expiresAt), balanceLamports };
   }
 }

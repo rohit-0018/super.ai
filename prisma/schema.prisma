@@ -663,6 +663,7 @@ model SnipeTrade {
   groupId   String
   sourceMsg String?  @db.Text
   status    String   @default("broadcast")  // broadcast | confirmed | failed
+  errorMsg  String?  @db.Text              // error reason when status=failed
 
   // Sell tracking
   sellTxHash    String?

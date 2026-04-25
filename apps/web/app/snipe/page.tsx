@@ -63,6 +63,7 @@ interface TgMessage {
   text: string;
   ts: number;
   fromId: string;
+  senderName?: string;
 }
 
 interface SnipeTrade {
@@ -70,7 +71,12 @@ interface SnipeTrade {
   mint: string;
   amountRaw: string;
   txHash: string | null;
+  outAmount: string | null;
   status: string;
+  errorMsg: string | null;
+  sourceMsg: string | null;
+  groupId: string;
+  chain: string;
   sellStatus: string | null;
   sellTxHash: string | null;
   sellReason: string | null;
@@ -82,8 +88,17 @@ interface Wallet { id: string; chain: string; address: string; label: string | n
 /* ─────────────────────────────────────────────────────────────
    Page
 ───────────────────────────────────────────────────────────── */
+interface SnipeBannerData {
+  status: string;
+  mint: string;
+  durationMs: number;
+  txHash: string | null;
+  error?: string;
+  key: number; // force re-mount to restart animation
+}
+
 export default function SnipePage() {
-  const { data: configData, loading: configLoading } = useApi<{ config: SnipeConfig | null; session: { active: boolean } }>('/snipe/config');
+  const { data: configData, loading: configLoading } = useApi<{ config: SnipeConfig | null; session: { active: boolean; address?: string; balanceLamports?: number } }>('/snipe/config');
   const { data: tgRaw,    loading: tgLoading }        = useApi<TgStatus>('/snipe/tg/status');
   const { data: history, loading: histLoading }       = useApi<SnipeTrade[]>('/snipe/history?limit=50');
   const { data: wallets }                             = useApi<Wallet[]>('/wallets');
@@ -95,11 +110,24 @@ export default function SnipePage() {
     invalidate('/snipe/tg/status');
   }, []));
 
-  useRealtime('snipe_triggered', useCallback(() => {
+  const [banner, setBanner] = useState<SnipeBannerData | null>(null);
+  const bannerKeyRef = useRef(0);
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useRealtime('snipe_triggered', useCallback((evt: any) => {
     invalidate('/snipe/history?limit=50');
+    if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    bannerKeyRef.current += 1;
+    setBanner({ status: evt.status, mint: evt.mint, durationMs: evt.durationMs, txHash: evt.txHash, error: evt.error, key: bannerKeyRef.current });
+    bannerTimer.current = setTimeout(() => setBanner(null), 3300);
   }, []));
 
   useRealtime('snipe_sold', useCallback(() => {
+    invalidate('/snipe/history?limit=50');
+  }, []));
+
+  // Background confirmation updates (no banner — just refresh history silently)
+  useRealtime('snipe_update', useCallback(() => {
     invalidate('/snipe/history?limit=50');
   }, []));
 
@@ -110,6 +138,7 @@ export default function SnipePage() {
 
   return (
     <div className="page page-wide space-y-4">
+      {banner && <SnipeBanner key={banner.key} banner={banner} onDismiss={() => setBanner(null)} />}
       <header className="page-header">
         <div>
           <div className="section-eyebrow">Agents</div>
@@ -131,7 +160,7 @@ export default function SnipePage() {
         </div>
 
         <div className="xl:col-span-3 space-y-4">
-          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} />
+          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} />
           <HistoryPanel trades={history ?? []} loading={histLoading} />
         </div>
       </div>
@@ -140,22 +169,90 @@ export default function SnipePage() {
 }
 
 /* ─────────────────────────────────────────────────────────────
+   Snipe banner — appears for 3 s on every snipe attempt
+───────────────────────────────────────────────────────────── */
+function SnipeBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss: () => void }) {
+  const ok = banner.status !== 'failed';
+  const color = ok ? 'var(--ok)' : 'var(--bad)';
+  return (
+    <div
+      className="snap-banner"
+      onClick={onDismiss}
+      style={{
+        cursor: 'pointer',
+        background: `color-mix(in srgb, ${color} 12%, var(--surface))`,
+        border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
+        boxShadow: `inset 0 1px 0 var(--highlight), 0 2px 12px rgba(0,0,0,0.3)`,
+        borderRadius: 10,
+        padding: '10px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+      }}
+    >
+      <span style={{ fontSize: 20, lineHeight: 1 }}>{ok ? '⚡' : '✗'}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="text-[13px] font-semibold" style={{ color }}>
+          {ok ? `Sniped! · ${banner.durationMs}ms` : `Snipe failed · ${banner.durationMs}ms`}
+        </div>
+        <div className="font-mono text-[11px] truncate" style={{ color: 'var(--text-2)', marginTop: 1 }}>
+          {banner.mint.slice(0, 8)}…{banner.mint.slice(-4)}
+          {banner.error && <span style={{ color: 'var(--text-3)' }}> · {banner.error.slice(0, 80)}</span>}
+        </div>
+      </div>
+      {banner.txHash && (
+        <a
+          href={`https://solscan.io/tx/${banner.txHash}`}
+          target="_blank" rel="noopener"
+          className="font-mono text-[11px]"
+          style={{ color: 'var(--accent)', flexShrink: 0 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {banner.txHash.slice(0, 8)}…
+        </a>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
    Status bar
 ───────────────────────────────────────────────────────────── */
-function StatusBar({ tg, session, config }: { tg: TgStatus | null; session: { active: boolean }; config: SnipeConfig | null }) {
+function StatusBar({ tg, session, config }: {
+  tg: TgStatus | null;
+  session: { active: boolean; address?: string; balanceLamports?: number };
+  config: SnipeConfig | null;
+}) {
+  const solBalance = session.balanceLamports !== undefined ? session.balanceLamports / 1e9 : null;
+  const lowBalance = solBalance !== null && solBalance < 0.005;
+
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      {tg?.connected
-        ? <span className="chip chip-ok">TG Live</span>
-        : <span className="chip chip-bad">TG offline</span>}
-      {session.active
-        ? <span className="chip chip-ok">Hot session</span>
-        : <span className="chip">No hot session</span>}
-      {config?.enabled
-        ? <span className="chip chip-accent" style={{ fontWeight: 600 }}>● Sniper ON</span>
-        : <span className="chip">Sniper OFF</span>}
-      {config?.enabled && config.groupIds.length > 0 && (
-        <span className="chip" style={{ color: 'var(--text-2)' }}>{config.groupIds.length} watching</span>
+    <div className="flex flex-col items-end gap-1.5">
+      <div className="flex items-center gap-2 flex-wrap justify-end">
+        {tg?.connected
+          ? <span className="chip chip-ok">TG Live</span>
+          : <span className="chip chip-bad">TG offline</span>}
+        {session.active
+          ? <span className="chip chip-ok">Hot session</span>
+          : <span className="chip">No hot session</span>}
+        {config?.enabled
+          ? <span className="chip chip-accent" style={{ fontWeight: 600 }}>● Sniper ON</span>
+          : <span className="chip">Sniper OFF</span>}
+        {config?.enabled && config.groupIds.length > 0 && (
+          <span className="chip" style={{ color: 'var(--text-2)' }}>{config.groupIds.length} watching</span>
+        )}
+      </div>
+      {session.active && solBalance !== null && (
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-[11px]" style={{ color: lowBalance ? 'var(--warn)' : 'var(--text-3)' }}>
+            {solBalance.toFixed(4)} SOL
+          </span>
+          {lowBalance && (
+            <span className="chip chip-warn" style={{ fontSize: 10 }}>
+              Low balance — fund wallet or trades will drop
+            </span>
+          )}
+        </div>
       )}
     </div>
   );
@@ -300,6 +397,19 @@ const SELL_STRATEGIES = [
   { label: 'Scalp',        tp: 50,  sl: -15, trail: null,  exit: 5 * 60_000 },
 ] as const;
 
+/** Strip Prisma-only fields before sending to the API (forbidNonWhitelisted rejects them). */
+function toSnipeDto(c: SnipeConfig) {
+  return {
+    enabled: c.enabled, chain: c.chain, walletId: c.walletId,
+    buyAmountRaw: c.buyAmountRaw, maxSlippageBps: c.maxSlippageBps,
+    groupIds: c.groupIds, skipSafety: c.skipSafety, dedupeWindowMs: c.dedupeWindowMs,
+    notifyOnBuy: c.notifyOnBuy, matchPattern: c.matchPattern,
+    sellEnabled: c.sellEnabled, sellMode: c.sellMode,
+    takeProfitPct: c.takeProfitPct, stopLossPct: c.stopLossPct,
+    trailingStopPct: c.trailingStopPct, exitAfterMs: c.exitAfterMs, partialExitPct: c.partialExitPct,
+  };
+}
+
 function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets: Wallet[] }) {
   const [form, setForm] = useState<SnipeConfig>({
     enabled: false, chain: 'SOLANA', walletId: '', buyAmountRaw: '100000000',
@@ -312,13 +422,19 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
   const [hotBusy, setHotBusy] = useState(false);
   const [msg, setMsg]       = useState<{ text: string; ok: boolean } | null>(null);
 
-  useEffect(() => { if (config) setForm((f) => ({ ...f, ...config })); }, [config]);
+  useEffect(() => {
+    if (config) setForm((f) => ({
+      ...f, ...config,
+      // Never let a server-side empty walletId overwrite a user selection
+      walletId: config.walletId || f.walletId,
+    }));
+  }, [config]);
 
   const set = <K extends keyof SnipeConfig>(k: K, v: SnipeConfig[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const save = async () => {
     setBusy(true); setMsg(null);
-    try { await api.put('/snipe/config', form); setMsg({ text: 'Saved', ok: true }); invalidate('/snipe/config'); }
+    try { await api.put('/snipe/config', toSnipeDto(form)); setMsg({ text: 'Saved', ok: true }); invalidate('/snipe/config'); }
     catch (e: any) { setMsg({ text: e?.message ?? 'Failed', ok: false }); }
     finally { setBusy(false); }
   };
@@ -510,7 +626,16 @@ function highlightCAs(text: string): React.ReactNode[] {
   return parts;
 }
 
-function TgInboxPanel({ config, tgConnected }: { config: SnipeConfig | null; tgConnected: boolean }) {
+function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | null; tgConnected: boolean; session: { active: boolean; balanceLamports?: number } }) {
+  const solBalance = session.balanceLamports !== undefined ? session.balanceLamports / 1e9 : null;
+  const snipeWillRun = config?.enabled && session.active && tgConnected && (solBalance === null || solBalance >= 0.005);
+  const snipeWarning = config?.enabled && tgConnected
+    ? !session.active
+      ? 'No hot session — trades will be skipped. Load a hot session in Snipe settings.'
+      : solBalance !== null && solBalance < 0.005
+        ? `Wallet balance ${solBalance.toFixed(4)} SOL is too low — transactions will be dropped by validators. Fund the wallet first.`
+        : null
+    : null;
   const [groups, setGroups]       = useState<TgGroup[]>([]);
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [overrides, setOverrides] = useState(new Map<string, GroupOverride>());
@@ -557,7 +682,7 @@ function TgInboxPanel({ config, tgConnected }: { config: SnipeConfig | null; tgC
   useRealtime('tg_message', useCallback((evt: any) => {
     const { groupId, text, ts, messageId } = evt;
     if (!groupId || !text) return;
-    const newMsg: TgMessage = { id: messageId ?? ts, text, ts, fromId: evt.fromId ?? '' };
+    const newMsg: TgMessage = { id: messageId ?? ts, text, ts, fromId: evt.fromId ?? '', senderName: evt.senderName };
 
     setMessages((prev) => {
       const existing = prev.get(groupId) ?? [];
@@ -599,7 +724,7 @@ function TgInboxPanel({ config, tgConnected }: { config: SnipeConfig | null; tgC
       : localGroupIds.filter((id) => id !== groupId);
     setLocalGroupIds(newIds); // optimistic
     try {
-      await api.put('/snipe/config', { ...base, groupIds: newIds });
+      await api.put('/snipe/config', toSnipeDto({ ...base, groupIds: newIds } as SnipeConfig));
       invalidate('/snipe/config');
     } catch {
       setLocalGroupIds(config?.groupIds ?? []); // rollback
@@ -640,6 +765,7 @@ function TgInboxPanel({ config, tgConnected }: { config: SnipeConfig | null; tgC
           <IcoTelegram size={14} />
           <span className="section-title">Telegram Inbox</span>
           {tgConnected && <span className="live-dot" style={{ marginLeft: 2 }} />}
+          {snipeWillRun && <span className="chip chip-ok" style={{ fontSize: 10 }}>● Sniping</span>}
         </div>
         {groups.length > 0 && (
           <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
@@ -647,6 +773,18 @@ function TgInboxPanel({ config, tgConnected }: { config: SnipeConfig | null; tgC
           </span>
         )}
       </div>
+
+      {/* No-session warning — snipe is on but wallet key not loaded */}
+      {snipeWarning && (
+        <div style={{
+          padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 8,
+          background: 'color-mix(in srgb, var(--warn) 10%, var(--surface-2))',
+          borderBottom: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)',
+        }}>
+          <span style={{ color: 'var(--warn)', fontSize: 13 }}>⚠</span>
+          <span className="text-[11px]" style={{ color: 'var(--warn)' }}>{snipeWarning}</span>
+        </div>
+      )}
 
       {!tgConnected ? (
         <div style={{ height: INBOX_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -965,6 +1103,8 @@ function MessageList({ messages, loading, groupId }: { messages: TgMessage[]; lo
           const hasCA = parts.some((p) => typeof p !== 'string');
           const timeStr = new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+          const showSender = msg.senderName && (!prev || prev.fromId !== msg.fromId || showTimeSep);
+
           return (
             <div key={msg.id} className="fade-in" style={{ paddingBottom: 1 }}>
               {/* Time separator — shown when >5min gap between messages */}
@@ -991,6 +1131,11 @@ function MessageList({ messages, loading, groupId }: { messages: TgMessage[]; lo
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
+                  {showSender && (
+                    <div className="text-[11px] font-medium" style={{ color: 'var(--accent)', marginBottom: 1 }}>
+                      {msg.senderName}
+                    </div>
+                  )}
                   <div className="text-[13px]" style={{ color: 'var(--text)', lineHeight: 1.55, wordBreak: 'break-word' }}>
                     {parts}
                   </div>
@@ -1071,16 +1216,24 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 /* ─────────────────────────────────────────────────────────────
-   History panel
+   History panel + trade detail drawer
 ───────────────────────────────────────────────────────────── */
 function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: boolean }) {
   const [sellingId, setSellingId] = useState<string | null>(null);
+  const [selected, setSelected]  = useState<SnipeTrade | null>(null);
 
   const manualSell = async (id: string) => {
     setSellingId(id);
     try { await api.post(`/snipe/history/${id}/sell`, {}); invalidate('/snipe/history?limit=50'); }
     catch {} finally { setSellingId(null); }
   };
+
+  // Keep selected in sync when history refreshes
+  useEffect(() => {
+    if (!selected) return;
+    const fresh = trades.find((t) => t.id === selected.id);
+    if (fresh) setSelected(fresh);
+  }, [trades]);
 
   return (
     <div className="panel" style={{ padding: 0 }}>
@@ -1089,56 +1242,175 @@ function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: bool
         <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Last 50</span>
       </div>
 
-      {loading ? (
-        <div className="space-y-2 p-4">{[...Array(3)].map((_, i) => <Skeleton key={i} h={32} rounded="md" />)}</div>
-      ) : trades.length === 0 ? (
-        <div style={{ padding: '24px 20px', textAlign: 'center' }}>
-          <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>No snipe history yet.</p>
+      <div style={{ display: 'flex' }}>
+        {/* Trade list */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {loading ? (
+            <div className="space-y-2 p-4">{[...Array(3)].map((_, i) => <Skeleton key={i} h={32} rounded="md" />)}</div>
+          ) : trades.length === 0 ? (
+            <div style={{ padding: '24px 20px', textAlign: 'center' }}>
+              <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>No snipe history yet.</p>
+            </div>
+          ) : (
+            <div className="table-scroll">
+              <table className="table">
+                <thead><tr><th>Token</th><th>Tx</th><th>Status</th><th>Sell</th><th className="num">Time</th><th /></tr></thead>
+                <tbody>
+                  {trades.map((t) => {
+                    const ok = t.status !== 'failed';
+                    const sol = (Number(t.amountRaw) / 1e9).toFixed(4);
+                    const canSell = !t.sellStatus && (t.status === 'broadcast' || t.status === 'confirmed');
+                    const isActive = selected?.id === t.id;
+                    return (
+                      <tr
+                        key={t.id}
+                        onClick={() => setSelected(isActive ? null : t)}
+                        style={{
+                          cursor: 'pointer',
+                          background: isActive ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : undefined,
+                          borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                        }}
+                      >
+                        <td className="font-mono text-[12px]">{t.mint.slice(0, 8)}…{t.mint.slice(-4)}</td>
+                        <td>
+                          <div className="flex items-center gap-1.5">
+                            {t.txHash
+                              ? <a href={`https://solscan.io/tx/${t.txHash}`} target="_blank" rel="noopener"
+                                  className="font-mono text-[11px]" style={{ color: 'var(--accent)' }}
+                                  onClick={(e) => e.stopPropagation()}>
+                                  {t.txHash.slice(0, 6)}…{t.txHash.slice(-4)}
+                                </a>
+                              : <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>—</span>}
+                          </div>
+                          <div className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>{sol} SOL</div>
+                        </td>
+                        <td><span className={`chip ${ok ? 'chip-ok' : 'chip-bad'}`} style={{ fontSize: 10 }}>{t.status}</span></td>
+                        <td>
+                          {t.sellStatus
+                            ? <span className="chip" style={{ fontSize: 10 }}>{t.sellStatus}</span>
+                            : <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>—</span>}
+                        </td>
+                        <td className="num font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
+                          {new Date(t.createdAt).toLocaleTimeString()}
+                        </td>
+                        <td onClick={(e) => e.stopPropagation()}>
+                          {canSell && (
+                            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, height: 24 }}
+                              onClick={() => manualSell(t.id)} disabled={sellingId === t.id}>
+                              {sellingId === t.id ? <Spinner size={10} /> : 'Sell'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
+
+        {/* Trade detail panel */}
+        {selected && (
+          <TradeDetail trade={selected} onClose={() => setSelected(null)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TradeDetail({ trade, onClose }: { trade: SnipeTrade; onClose: () => void }) {
+  const ok = trade.status !== 'failed';
+  const sol = (Number(trade.amountRaw) / 1e9).toFixed(6);
+  const outSol = trade.outAmount ? (Number(trade.outAmount) / 1e9).toFixed(6) : null;
+
+  const DetailRow = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
+      <span className="text-[11px]" style={{ color: 'var(--text-3)', width: 88, flexShrink: 0, paddingTop: 1 }}>{label}</span>
+      <span className="text-[12px] font-mono" style={{ color: 'var(--text)', wordBreak: 'break-all', flex: 1 }}>{children}</span>
+    </div>
+  );
+
+  return (
+    <div className="fade-in" style={{
+      width: 300, flexShrink: 0, borderLeft: '1px solid var(--border)',
+      background: 'var(--surface-2)', padding: '14px', display: 'flex', flexDirection: 'column', gap: 0,
+    }}>
+      {/* Header */}
+      <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+        <span className="text-[12px] font-semibold" style={{ color: 'var(--text-2)' }}>Trade detail</span>
+        <button className="btn btn-ghost btn-sm" style={{ height: 22, padding: '0 6px', fontSize: 13 }} onClick={onClose}>×</button>
+      </div>
+
+      {/* Status badge */}
+      <div style={{ marginBottom: 10 }}>
+        <span className={`chip ${ok ? 'chip-ok' : 'chip-bad'}`} style={{ fontSize: 11 }}>{trade.status.toUpperCase()}</span>
+      </div>
+
+      <DetailRow label="Token">
+        {trade.mint}
+      </DetailRow>
+      <DetailRow label="Chain">{trade.chain}</DetailRow>
+      <DetailRow label="Buy amount">{sol} SOL</DetailRow>
+      {outSol && Number(outSol) > 0 && (
+        <DetailRow label="Received">{outSol} (raw)</DetailRow>
+      )}
+      <DetailRow label="Group">{trade.groupId}</DetailRow>
+      <DetailRow label="Time">{new Date(trade.createdAt).toLocaleString()}</DetailRow>
+
+      {trade.txHash ? (
+        <DetailRow label="Tx hash">
+          <a href={`https://solscan.io/tx/${trade.txHash}`} target="_blank" rel="noopener"
+            style={{ color: 'var(--accent)' }}>
+            {trade.txHash.slice(0, 16)}…{trade.txHash.slice(-8)}
+          </a>
+        </DetailRow>
       ) : (
-        <div className="table-scroll">
-          <table className="table">
-            <thead><tr><th>Token</th><th>Buy</th><th>Status</th><th>Sell</th><th className="num">Time</th><th /></tr></thead>
-            <tbody>
-              {trades.map((t) => {
-                const ok = t.status !== 'failed';
-                const sol = (Number(t.amountRaw) / 1e9).toFixed(4);
-                const canSell = !t.sellStatus && (t.status === 'broadcast' || t.status === 'confirmed');
-                return (
-                  <tr key={t.id}>
-                    <td className="font-mono text-[12px]">{t.mint.slice(0, 8)}…{t.mint.slice(-4)}</td>
-                    <td>
-                      <div className="flex items-center gap-1.5">
-                        <span className={`chip ${ok ? 'chip-ok' : 'chip-bad'}`} style={{ fontSize: 10 }}>{t.status}</span>
-                        {t.txHash && (
-                          <a href={`https://solscan.io/tx/${t.txHash}`} target="_blank" rel="noopener"
-                            className="font-mono text-[11px]" style={{ color: 'var(--accent)' }}>{t.txHash.slice(0, 6)}…</a>
-                        )}
-                      </div>
-                      <div className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>{sol} SOL</div>
-                    </td>
-                    <td><span className={`chip ${ok ? 'chip-ok' : 'chip-bad'}`} style={{ fontSize: 10 }}>{t.status}</span></td>
-                    <td>
-                      {t.sellStatus
-                        ? <span className="chip" style={{ fontSize: 10 }}>{t.sellStatus}</span>
-                        : <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>—</span>}
-                    </td>
-                    <td className="num font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
-                      {new Date(t.createdAt).toLocaleTimeString()}
-                    </td>
-                    <td>
-                      {canSell && (
-                        <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, height: 24 }}
-                          onClick={() => manualSell(t.id)} disabled={sellingId === t.id}>
-                          {sellingId === t.id ? <Spinner size={10} /> : 'Sell'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <DetailRow label="Tx hash"><span style={{ color: 'var(--text-3)' }}>Not broadcast</span></DetailRow>
+      )}
+
+      {trade.errorMsg && (
+        <div style={{ marginTop: 8 }}>
+          <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--bad)', letterSpacing: '0.08em' }}>FAILURE REASON</div>
+          <div style={{
+            background: 'color-mix(in srgb, var(--bad) 8%, var(--surface))',
+            border: '1px solid color-mix(in srgb, var(--bad) 25%, transparent)',
+            borderRadius: 6, padding: '8px 10px',
+            fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--bad)',
+            lineHeight: 1.5, wordBreak: 'break-word',
+          }}>
+            {trade.errorMsg}
+          </div>
+        </div>
+      )}
+
+      {trade.sourceMsg && (
+        <div style={{ marginTop: 8 }}>
+          <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>SOURCE MESSAGE</div>
+          <div style={{
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 6, padding: '8px 10px',
+            fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5,
+            maxHeight: 80, overflowY: 'auto',
+          }}>
+            {trade.sourceMsg}
+          </div>
+        </div>
+      )}
+
+      {trade.sellStatus && (
+        <div style={{ marginTop: 8 }}>
+          <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>SELL</div>
+          <div className="flex items-center gap-2">
+            <span className="chip" style={{ fontSize: 10 }}>{trade.sellStatus}</span>
+            {trade.sellReason && <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{trade.sellReason}</span>}
+          </div>
+          {trade.sellTxHash && (
+            <a href={`https://solscan.io/tx/${trade.sellTxHash}`} target="_blank" rel="noopener"
+              className="font-mono text-[11px] block mt-1" style={{ color: 'var(--accent)' }}>
+              {trade.sellTxHash.slice(0, 16)}…
+            </a>
+          )}
         </div>
       )}
     </div>

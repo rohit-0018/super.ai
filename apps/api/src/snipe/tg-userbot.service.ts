@@ -17,6 +17,7 @@ export interface TgMessageDto {
   text: string;
   ts: number;
   fromId: string;
+  senderName?: string;
 }
 
 export interface TgGroupDto {
@@ -189,15 +190,37 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    return msgs
-      .filter((m: any) => m.message || m.text)
-      .map((m: any) => ({
+    const filtered = msgs.filter((m: any) => m.message || m.text);
+
+    // Resolve sender names — deduplicated so each unique user is fetched once.
+    // getSender() returns from gramjs entity cache (warmed by getDialogs) — fast.
+    const senderCache = new Map<string, string>();
+    const result: TgMessageDto[] = [];
+    for (const m of filtered) {
+      const fromIdStr = String(m.fromId?.userId ?? m.fromId?.channelId ?? '');
+      let senderName = senderCache.get(fromIdStr);
+      if (senderName === undefined && fromIdStr) {
+        try {
+          const sender: any = await m.getSender();
+          if (sender) {
+            senderName = sender.firstName
+              ? [sender.firstName, sender.lastName].filter(Boolean).join(' ')
+              : sender.title ?? sender.username ?? '';
+          } else {
+            senderName = '';
+          }
+        } catch { senderName = ''; }
+        senderCache.set(fromIdStr, senderName ?? '');
+      }
+      result.push({
         id: m.id,
         text: m.message ?? m.text ?? '',
         ts: (m.date ?? 0) * 1000,
-        fromId: String(m.fromId?.userId ?? m.fromId?.channelId ?? ''),
-      }))
-      .reverse(); // oldest first (chronological)
+        fromId: fromIdStr,
+        senderName: senderName || undefined,
+      });
+    }
+    return result.reverse(); // oldest first (chronological)
   }
 
   async getMe(userId: string): Promise<{ phone: string; username: string | null; firstName: string } | null> {
@@ -263,12 +286,23 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
 
     // Emit to user's Telegram inbox view for EVERY incoming message (all groups)
     this.logger.debug(`tg_message: userId=${userId} groupId=${rawId} ws=${!!this.ws}`);
+    let senderName = '';
+    try {
+      const sender: any = await event.message.getSender();
+      if (sender) {
+        senderName = sender.firstName
+          ? [sender.firstName, sender.lastName].filter(Boolean).join(' ')
+          : sender.title ?? sender.username ?? '';
+      }
+    } catch {}
+
     this.ws?.emitToUser(userId, 'tg_message', {
       groupId: rawId,
       text: text.slice(0, 1000),
       ts: Date.now(),
       messageId: (msg as any).id,
       fromId: String((msg as any).fromId?.userId ?? ''),
+      senderName,
     });
 
     // Route to snipe handler for CA extraction + buy logic

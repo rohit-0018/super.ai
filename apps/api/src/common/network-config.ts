@@ -29,7 +29,7 @@ export function getJupiterApiBase(): string {
     // Jupiter has no official devnet API — we'll mock swaps in testnet mode
     return 'MOCK';
   }
-  return process.env.JUPITER_API_BASE ?? 'https://quote-api.jup.ag/v6';
+  return process.env.JUPITER_API_BASE ?? 'https://lite-api.jup.ag/swap/v1';
 }
 
 // ── EVM ──

@@ -18,7 +18,7 @@ export class SnipeController {
   @Get('config')
   async getConfig(@Req() req: any) {
     const userId: string = req.user.userId;
-    const session = this.snipeSession.sessionStatus(userId);
+    const session = await this.snipeSession.sessionStatusWithBalance(userId);
     try {
       const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
       return { config, session };
