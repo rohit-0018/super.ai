@@ -56,10 +56,10 @@ export class SnipeFastService {
 
     const jupBase = getJupiterApiBase();
     if (jupBase === 'MOCK') {
-      this.logger.debug(`[trc=${traceId}] testnet — recording mock snipe for ${mint}`);
-      const mockHash = `snipe-mock-${Date.now().toString(36)}`;
-      await this.recordTrade(config, mint, '0', mockHash, groupId, sourceMsg, 'confirmed');
-      return { txHash: mockHash, outAmount: '0', traceId, durationMs: Date.now() - t0 };
+      const err = 'Jupiter unavailable in testnet mode — set NETWORK_MODE=mainnet to execute real trades';
+      this.logger.warn(`[trc=${traceId}] ${err}`);
+      await this.recordTrade(config, mint, '0', null, groupId, sourceMsg, 'failed', err);
+      return { txHash: null, outAmount: '0', traceId, durationMs: Date.now() - t0 };
     }
 
     try {
