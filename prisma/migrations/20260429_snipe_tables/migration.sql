@@ -1,9 +1,13 @@
 -- Snipe subsystem tables: SnipeConfig, TgUserSession, SnipeTrade, SnipeGroupOverride.
--- These were previously db-pushed locally but never had a migration file.
+-- All statements use IF NOT EXISTS / exception handlers so the migration
+-- is safe to re-run after a partial failure.
 
-CREATE TYPE "SellMode" AS ENUM ('TRIGGER', 'INTELLIGENT');
+DO $$ BEGIN
+  CREATE TYPE "SellMode" AS ENUM ('TRIGGER', 'INTELLIGENT');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END; $$;
 
-CREATE TABLE "SnipeConfig" (
+CREATE TABLE IF NOT EXISTS "SnipeConfig" (
   "id"               TEXT NOT NULL,
   "userId"           TEXT NOT NULL,
   "enabled"          BOOLEAN NOT NULL DEFAULT false,
@@ -29,12 +33,15 @@ CREATE TABLE "SnipeConfig" (
   "updatedAt"        TIMESTAMP(3) NOT NULL,
   CONSTRAINT "SnipeConfig_pkey" PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "SnipeConfig_userId_key" ON "SnipeConfig"("userId");
-CREATE INDEX "SnipeConfig_enabled_idx" ON "SnipeConfig"("enabled");
-ALTER TABLE "SnipeConfig" ADD CONSTRAINT "SnipeConfig_userId_fkey"
-  FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS "SnipeConfig_userId_key" ON "SnipeConfig"("userId");
+CREATE INDEX        IF NOT EXISTS "SnipeConfig_enabled_idx" ON "SnipeConfig"("enabled");
+DO $$ BEGIN
+  ALTER TABLE "SnipeConfig" ADD CONSTRAINT "SnipeConfig_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END; $$;
 
-CREATE TABLE "TgUserSession" (
+CREATE TABLE IF NOT EXISTS "TgUserSession" (
   "id"               TEXT NOT NULL,
   "userId"           TEXT NOT NULL,
   "phoneNumber"      TEXT NOT NULL,
@@ -46,36 +53,42 @@ CREATE TABLE "TgUserSession" (
   "updatedAt"        TIMESTAMP(3) NOT NULL,
   CONSTRAINT "TgUserSession_pkey" PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "TgUserSession_userId_key" ON "TgUserSession"("userId");
-ALTER TABLE "TgUserSession" ADD CONSTRAINT "TgUserSession_userId_fkey"
-  FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS "TgUserSession_userId_key" ON "TgUserSession"("userId");
+DO $$ BEGIN
+  ALTER TABLE "TgUserSession" ADD CONSTRAINT "TgUserSession_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END; $$;
 
-CREATE TABLE "SnipeTrade" (
-  "id"           TEXT NOT NULL,
-  "userId"       TEXT NOT NULL,
-  "chain"        "Chain" NOT NULL,
-  "mint"         TEXT NOT NULL,
-  "amountRaw"    TEXT NOT NULL,
-  "txHash"       TEXT,
-  "outAmount"    TEXT,
-  "groupId"      TEXT NOT NULL,
-  "sourceMsg"    TEXT,
-  "status"       TEXT NOT NULL DEFAULT 'broadcast',
-  "errorMsg"     TEXT,
-  "sellTxHash"   TEXT,
-  "sellStatus"   TEXT,
-  "sellReason"   TEXT,
-  "peakPriceMul" DOUBLE PRECISION,
+CREATE TABLE IF NOT EXISTS "SnipeTrade" (
+  "id"            TEXT NOT NULL,
+  "userId"        TEXT NOT NULL,
+  "chain"         "Chain" NOT NULL,
+  "mint"          TEXT NOT NULL,
+  "amountRaw"     TEXT NOT NULL,
+  "txHash"        TEXT,
+  "outAmount"     TEXT,
+  "groupId"       TEXT NOT NULL,
+  "sourceMsg"     TEXT,
+  "status"        TEXT NOT NULL DEFAULT 'broadcast',
+  "errorMsg"      TEXT,
+  "sellTxHash"    TEXT,
+  "sellStatus"    TEXT,
+  "sellReason"    TEXT,
+  "peakPriceMul"  DOUBLE PRECISION,
   "sellCheckedAt" TIMESTAMP(3),
-  "createdAt"    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdAt"     TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "SnipeTrade_pkey" PRIMARY KEY ("id")
 );
-CREATE INDEX "SnipeTrade_userId_createdAt_idx" ON "SnipeTrade"("userId", "createdAt");
-CREATE INDEX "SnipeTrade_mint_createdAt_idx"   ON "SnipeTrade"("mint", "createdAt");
-ALTER TABLE "SnipeTrade" ADD CONSTRAINT "SnipeTrade_userId_fkey"
-  FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE INDEX IF NOT EXISTS "SnipeTrade_userId_createdAt_idx" ON "SnipeTrade"("userId", "createdAt");
+CREATE INDEX IF NOT EXISTS "SnipeTrade_mint_createdAt_idx"   ON "SnipeTrade"("mint", "createdAt");
+DO $$ BEGIN
+  ALTER TABLE "SnipeTrade" ADD CONSTRAINT "SnipeTrade_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END; $$;
 
-CREATE TABLE "SnipeGroupOverride" (
+CREATE TABLE IF NOT EXISTS "SnipeGroupOverride" (
   "id"              TEXT NOT NULL,
   "userId"          TEXT NOT NULL,
   "groupId"         TEXT NOT NULL,
@@ -93,7 +106,10 @@ CREATE TABLE "SnipeGroupOverride" (
   "updatedAt"       TIMESTAMP(3) NOT NULL,
   CONSTRAINT "SnipeGroupOverride_pkey" PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "SnipeGroupOverride_userId_groupId_key" ON "SnipeGroupOverride"("userId", "groupId");
-CREATE INDEX "SnipeGroupOverride_userId_idx" ON "SnipeGroupOverride"("userId");
-ALTER TABLE "SnipeGroupOverride" ADD CONSTRAINT "SnipeGroupOverride_userId_fkey"
-  FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS "SnipeGroupOverride_userId_groupId_key" ON "SnipeGroupOverride"("userId", "groupId");
+CREATE INDEX        IF NOT EXISTS "SnipeGroupOverride_userId_idx"          ON "SnipeGroupOverride"("userId");
+DO $$ BEGIN
+  ALTER TABLE "SnipeGroupOverride" ADD CONSTRAINT "SnipeGroupOverride_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END; $$;
