@@ -153,6 +153,8 @@ export default function SnipePage() {
         <StatusBar tg={tgStatus} session={session} config={config} />
       </header>
 
+      <SnipeStatusNotice config={config} tgConnected={!!tgStatus?.connected} />
+
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4" style={{ alignItems: 'start' }}>
         <div className="xl:col-span-2 space-y-4">
           <TgPanel status={tgStatus} />
@@ -213,6 +215,67 @@ function SnipeBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss
       )}
     </div>
   );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Setup / activation notice
+───────────────────────────────────────────────────────────── */
+function SnipeStatusNotice({ config, tgConnected }: { config: SnipeConfig | null; tgConnected: boolean }) {
+  const base: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '9px 14px', borderRadius: 10, fontSize: 12,
+    border: '1px solid',
+  };
+  const info: React.CSSProperties = {
+    ...base,
+    background: 'color-mix(in srgb, var(--accent) 8%, var(--surface))',
+    borderColor: 'color-mix(in srgb, var(--accent) 25%, transparent)',
+    color: 'var(--text-2)',
+  };
+  const warn: React.CSSProperties = {
+    ...base,
+    background: 'color-mix(in srgb, var(--warn) 10%, var(--surface))',
+    borderColor: 'color-mix(in srgb, var(--warn) 30%, transparent)',
+    color: 'var(--warn)',
+  };
+
+  if (!config) return (
+    <div style={info}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>⚡</span>
+      <span>
+        <strong>Sniper not set up yet.</strong> Pick a wallet in <em>Snipe settings</em>, connect Telegram, track at least one group, then flip the toggle to <strong>On</strong>.
+      </span>
+    </div>
+  );
+
+  if (!config.enabled) return (
+    <div style={warn}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+      <span>
+        <strong>Sniper is OFF — no trades will trigger.</strong> Configure your settings below, then flip the <strong>On / Off</strong> toggle in <em>Snipe settings</em> when you're ready.
+      </span>
+    </div>
+  );
+
+  if (config.groupIds.length === 0) return (
+    <div style={warn}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+      <span>
+        <strong>No groups being watched.</strong> Sniper is on but has nothing to listen to — open the inbox, select a group and click <strong>+ Watch</strong>.
+      </span>
+    </div>
+  );
+
+  if (!tgConnected) return (
+    <div style={warn}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+      <span>
+        <strong>Telegram not connected.</strong> Sniper is on and groups are tracked, but no live feed — connect your account in the <em>Telegram account</em> panel.
+      </span>
+    </div>
+  );
+
+  return null;
 }
 
 /* ─────────────────────────────────────────────────────────────
