@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomBytes, createHash } from 'crypto';
 import { Chain } from '@prisma/client';
@@ -16,6 +16,8 @@ const REFRESH_TTL_MS = parseDurationSeconds(process.env.JWT_REFRESH_EXPIRES_IN ?
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private prisma: PrismaService,
     private jwt: JwtService,
@@ -125,6 +127,90 @@ export class AuthService {
     });
     if (!user) throw new UnauthorizedException('User not found');
     return user;
+  }
+
+  async requestPhoneOtp(phone: string): Promise<void> {
+    const normalized = phone.replace(/\D/g, '');
+    if (normalized.length < 7 || normalized.length > 15) {
+      throw new UnauthorizedException('Invalid phone number');
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpHash = createHash('sha256').update(otp).digest('hex');
+
+    // Delete old unused OTPs for this phone
+    await this.prisma.phoneOtp.deleteMany({ where: { phone: normalized, used: false } });
+
+    await this.prisma.phoneOtp.create({
+      data: {
+        phone: normalized,
+        otpHash,
+        expiresAt: new Date(Date.now() + 10 * 60_000),
+      },
+    });
+
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_FROM;
+    if (sid && token && from) {
+      const body = encodeURIComponent(`Your QWAI verification code is ${otp}. Valid for 10 minutes.`);
+      const to = encodeURIComponent(`+${normalized}`);
+      const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString('base64')}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `To=${to}&From=${encodeURIComponent(from)}&Body=${body}`,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        this.logger.error(`Twilio SMS failed: ${text}`);
+        throw new UnauthorizedException('Failed to send SMS');
+      }
+    } else {
+      this.logger.log(`[DEV] OTP for ${normalized}: ${otp}`);
+    }
+  }
+
+  async verifyPhoneOtp(phone: string, otp: string): Promise<AuthTokens> {
+    const normalized = phone.replace(/\D/g, '');
+    const otpHash = createHash('sha256').update(otp).digest('hex');
+
+    const record = await this.prisma.phoneOtp.findFirst({
+      where: { phone: normalized, used: false, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!record || record.otpHash !== otpHash) {
+      throw new UnauthorizedException('Invalid or expired OTP');
+    }
+
+    await this.prisma.phoneOtp.update({ where: { id: record.id }, data: { used: true } });
+
+    const user = await this.prisma.user.upsert({
+      where: { phone: normalized },
+      create: { phone: normalized },
+      update: {},
+    });
+
+    const tokens = await this.signTokens(user.id, normalized);
+
+    const session = await this.prisma.session.create({
+      data: {
+        userId: user.id,
+        refreshHash: hashToken(tokens.refreshToken),
+        expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: { userId: user.id, action: 'auth.phone.verify', target: normalized },
+    });
+
+    void session; // session stored; tokens carry the auth state
+    return tokens;
   }
 
   private async upsertUserByWallet(address: string, _chain: Chain) {

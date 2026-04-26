@@ -66,15 +66,15 @@ export default function TokenIntelCard() {
         </div>
       </div>
 
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-4 flex-wrap sm:flex-nowrap">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && analyze()}
           placeholder="Contract or ticker"
-          className="input font-mono"
+          className="input font-mono w-full sm:flex-1"
         />
-        <button onClick={analyze} disabled={loading || !input.trim()} className="btn btn-primary">
+        <button onClick={analyze} disabled={loading || !input.trim()} className="btn btn-primary w-full sm:w-auto">
           {loading ? <Spinner size={12} /> : 'Analyze'}
         </button>
       </div>

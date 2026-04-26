@@ -154,6 +154,7 @@ model User {
   email           String? @unique
   primaryWallet   String? @unique
   telegramChatId  String? @unique
+  phone           String? @unique
   riskProfile     Json?
   emotionalState    Json?
   notificationPrefs Json?
@@ -725,4 +726,14 @@ model UserIntentRule {
   updatedAt         DateTime      @updatedAt
   @@index([userId, status, scope])
   @@index([userId, lastAppliedAt])
+}
+
+model PhoneOtp {
+  id        String   @id @default(cuid())
+  phone     String
+  otpHash   String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  @@index([phone])
 }

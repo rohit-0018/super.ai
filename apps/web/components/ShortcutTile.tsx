@@ -40,10 +40,10 @@ export function ShortcutTile({ href, label, hint, badge, icon, tone = 'accent' }
         overflow: 'hidden',
       }}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-1.5 min-w-0">
         <span
           aria-hidden
-          className="inline-flex items-center justify-center"
+          className="inline-flex items-center justify-center shrink-0"
           style={{
             width: 32, height: 32, borderRadius: 8,
             background: `color-mix(in srgb, ${col} 14%, var(--surface-2))`,
@@ -53,7 +53,20 @@ export function ShortcutTile({ href, label, hint, badge, icon, tone = 'accent' }
         >
           {icon}
         </span>
-        {badge && <span className={badgeCls}>{badge.text}</span>}
+        {badge && (
+          <span
+            className={badgeCls}
+            style={{
+              /* Prevent badge from overflowing the tile on narrow 2-col mobile */
+              maxWidth: '100%',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {badge.text}
+          </span>
+        )}
       </div>
       <div>
         <div className="text-[13px] font-semibold tracking-tight">{label}</div>

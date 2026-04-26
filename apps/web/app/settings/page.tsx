@@ -217,21 +217,21 @@ export default function Settings() {
           <div className="space-y-4">
             <div>
               <label className="label">Per-trade limit (USD)</label>
-              <input type="number" value={localG.perTradeUsd ?? 0} onChange={(e) => setLocalG({ ...localG, perTradeUsd: +e.target.value })} className="input font-mono max-w-xs" />
+              <input type="number" value={localG.perTradeUsd ?? 0} onChange={(e) => setLocalG({ ...localG, perTradeUsd: +e.target.value })} className="input font-mono w-full sm:max-w-xs" />
             </div>
             <div>
               <label className="label">Daily limit (USD)</label>
-              <input type="number" value={localG.dailyUsd ?? 0} onChange={(e) => setLocalG({ ...localG, dailyUsd: +e.target.value })} className="input font-mono max-w-xs" />
+              <input type="number" value={localG.dailyUsd ?? 0} onChange={(e) => setLocalG({ ...localG, dailyUsd: +e.target.value })} className="input font-mono w-full sm:max-w-xs" />
             </div>
             <div>
               <label className="label">Max slippage (bps)</label>
-              <input type="number" value={localG.maxSlippageBps ?? 0} onChange={(e) => setLocalG({ ...localG, maxSlippageBps: +e.target.value })} className="input font-mono max-w-xs" />
+              <input type="number" value={localG.maxSlippageBps ?? 0} onChange={(e) => setLocalG({ ...localG, maxSlippageBps: +e.target.value })} className="input font-mono w-full sm:max-w-xs" />
             </div>
-            <div className="flex gap-2 pt-2">
-              <button onClick={save} disabled={saving} className="btn btn-primary">
+            <div className="flex flex-wrap gap-2 pt-2">
+              <button onClick={save} disabled={saving} className="btn btn-primary flex-1 sm:flex-none">
                 {saving ? <Spinner size={12} /> : 'Save'}
               </button>
-              <button onClick={killSwitch} className="btn" style={{ color: 'var(--bad)', borderColor: 'var(--bad)' }}>
+              <button onClick={killSwitch} className="btn flex-1 sm:flex-none" style={{ color: 'var(--bad)', borderColor: 'var(--bad)' }}>
                 Engage kill switch
               </button>
             </div>
@@ -336,9 +336,9 @@ export default function Settings() {
                 </div>
                 <div className="sm:col-span-2">
                   <label className="label mb-2">Approval channels</label>
-                  <div className="flex gap-4">
+                  <div className="flex flex-wrap gap-4">
                     {(['WEB', 'TELEGRAM'] as ApprovalChannel[]).map((ch) => (
-                      <label key={ch} className="flex items-center gap-2 cursor-pointer">
+                      <label key={ch} className="flex items-center gap-2 cursor-pointer min-h-[44px]">
                         <input type="checkbox" checked={learn.approvalChannels.includes(ch)} onChange={() => toggleChannel(ch)} className="accent-[color:var(--accent)]" />
                         <span className="text-[13px]">{ch === 'WEB' ? 'Web (dashboard card)' : 'Telegram (inline buttons)'}</span>
                       </label>
@@ -460,7 +460,7 @@ export default function Settings() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com (optional)"
-              className="input max-w-sm"
+              className="input w-full sm:max-w-sm"
             />
           </div>
           <div>
@@ -470,7 +470,7 @@ export default function Settings() {
               value={discordUrl}
               onChange={(e) => setDiscordUrl(e.target.value)}
               placeholder="https://discord.com/api/webhooks/... (optional)"
-              className="input font-mono max-w-sm"
+              className="input font-mono w-full sm:max-w-sm"
             />
           </div>
           <div className="flex items-center gap-3">

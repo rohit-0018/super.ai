@@ -89,7 +89,7 @@ export default function AdvancedOrderBuilder({ onClose }: { onClose: () => void 
         className="glass-strong w-full max-w-2xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[color:var(--border)]">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-[color:var(--border)]">
           <div>
             <div className="text-[15px] font-semibold">Advanced order</div>
             <div className="text-[12px] text-[color:var(--text-3)]">{selected.blurb}</div>
@@ -97,11 +97,11 @@ export default function AdvancedOrderBuilder({ onClose }: { onClose: () => void 
           <button onClick={onClose} className="btn btn-ghost btn-sm">Cancel</button>
         </div>
 
-        <div className="px-6 py-5 space-y-5">
+        <div className="px-4 sm:px-6 py-5 space-y-5">
           {/* Type selector */}
           <div>
             <label className="label">Order type</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {ORDER_TYPES.map((t) => (
                 <button
                   key={t.value}
@@ -139,7 +139,7 @@ export default function AdvancedOrderBuilder({ onClose }: { onClose: () => void 
           </div>
 
           {/* Token pair */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="label">Token in</label>
               <input
@@ -201,7 +201,7 @@ export default function AdvancedOrderBuilder({ onClose }: { onClose: () => void 
           )}
 
           {type === 'BRACKET' && (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="label">Entry</label>
                 <input value={triggerPrice} onChange={(e) => setTriggerPrice(e.target.value)} placeholder="140" className="input font-mono" />
@@ -247,7 +247,7 @@ export default function AdvancedOrderBuilder({ onClose }: { onClose: () => void 
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-[color:var(--border)] flex justify-end gap-2">
+        <div className="px-4 sm:px-6 py-4 border-t border-[color:var(--border)] flex justify-end gap-2">
           <button onClick={onClose} className="btn">Cancel</button>
           <button onClick={submit} disabled={busy} className="btn btn-primary">
             {busy ? <Spinner size={14} /> : `Place ${selected.label}`}

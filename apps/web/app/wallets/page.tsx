@@ -61,10 +61,10 @@ export default function Wallets() {
             {isTestnet && <span className="ml-2 chip chip-warn">devnet / Sepolia</span>}
           </p>
         </div>
-        <div className="flex gap-2 flex-wrap">
-          <a href="/wallets/analyze" className="btn btn-primary">Analyze wallet →</a>
-          <button onClick={() => create('SOLANA')} className="btn">+ Solana</button>
-          <button onClick={() => create('EVM')} className="btn">+ EVM</button>
+        <div className="flex gap-2 flex-wrap w-full sm:w-auto">
+          <a href="/wallets/analyze" className="btn btn-primary flex-1 sm:flex-none">Analyze wallet →</a>
+          <button onClick={() => create('SOLANA')} className="btn flex-1 sm:flex-none">+ Solana</button>
+          <button onClick={() => create('EVM')} className="btn flex-1 sm:flex-none">+ EVM</button>
         </div>
       </header>
 
@@ -228,14 +228,14 @@ export default function Wallets() {
                     <div className="text-[10px] uppercase tracking-wider text-[color:var(--text-3)] mb-2 font-medium">Recent activity</div>
                     <div className="space-y-1">
                       {w.recentTrades.map((t, i) => (
-                        <div key={i} className="flex items-center justify-between text-[11px]">
-                          <div className="flex items-center gap-2">
-                            <span className="chip" style={{ fontSize: 9, height: 18 }}>{t.mode}</span>
-                            <span className="font-mono text-[color:var(--text-2)]">
+                        <div key={i} className="flex items-start justify-between gap-2 text-[11px] flex-wrap">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="chip shrink-0" style={{ fontSize: 9, height: 18 }}>{t.mode}</span>
+                            <span className="font-mono text-[color:var(--text-2)] truncate">
                               {t.amountIn} {t.tokenIn.slice(0, 6)} → {t.amountOut} {t.tokenOut.slice(0, 6)}
                             </span>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 shrink-0">
                             {t.priceUsd != null && (
                               <span className="font-mono text-[color:var(--text-3)]">${Number(t.priceUsd).toFixed(2)}</span>
                             )}
@@ -275,11 +275,11 @@ function DepositPanel({ wallet }: { wallet: Wallet }) {
       <div className="text-[12px] font-medium mb-2">
         Deposit {wallet.chain === 'SOLANA' ? 'SOL / SPL tokens' : 'ETH / ERC-20 tokens'}
       </div>
-      <div className="flex items-center gap-2 mb-2">
-        <code className="flex-1 text-[12px] font-mono bg-[color:var(--bg)] border border-border rounded-md px-3 py-2 truncate select-all">
+      <div className="flex items-center gap-2 mb-2 flex-wrap sm:flex-nowrap">
+        <code className="w-full sm:flex-1 text-[12px] font-mono bg-[color:var(--bg)] border border-border rounded-md px-3 py-2 truncate select-all break-all">
           {wallet.address}
         </code>
-        <button onClick={copy} className="btn btn-sm btn-primary">
+        <button onClick={copy} className="btn btn-sm btn-primary w-full sm:w-auto">
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>

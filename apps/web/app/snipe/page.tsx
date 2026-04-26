@@ -222,7 +222,7 @@ function SnipeBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss
 ───────────────────────────────────────────────────────────── */
 function SnipeStatusNotice({ config, tgConnected }: { config: SnipeConfig | null; tgConnected: boolean }) {
   const base: React.CSSProperties = {
-    display: 'flex', alignItems: 'center', gap: 10,
+    display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10,
     padding: '9px 14px', borderRadius: 10, fontSize: 12,
     border: '1px solid',
   };
@@ -518,9 +518,9 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
 
   return (
     <div className="panel space-y-0" style={{ padding: 0 }}>
-      <div className="flex items-center" style={{ borderBottom: '1px solid var(--border)', padding: '10px 14px 0' }}>
+      <div className="flex flex-wrap items-center gap-y-1" style={{ borderBottom: '1px solid var(--border)', padding: '10px 14px 0' }}>
         <h2 className="section-title" style={{ margin: '0 12px 0 0' }}>Snipe settings</h2>
-        <div className="flex gap-1 flex-1">
+        <div className="flex gap-1 flex-1 min-w-0">
           {(['buy', 'sell'] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-ghost'}`}
@@ -563,15 +563,15 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
                 {hotBusy ? <><Spinner size={11} /> Loading…</> : '🔑 Load hot session'}
               </button>
             )}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="label">Buy amount (lamports)</label>
-                <input className="input font-mono" value={form.buyAmountRaw} onChange={(e) => set('buyAmountRaw', e.target.value)} />
+                <input className="input font-mono" inputMode="numeric" value={form.buyAmountRaw} onChange={(e) => set('buyAmountRaw', e.target.value)} />
                 <p className="text-[11px] mt-1 font-mono" style={{ color: 'var(--text-3)' }}>≈ {solAmount} SOL</p>
               </div>
               <div>
                 <label className="label">Max slippage (bps)</label>
-                <input className="input font-mono" type="number" min={100} max={9000}
+                <input className="input font-mono" type="number" inputMode="numeric" min={100} max={9000}
                   value={form.maxSlippageBps} onChange={(e) => set('maxSlippageBps', +e.target.value)} />
               </div>
             </div>
@@ -615,7 +615,7 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
                 </div>
                 <div>
                   <label className="label">Quick strategy</label>
-                  <div className="flex gap-1.5">
+                  <div className="flex flex-wrap gap-1.5">
                     {SELL_STRATEGIES.map((s) => (
                       <button key={s.label} className="btn btn-ghost btn-sm" onClick={() => applyStrategy(s)} style={{ fontSize: 11 }}>
                         {s.label}
@@ -850,7 +850,7 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
       )}
 
       {!tgConnected ? (
-        <div style={{ height: INBOX_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ minHeight: 200, height: INBOX_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center', padding: 24 }}>
             <IcoTelegram size={32} />
             <p className="text-[13px] font-medium mt-3">Connect Telegram to see your groups</p>
@@ -858,9 +858,9 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
           </div>
         </div>
       ) : (
-        <div style={{ display: 'flex', height: INBOX_HEIGHT }}>
+        <div className="tg-inbox-panes" style={{ display: 'flex', height: INBOX_HEIGHT }}>
           {/* ── Left: group list ── */}
-          <div style={{ width: 224, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+          <div className="tg-inbox-groups-col" style={{ width: 224, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
             {/* Search */}
             <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)' }}>
               <input
@@ -948,7 +948,7 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
           </div>
 
           {/* ── Right: chat view ── */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <div className="tg-inbox-chat-col" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             {!selected ? (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div style={{ textAlign: 'center', padding: 24 }}>
@@ -1027,7 +1027,7 @@ function ChatHeader({ group, watching, override, onToggleTrack, onSavePattern }:
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="text-[13px] font-semibold truncate">{group?.title ?? '…'}</div>
           {group?.members && (
-            <div className="text-[11px] font-mono" style={{ color: 'var(--text-3)' }}>
+            <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-3)' }}>
               {group.members.toLocaleString()} members · {group.isChannel ? 'channel' : 'group'} · id:{group.id}
             </div>
           )}
@@ -1248,10 +1248,10 @@ function TriggerRow({ label, unit, value, onChange, min, max }: {
         onChange={(e) => onChange(e.target.checked ? (min > 0 ? min : Math.abs(min)) : null)} />
       <div className="flex-1 text-[13px]">{label}</div>
       {enabled && (
-        <div className="flex items-center gap-1">
-          <input className="input font-mono" type="number" min={min} max={max}
+        <div className="flex items-center gap-1 shrink-0">
+          <input className="input font-mono" type="number" inputMode="decimal" min={min} max={max}
             value={value ?? ''} onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-            style={{ width: 80 }} />
+            style={{ width: 72 }} />
           <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{unit}</span>
         </div>
       )}
@@ -1305,7 +1305,7 @@ function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: bool
         <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Last 50</span>
       </div>
 
-      <div style={{ display: 'flex' }}>
+      <div className="history-panel-inner" style={{ display: 'flex' }}>
         {/* Trade list */}
         <div style={{ flex: 1, minWidth: 0 }}>
           {loading ? (
@@ -1395,7 +1395,7 @@ function TradeDetail({ trade, onClose }: { trade: SnipeTrade; onClose: () => voi
   );
 
   return (
-    <div className="fade-in" style={{
+    <div className="trade-detail-drawer fade-in" style={{
       width: 300, flexShrink: 0, borderLeft: '1px solid var(--border)',
       background: 'var(--surface-2)', padding: '14px', display: 'flex', flexDirection: 'column', gap: 0,
     }}>

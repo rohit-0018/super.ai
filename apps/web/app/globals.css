@@ -10,6 +10,8 @@
 
 :root,
 :root[data-theme='dark'] {
+  --topbar-h:        44px;
+  --tabbar-h:        56px;
   --bg:              #0a0d14;
   --bg-2:            #0d1119;
   --surface:         #141820;
@@ -417,9 +419,10 @@ body { position: relative; overflow-x: hidden; }
   }
   .stat-value-hero {
     /* Was a fixed 44px which overflowed narrow grid cells and bled into the
-       neighbouring stat. Clamp scales between 26px and 38px so the hero
-       number never blows past its column. */
-    font-size: clamp(26px, 3.2vw, 38px);
+       neighbouring stat. Clamp scales between 22px (mobile) and 38px (desktop)
+       so the hero number never blows past its column. On mobile it spans the
+       full row so we allow a slightly larger floor. */
+    font-size: clamp(22px, 6vw, 38px);
     font-weight: 600;
     letter-spacing: -0.03em;
     font-family: var(--font-mono);
@@ -431,6 +434,10 @@ body { position: relative; overflow-x: hidden; }
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* When the hero stat is full-width on mobile, allow a bigger font floor */
+  @media (max-width: 639px) {
+    .stat-value-hero { font-size: clamp(26px, 8vw, 38px); }
   }
   .stat-value-sm {
     font-size: 14px;
@@ -556,9 +563,16 @@ body { position: relative; overflow-x: hidden; }
 
   /* ---------- Statusbar ---------- */
   .statusbar {
-    height: 44px;
+    height: var(--topbar-h, 44px);
+    /* Account for notched/dynamic-island phones */
+    padding-top: env(safe-area-inset-top);
+    /* Compensate so content stays centered after safe-area padding */
+    height: calc(var(--topbar-h, 44px) + env(safe-area-inset-top));
     display: flex;
     align-items: center;
+    /* Prevent any child from blowing past the statusbar width */
+    min-width: 0;
+    overflow: hidden;
     border-bottom: 1px solid var(--border);
     background: color-mix(in srgb, var(--bg-2) 92%, transparent);
     backdrop-filter: blur(12px);
@@ -591,8 +605,8 @@ body { position: relative; overflow-x: hidden; }
     display: flex;
     flex-direction: column;
     position: sticky;
-    top: 44px;
-    height: calc(100vh - 44px);
+    top: var(--topbar-h, 44px);
+    height: calc(100vh - var(--topbar-h, 44px));
     z-index: 15;
   }
   .drawer-header {
@@ -833,6 +847,10 @@ body { position: relative; overflow-x: hidden; }
   @media (min-width: 1280px) { .grid-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px; } }
   /* Cells must constrain their children — grid items default to min-content width. */
   .grid-stats > * { min-width: 0; }
+  /* On mobile, the hero stat (first child) spans the full row width */
+  @media (max-width: 639px) {
+    .grid-stats > .stat:first-child { grid-column: 1 / -1; }
+  }
 
   /* Section-header: actions stack below title on tiny screens */
   @media (max-width: 520px) {
@@ -861,12 +879,16 @@ body { position: relative; overflow-x: hidden; }
       position: fixed;
       left: 0; right: 0; bottom: 0;
       z-index: 50;
-      height: 56px;
+      /* Height of the tab area + safe-area for notched phones */
+      height: calc(var(--tabbar-h, 56px) + env(safe-area-inset-bottom));
+      padding-bottom: env(safe-area-inset-bottom);
       background: color-mix(in srgb, var(--bg-2) 96%, transparent);
       backdrop-filter: blur(18px);
       -webkit-backdrop-filter: blur(18px);
       border-top: 1px solid var(--border);
-      padding: 4px;
+      padding-top: 4px;
+      padding-left: 4px;
+      padding-right: 4px;
       gap: 2px;
     }
     .mobile-tabbar .tab {
@@ -880,13 +902,20 @@ body { position: relative; overflow-x: hidden; }
       color: var(--text-3);
       font-size: 10px;
       letter-spacing: 0.02em;
+      /* Ensure tap target is at least 44px tall */
+      min-height: 44px;
+    }
+    .mobile-tabbar .tab svg {
+      /* Prevent SVG from shrinking inside the flex column */
+      flex-shrink: 0;
+      display: block;
     }
     .mobile-tabbar .tab.active {
       color: var(--accent);
       background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
     }
-    /* Add body-bottom padding so content doesn't hide under tabbar */
-    body { padding-bottom: 56px; }
+    /* Add body-bottom padding so content doesn't hide under tabbar + safe area */
+    body { padding-bottom: calc(var(--tabbar-h, 56px) + env(safe-area-inset-bottom)); }
     .statusbar-bottom { display: none; }
   }
 
@@ -895,6 +924,33 @@ body { position: relative; overflow-x: hidden; }
     .ticker-row { display: none; }
     .statusbar .kbd { display: none; }
     .statusbar .mobile-search-label { display: none; }
+  }
+
+  /* Very small phones (320px – 375px): prevent statusbar overflow */
+  @media (max-width: 374px) {
+    .statusbar {
+      /* Ensure the statusbar never wraps or bleeds */
+      flex-wrap: nowrap;
+    }
+    /* Left brand block must not grow and push right actions off-screen */
+    .statusbar > a.show-mobile {
+      flex-shrink: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+    /* Constrain the QWAI brand text on tiny screens */
+    .statusbar > a.show-mobile span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 48px;
+    }
+  }
+
+  /* Font-size floor: nothing below 11px on mobile */
+  @media (max-width: 767px) {
+    .text-\[10px\]  { font-size: 11px !important; }
+    .text-\[10\.5px\] { font-size: 11px !important; }
   }
 
   /* ---------- Agent launcher (FAB) — draggable 44px circle ---------- */
@@ -1000,8 +1056,8 @@ body { position: relative; overflow-x: hidden; }
   }
   @media (max-width: 640px) {
     .agent-drawer {
-      top: 44px;                   /* below topbar */
-      bottom: 56px;                /* above mobile tab bar */
+      top: var(--topbar-h, 44px);  /* below topbar */
+      bottom: calc(var(--tabbar-h, 56px) + env(safe-area-inset-bottom)); /* above mobile tab bar */
       width: 100vw;
       border-left: 0;
       border-top: 1px solid var(--border);
@@ -1046,5 +1102,68 @@ body { position: relative; overflow-x: hidden; }
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   Mobile responsiveness global fixes (max-width: 767px)
+   ============================================================ */
+
+/* TradingView chart: responsive height (240px mobile → 480px desktop) */
+.tv-chart-container { height: 240px; }
+@media (min-width: 640px)  { .tv-chart-container { height: 360px; } }
+@media (min-width: 1024px) { .tv-chart-container { height: 480px; } }
+
+@media (max-width: 767px) {
+  /* Prevent iOS auto-zoom: all inputs need font-size >= 16px */
+  .input, input, textarea, select { font-size: 16px !important; }
+
+  /* Enforce min 44px tap targets on action buttons */
+  .btn { min-height: 44px; }
+  /* btn-sm stays small in height but add padding so tap area is sufficient */
+  .btn-sm { min-height: 32px; padding-top: 8px; padding-bottom: 8px; }
+
+  /* Prevent horizontal page overflow */
+  .page { overflow-x: hidden; }
+
+  /* Chat panel: fill available viewport height using dynamic viewport units
+     so the panel doesn't get clipped when the mobile keyboard opens       */
+  .chat-panel-root {
+    height: calc(100dvh - 100px) !important;
+  }
+  /* Keep scroll area contained so iOS doesn't bounce the whole panel */
+  .chat-panel-root .flex-1.overflow-y-auto {
+    overscroll-behavior: contain;
+  }
+
+  /* Snipe page — TG inbox split-pane: stack group list above chat view */
+  .tg-inbox-panes {
+    flex-direction: column;
+    height: auto !important;
+  }
+  .tg-inbox-groups-col {
+    width: 100% !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border);
+    max-height: 240px;
+  }
+  .tg-inbox-chat-col {
+    min-height: 280px;
+  }
+
+  /* Snipe page — trade detail drawer: stack below history table */
+  .history-panel-inner {
+    flex-direction: column !important;
+  }
+  .trade-detail-drawer {
+    width: 100% !important;
+    border-left: none !important;
+    border-top: 1px solid var(--border);
+  }
+
+  /* SnipeStatusNotice banners: allow text to wrap cleanly */
+  .snipe-notice {
+    flex-wrap: wrap;
+    align-items: flex-start;
   }
 }

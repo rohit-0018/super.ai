@@ -47,5 +47,5 @@ export default function TradingViewChart({ symbol }: { symbol: string }) {
       if (created) script?.remove();
     };
   }, [symbol]);
-  return <div ref={ref} style={{ height: 480 }} />;
+  return <div ref={ref} className="tv-chart-container" />;
 }

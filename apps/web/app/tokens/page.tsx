@@ -14,7 +14,7 @@ export default function TokensPage() {
             Conviction scores, rug checks, holder analytics — across Solana and EVM.
           </p>
         </div>
-        <a href="/tokens/analyze" className="btn btn-primary">Analyze by address →</a>
+        <a href="/tokens/analyze" className="btn btn-primary w-full sm:w-auto">Analyze by address →</a>
       </header>
 
       <TrendingMovers />

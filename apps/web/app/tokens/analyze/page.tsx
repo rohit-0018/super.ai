@@ -119,14 +119,14 @@ export default function TokenAnalyze() {
 
       <Section title="Target">
         <form onSubmit={run} className="flex gap-2 flex-wrap items-end">
-          <div style={{ minWidth: 120 }}>
+          <div className="w-full sm:w-auto" style={{ minWidth: 120 }}>
             <label className="label">Chain</label>
             <select className="input" value={chain} onChange={(e) => setChain(e.target.value as Chain)}>
               <option value="SOLANA">Solana</option>
               <option value="EVM">EVM (Ethereum)</option>
             </select>
           </div>
-          <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+          <div className="w-full sm:flex-1" style={{ minWidth: 0 }}>
             <label className="label">Contract / mint address</label>
             <input
               className="input mono"
@@ -135,7 +135,7 @@ export default function TokenAnalyze() {
               placeholder={chain === 'SOLANA' ? 'e.g. EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' : '0x…'}
             />
           </div>
-          <button className="btn btn-primary" disabled={loading}>
+          <button className="btn btn-primary w-full sm:w-auto" disabled={loading}>
             {loading ? 'Analyzing…' : 'Analyze'}
           </button>
         </form>

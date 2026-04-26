@@ -65,7 +65,7 @@ export default function Social() {
           </div>
         </div>
         <div className="section-body">
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-end">
             <input
               value={copyTarget}
               onChange={(e) => setCopyTarget(e.target.value)}
@@ -76,7 +76,7 @@ export default function Social() {
             <button
               onClick={startCopy}
               disabled={copyBusy || !copyTarget.trim()}
-              className="btn btn-primary"
+              className="btn btn-primary w-full sm:w-auto"
             >
               {copyBusy ? 'Starting…' : 'Start copy'}
             </button>
@@ -151,7 +151,7 @@ export default function Social() {
                     <td className="py-3 pr-4">
                       <button
                         onClick={() => { setCopyTarget(r.anonId); }}
-                        className="btn btn-sm"
+                        className="btn btn-sm min-h-[44px]"
                       >
                         Copy
                       </button>

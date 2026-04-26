@@ -88,7 +88,7 @@ export default function Analytics() {
         </div>
       )}
 
-      {/* Stats grid */}
+      {/* Stats grid — 2-col on mobile, 3-col on sm, 6-col on lg */}
       <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 md:gap-4">
         <StatCard label="Total P&L" value={loading ? null : fmtUsd(perf!.totalPnl)} accent={loading ? undefined : (perf!.totalPnl >= 0 ? 'var(--ok)' : 'var(--bad)')} />
         <StatCard label="Win rate" value={loading ? null : `${(perf!.winRate * 100).toFixed(1)}%`} />
@@ -127,8 +127,8 @@ export default function Analytics() {
             <span className="text-[11px] text-[color:var(--text-3)]">{trades.length} trades</span>
           )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-[13px]">
+        <div className="overflow-x-auto -webkit-overflow-scrolling-touch">
+          <table className="w-full text-[13px]" style={{ minWidth: 540 }}>
             <thead>
               <tr className="text-left">
                 <Th>Time</Th>
@@ -223,7 +223,7 @@ function CumulativeChart({ data }: { data: number[] }) {
   const lastVal = data[data.length - 1];
   const color = lastVal >= 0 ? 'var(--ok)' : 'var(--bad)';
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 120 }} preserveAspectRatio="none">
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 'clamp(80px, 12vw, 120px)' }} preserveAspectRatio="none">
       <line x1="0" y1={mid} x2={w} y2={mid} stroke="var(--border)" strokeWidth="0.3" />
       <polyline
         points={points}

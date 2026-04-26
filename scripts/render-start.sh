@@ -24,7 +24,8 @@ for migration in \
   20260428_episodic_memory \
   20260429_conviction_personalization \
   20260429_snipe_tables \
-  20260430_snipe_trade_error_msg
+  20260430_snipe_trade_error_msg \
+  20260430_phone_auth
 do
   pnpm prisma migrate resolve --rolled-back "$migration" \
     --schema=./prisma/schema.prisma 2>/dev/null || true

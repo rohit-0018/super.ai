@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
-import { IsString, Length } from 'class-validator';
+import { IsString, Length, Matches } from 'class-validator';
 import { AuthService } from './auth.service';
 import { TelegramLinkService } from './telegram-link.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
@@ -8,6 +8,15 @@ import { NonceDto, RefreshDto, VerifyDto } from './dto';
 class TgLinkDto {
   @IsString() @Length(4, 16) code!: string;
   @IsString() telegramChatId!: string;
+}
+
+class PhoneRequestDto {
+  @IsString() @Matches(/^\+?[0-9\s\-().]{7,20}$/) phone!: string;
+}
+
+class PhoneVerifyDto {
+  @IsString() phone!: string;
+  @IsString() @Length(6, 6) otp!: string;
 }
 
 @Controller('auth')
@@ -51,5 +60,16 @@ export class AuthController {
   @Post('telegram/link')
   linkTelegram(@Body() dto: TgLinkDto) {
     return this.tgLink.link(dto.telegramChatId, dto.code);
+  }
+
+  @Post('phone/request')
+  async phoneRequest(@Body() dto: PhoneRequestDto) {
+    await this.auth.requestPhoneOtp(dto.phone);
+    return { ok: true };
+  }
+
+  @Post('phone/verify')
+  phoneVerify(@Body() dto: PhoneVerifyDto) {
+    return this.auth.verifyPhoneOtp(dto.phone, dto.otp);
   }
 }

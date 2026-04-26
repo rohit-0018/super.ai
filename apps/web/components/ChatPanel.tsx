@@ -212,7 +212,7 @@ export default function ChatPanel() {
   const isEmpty = useMemo(() => !loadingHistory && msgs.length === 0, [loadingHistory, msgs.length]);
 
   return (
-    <div className="glass glass-sheen flex flex-col h-[560px] overflow-hidden">
+    <div className="glass glass-sheen chat-panel-root flex flex-col overflow-hidden" style={{ height: 'clamp(420px, calc(100dvh - 100px), 760px)' }}>
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[color:var(--border)]">
         <div className="flex items-center gap-3 min-w-0">

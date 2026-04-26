@@ -144,13 +144,14 @@ function TopStatusBar() {
   const [cmdOpen, setCmdOpen] = useState(false);
   return (
     <div className="statusbar">
-      {/* Mobile-only brand on the left */}
-      <Link href="/" className="show-mobile flex items-center gap-2 pl-3 pr-2 h-full" aria-label="QWAI home">
+      {/* Mobile-only brand on the left — shrink-0 so it doesn't flex-grow into the actions */}
+      <Link href="/" className="show-mobile flex items-center gap-2 pl-3 pr-2 h-full shrink-0" aria-label="QWAI home"
+        style={{ minWidth: 0, overflow: 'hidden' }}>
         <QwaiMark size={22} />
-        <span className="font-display font-semibold text-[14px] tracking-tight">QWAI</span>
+        <span className="font-display font-semibold text-[14px] tracking-tight" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>QWAI</span>
       </Link>
       {/* Desktop: search + ticker */}
-      <div className="hide-mobile flex items-center gap-3 pl-4 pr-2 h-full" style={{ borderRight: '1px solid var(--border)' }}>
+      <div className="hide-mobile flex items-center gap-3 pl-4 pr-2 h-full shrink-0" style={{ borderRight: '1px solid var(--border)' }}>
         <button
           className="btn btn-sm btn-ghost"
           onClick={() => setCmdOpen(true)}
@@ -164,12 +165,14 @@ function TopStatusBar() {
         </button>
       </div>
       <TickerBar items={DEMO_TICKER} />
-      <div className="flex items-center gap-1 md:gap-2 pr-2 md:pr-3 md:pl-3 h-full ml-auto" style={{ borderLeft: '1px solid var(--border)' }}>
+      {/* Right-side actions — shrink-0 so they're never pushed off-screen */}
+      <div className="flex items-center gap-1 md:gap-2 pr-2 md:pr-3 md:pl-3 h-full ml-auto shrink-0" style={{ borderLeft: '1px solid var(--border)' }}>
         <button
           className="btn-icon show-mobile"
           onClick={() => setCmdOpen(true)}
           aria-label="Search"
           title="Search"
+          style={{ minWidth: 44, minHeight: 44 }}
         >
           <IconSearch size={16} />
         </button>

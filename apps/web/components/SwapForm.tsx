@@ -119,6 +119,7 @@ export default function SwapForm() {
             placeholder="Base units"
             value={amountIn}
             onChange={(e) => setAmountIn(e.target.value)}
+            inputMode="decimal"
             className="input font-mono"
           />
         </div>
@@ -128,6 +129,7 @@ export default function SwapForm() {
             <label className="label">Notional (USD)</label>
             <input
               type="number"
+              inputMode="decimal"
               value={notionalUsd}
               onChange={(e) => setNotionalUsd(+e.target.value)}
               className="input font-mono"
@@ -137,6 +139,7 @@ export default function SwapForm() {
             <label className="label">Slippage (bps)</label>
             <input
               type="number"
+              inputMode="numeric"
               value={slippageBps}
               onChange={(e) => setSlippageBps(+e.target.value)}
               className="input font-mono"

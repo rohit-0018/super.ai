@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ethers } from 'ethers';
 import bs58 from 'bs58';
 import { api } from '../../lib/api';
@@ -29,11 +29,34 @@ function pickPhantom(): any | null {
   return phantom?.isPhantom ? phantom : null;
 }
 
+type PhoneStep = 'input' | 'otp';
+
 export default function Login() {
   const { setTokens } = useAuth();
   const router = useRouter();
-  const [busy, setBusy] = useState<null | 'evm' | 'sol'>(null);
+  const [busy, setBusy] = useState<null | 'evm' | 'sol' | 'phone-req' | 'phone-verify'>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Phone OTP state
+  const [phoneStep, setPhoneStep] = useState<PhoneStep>('input');
+  const [phone, setPhone] = useState('');
+  const [otp, setOtp] = useState('');
+  const [resendCountdown, setResendCountdown] = useState(0);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth <= 767);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // Resend countdown timer
+  useEffect(() => {
+    if (resendCountdown <= 0) return;
+    const t = setTimeout(() => setResendCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCountdown]);
 
   async function evmLogin() {
     if (busy) return;
@@ -96,6 +119,163 @@ export default function Login() {
     }
   }
 
+  async function sendOtp() {
+    if (busy) return;
+    setBusy('phone-req');
+    setErr(null);
+    try {
+      await api.post('/auth/phone/request', { phone });
+      setPhoneStep('otp');
+      setResendCountdown(30);
+    } catch (e: any) {
+      console.error('[login] phone request failed:', e);
+      setErr(e?.response?.data?.message || e?.message || 'Failed to send code');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function verifyOtp() {
+    if (busy) return;
+    setBusy('phone-verify');
+    setErr(null);
+    try {
+      const { data } = await api.post('/auth/phone/verify', { phone, otp });
+      setTokens(data.accessToken, data.refreshToken, data.expiresIn);
+      router.push('/dashboard');
+    } catch (e: any) {
+      console.error('[login] phone verify failed:', e);
+      setErr(e?.response?.data?.message || e?.message || 'Invalid or expired code');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function resendOtp() {
+    if (resendCountdown > 0 || busy) return;
+    setOtp('');
+    setErr(null);
+    await sendOtp();
+  }
+
+  const phoneSection = (
+    <div>
+      {phoneStep === 'input' ? (
+        <div className="grid gap-2">
+          <label className="text-[11px] font-mono uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>
+            Phone number
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="tel"
+              inputMode="numeric"
+              placeholder="+1 555 000 0000"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && phone.length >= 7 && sendOtp()}
+              className="input flex-1"
+              style={{ height: 36, fontSize: 14 }}
+              disabled={!!busy}
+              autoFocus={isMobile}
+            />
+            <button
+              onClick={sendOtp}
+              disabled={!!busy || phone.length < 7}
+              className="btn btn-primary btn-sm"
+              style={{ minWidth: 90, height: 36 }}
+            >
+              {busy === 'phone-req' ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="qwai-spinner" style={{ width: 12, height: 12, borderTopColor: '#fff' }} />
+                  Sending
+                </span>
+              ) : 'Send code'}
+            </button>
+          </div>
+          <p className="text-[11.5px] font-mono" style={{ color: 'var(--text-3)' }}>
+            International format — include country code
+          </p>
+        </div>
+      ) : (
+        <div className="grid gap-2">
+          <div className="flex items-center gap-2 mb-0.5">
+            <button
+              onClick={() => { setPhoneStep('input'); setOtp(''); setErr(null); }}
+              className="btn btn-ghost btn-sm"
+              style={{ padding: '0 8px', height: 28, fontSize: 11 }}
+            >
+              ← back
+            </button>
+            <span className="text-[11.5px] font-mono" style={{ color: 'var(--text-3)' }}>
+              Code sent to {phone}
+            </span>
+          </div>
+          <label className="text-[11px] font-mono uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>
+            6-digit code
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="000000"
+              maxLength={6}
+              value={otp}
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              onKeyDown={(e) => e.key === 'Enter' && otp.length === 6 && verifyOtp()}
+              className="input flex-1 font-mono text-center"
+              style={{ height: 36, fontSize: 18, letterSpacing: '0.25em' }}
+              disabled={!!busy}
+              autoFocus
+            />
+            <button
+              onClick={verifyOtp}
+              disabled={!!busy || otp.length !== 6}
+              className="btn btn-primary btn-sm"
+              style={{ minWidth: 80, height: 36 }}
+            >
+              {busy === 'phone-verify' ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="qwai-spinner" style={{ width: 12, height: 12, borderTopColor: '#fff' }} />
+                  Verifying
+                </span>
+              ) : 'Verify'}
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5 text-[11.5px] font-mono" style={{ color: 'var(--text-3)' }}>
+            {resendCountdown > 0 ? (
+              <span>Resend in {resendCountdown}s</span>
+            ) : (
+              <button
+                onClick={resendOtp}
+                disabled={!!busy}
+                style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 'inherit', fontFamily: 'inherit' }}
+              >
+                Resend code
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const walletSection = (
+    <div className="grid gap-2.5">
+      <WalletButton kind="evm" label="MetaMask" sub="Ethereum · EVM chains" busy={busy === 'evm'} disabled={!!busy} onClick={evmLogin} />
+      <WalletButton kind="sol" label="Phantom"  sub="Solana"                busy={busy === 'sol'} disabled={!!busy} onClick={solanaLogin} />
+    </div>
+  );
+
+  const divider = (label: string) => (
+    <div className="flex items-center gap-3 my-4">
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+      <span className="text-[11px] font-mono uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>
+        {label}
+      </span>
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+    </div>
+  );
+
   return (
     <div className="relative flex items-center justify-center px-4 py-8 md:py-12" style={{ minHeight: '70vh' }}>
       <div
@@ -125,16 +305,27 @@ export default function Login() {
         </div>
 
         <h1 className="font-display text-[22px] md:text-[24px] font-semibold tracking-tight mb-1.5">
-          Connect your wallet
+          {isMobile ? 'Sign in with phone' : 'Connect your wallet'}
         </h1>
         <p className="text-[13px] mb-5 leading-relaxed" style={{ color: 'var(--text-2)' }}>
-          Sign a message with MetaMask or Phantom to access your dashboard. No password, no email — your wallet is your identity.
+          {isMobile
+            ? 'Enter your phone number to receive a one-time code.'
+            : 'Sign a message with MetaMask or Phantom to access your dashboard. No password, no email — your wallet is your identity.'}
         </p>
 
-        <div className="grid gap-2.5">
-          <WalletButton kind="evm" label="MetaMask" sub="Ethereum · EVM chains" busy={busy === 'evm'} disabled={!!busy} onClick={evmLogin} />
-          <WalletButton kind="sol" label="Phantom"  sub="Solana"                busy={busy === 'sol'} disabled={!!busy} onClick={solanaLogin} />
-        </div>
+        {isMobile ? (
+          <>
+            {phoneSection}
+            {divider('or continue with wallet')}
+            {walletSection}
+          </>
+        ) : (
+          <>
+            {walletSection}
+            {divider('or sign in with phone')}
+            {phoneSection}
+          </>
+        )}
 
         {err && (
           <div

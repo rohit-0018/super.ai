@@ -25,6 +25,10 @@ export function InsightCard({ item }: { item: Insight }) {
         boxShadow: 'var(--shadow-card)',
         position: 'relative',
         overflow: 'hidden',
+        /* Prevent card from blowing past its grid/flex parent on small screens */
+        minWidth: 0,
+        maxWidth: '100%',
+        wordBreak: 'break-word',
       }}
     >
       {/* Left accent bar */}
@@ -38,10 +42,10 @@ export function InsightCard({ item }: { item: Insight }) {
         }}
       />
 
-      {/* Header */}
+      {/* Header — min 44px tap target on mobile */}
       <header
         className="flex items-center gap-2 flex-wrap px-3 md:px-3.5 py-2"
-        style={{ minHeight: 40, paddingLeft: 14, borderBottom: open ? '1px solid var(--border)' : undefined }}
+        style={{ minHeight: 44, paddingLeft: 14, borderBottom: open ? '1px solid var(--border)' : undefined }}
       >
         <span
           aria-hidden
@@ -197,10 +201,17 @@ function ResearchBody({ item, open }: { item: ResearchInsight; open: boolean }) 
 function WhaleBody({ item, open }: { item: WhaleInsight; open: boolean }) {
   return (
     <>
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <span className="font-mono text-[12.5px]" style={{ color: 'var(--text-2)' }}>{item.wallet}</span>
-        <span className="font-mono text-[12.5px]" style={{ color: 'var(--text-3)' }}>·</span>
-        <span className="font-mono text-[13px]">{item.notional}</span>
+      <div className="flex items-baseline gap-2 flex-wrap min-w-0">
+        {/* Wallet address: truncate so it never blows past the card edge */}
+        <span
+          className="font-mono text-[12.5px] truncate"
+          style={{ color: 'var(--text-2)', maxWidth: '18ch', minWidth: 0 }}
+          title={item.wallet}
+        >
+          {item.wallet}
+        </span>
+        <span className="font-mono text-[12.5px] shrink-0" style={{ color: 'var(--text-3)' }}>·</span>
+        <span className="font-mono text-[13px] shrink-0">{item.notional}</span>
       </div>
       <p className="text-[13px] mt-1 leading-relaxed">{item.action}</p>
       {open && item.cluster && (
