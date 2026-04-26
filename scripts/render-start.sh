@@ -15,7 +15,8 @@ export NPM_CONFIG_PREFIX="$HOME/.npm-global"
 export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
 echo "▶ resolving any previously-failed migrations"
-pnpm prisma migrate resolve --rolled-back 20260424041722_ --schema=./prisma/schema.prisma 2>/dev/null || true
+pnpm prisma migrate resolve --rolled-back 20260424041722_        --schema=./prisma/schema.prisma 2>/dev/null || true
+pnpm prisma migrate resolve --rolled-back 20260430_snipe_trade_error_msg --schema=./prisma/schema.prisma 2>/dev/null || true
 
 echo "▶ prisma migrate deploy"
 pnpm prisma migrate deploy --schema=./prisma/schema.prisma
