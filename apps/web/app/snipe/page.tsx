@@ -324,20 +324,38 @@ function StatusBar({ tg, session, config }: {
 /* ─────────────────────────────────────────────────────────────
    Telegram auth panel
 ───────────────────────────────────────────────────────────── */
-type QrStep = 'idle' | 'qr' | '2fa';
+type AuthStep =
+  | 'idle'          // not started
+  | 'qr'            // QR visible, polling
+  | 'qr_2fa'        // QR scanned, needs cloud password
+  | 'phone_input'   // phone number entry
+  | 'phone_code'    // OTP code entry
+  | 'phone_2fa';    // 2FA after code verified
 
 function TgPanel({ status }: { status: TgStatus | null }) {
   const connected = status?.connected ?? false;
-  const [step, setStep] = useState<QrStep>('idle');
+  const [step, setStep]   = useState<AuthStep>('idle');
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [phone, setPhone] = useState('');
+  const [code, setCode]   = useState('');
   const [pw, setPw]       = useState('');
   const [busy, setBusy]   = useState(false);
   const [err, setErr]     = useState<string | null>(null);
+  const [resend, setResend] = useState(0);
+  const [codeViaApp, setCodeViaApp] = useState(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => { if (connected) { stopPoll(); setStep('idle'); setQrUrl(null); } }, [connected]);
+  useEffect(() => { if (connected) { stopPoll(); reset(); } }, [connected]);
   useEffect(() => () => stopPoll(), []);
 
+  // Resend countdown
+  useEffect(() => {
+    if (resend <= 0) return;
+    const t = setTimeout(() => setResend((n) => n - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resend]);
+
+  function reset() { stopPoll(); setStep('idle'); setQrUrl(null); setErr(null); setCode(''); setPw(''); }
   function stopPoll() { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } }
 
   function startPoll() {
@@ -346,42 +364,81 @@ function TgPanel({ status }: { status: TgStatus | null }) {
       try {
         const { data } = await api.get<{ status: string; qrUrl?: string; error?: string }>('/snipe/tg/qr/poll');
         if (data.qrUrl) setQrUrl(data.qrUrl);
-        if (data.status === 'success') { stopPoll(); setStep('idle'); setQrUrl(null); mutate<TgStatus>('/snipe/tg/status', () => ({ connected: true, me: null, qrPending: false })); invalidate('/snipe/tg/status'); }
-        else if (data.status === 'needs_2fa') { stopPoll(); setStep('2fa'); }
+        if (data.status === 'success') {
+          stopPoll(); reset();
+          mutate<TgStatus>('/snipe/tg/status', () => ({ connected: true, me: null, qrPending: false }));
+          invalidate('/snipe/tg/status');
+        } else if (data.status === 'needs_2fa') { stopPoll(); setStep('qr_2fa'); }
         else if (data.status === 'error') { stopPoll(); setErr(data.error ?? 'Login failed'); setStep('idle'); setQrUrl(null); }
       } catch {}
     }, 2500);
   }
 
+  // QR flow
   const startQr = async () => {
     setBusy(true); setErr(null);
     try {
       await api.post('/snipe/tg/qr/start', {});
       const { data } = await api.get<{ status: string; qrUrl?: string }>('/snipe/tg/qr/poll');
       setQrUrl(data.qrUrl ?? null); setStep('qr'); startPoll();
-    } catch (e: any) { setErr(e?.message ?? 'Failed to start QR login'); }
+    } catch (e: any) { setErr(e?.response?.data?.message ?? e?.message ?? 'Failed to start QR login'); }
     finally { setBusy(false); }
   };
 
-  const submit2fa = async () => {
+  const submitQr2fa = async () => {
     setBusy(true); setErr(null);
     try { await api.post('/snipe/tg/qr/verify-2fa', { password: pw }); startPoll(); setStep('qr'); }
-    catch (e: any) { setErr(e?.message ?? 'Wrong password'); }
+    catch (e: any) { setErr(e?.response?.data?.message ?? e?.message ?? 'Wrong password'); }
     finally { setBusy(false); }
   };
 
-  const cancel = async () => { stopPoll(); await api.delete('/snipe/tg/qr/cancel').catch(() => {}); setStep('idle'); setQrUrl(null); setErr(null); };
+  const cancelQr = async () => { stopPoll(); await api.delete('/snipe/tg/qr/cancel').catch(() => {}); reset(); };
+
+  // Phone flow
+  const sendCode = async () => {
+    if (busy || phone.length < 7) return;
+    setBusy(true); setErr(null);
+    try {
+      const { data } = await api.post<{ sent: boolean; isCodeViaApp: boolean }>('/snipe/tg/send-code', { phoneNumber: phone });
+      setCodeViaApp(data.isCodeViaApp ?? true);
+      setStep('phone_code'); setResend(60);
+    } catch (e: any) { setErr(e?.response?.data?.message ?? e?.message ?? 'Failed to send code'); }
+    finally { setBusy(false); }
+  };
+
+  const verifyCode = async () => {
+    if (busy || code.length < 4) return;
+    setBusy(true); setErr(null);
+    try {
+      const { data } = await api.post<{ ok: boolean; needs2fa?: boolean }>('/snipe/tg/verify-code', { code });
+      if (data.needs2fa) { setStep('phone_2fa'); }
+      else { invalidate('/snipe/tg/status'); reset(); }
+    } catch (e: any) { setErr(e?.response?.data?.message ?? e?.message ?? 'Invalid code'); }
+    finally { setBusy(false); }
+  };
+
+  const submitPhone2fa = async () => {
+    if (busy || !pw) return;
+    setBusy(true); setErr(null);
+    try {
+      await api.post('/snipe/tg/verify-2fa', { password: pw });
+      invalidate('/snipe/tg/status'); reset();
+    } catch (e: any) { setErr(e?.response?.data?.message ?? e?.message ?? 'Wrong password'); }
+    finally { setBusy(false); }
+  };
 
   const disconnect = async () => {
-    setBusy(true);
+    setBusy(true); setErr(null);
     try { await api.delete('/snipe/tg/session'); invalidate('/snipe/tg/status'); }
     catch (e: any) { setErr(e?.message ?? 'Error'); }
     finally { setBusy(false); }
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="panel space-y-3">
-      <div className="flex items-center justify-between">
+    <div className="panel" style={{ padding: 0 }}>
+      {/* Header */}
+      <div className="flex items-center justify-between" style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
         <div className="flex items-center gap-2">
           <IcoTelegram size={15} />
           <h2 className="section-title" style={{ margin: 0 }}>Telegram account</h2>
@@ -389,64 +446,199 @@ function TgPanel({ status }: { status: TgStatus | null }) {
         {connected && <span className="live-dot" />}
       </div>
 
-      {connected ? (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3" style={{ padding: '8px 10px', background: 'var(--bg-2)', borderRadius: 8, border: '1px solid var(--border)' }}>
-            <div className="flex items-center justify-center rounded-full font-semibold text-[13px]"
-              style={{ width: 34, height: 34, background: 'color-mix(in srgb, var(--accent) 18%, transparent)', color: 'var(--accent)', flexShrink: 0 }}>
-              {status?.me?.firstName?.[0]?.toUpperCase() ?? '?'}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-semibold truncate">{status?.me?.firstName}</div>
-              <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-3)' }}>
-                {status?.me?.username ? `@${status.me.username}` : status?.me?.phone}
+      <div style={{ padding: 14 }}>
+        {/* ── CONNECTED ── */}
+        {connected ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3" style={{ padding: '10px 12px', background: 'var(--bg-2)', borderRadius: 10, border: '1px solid var(--border)', boxShadow: 'inset 0 1px 0 var(--highlight)' }}>
+              <div className="flex items-center justify-center rounded-full font-semibold text-[14px] shrink-0"
+                style={{ width: 38, height: 38, background: 'color-mix(in srgb, var(--accent) 18%, transparent)', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' }}>
+                {status?.me?.firstName?.[0]?.toUpperCase() ?? '?'}
               </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold truncate">{status?.me?.firstName ?? 'Connected'}</div>
+                <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-3)' }}>
+                  {status?.me?.username ? `@${status.me.username}` : status?.me?.phone ?? '—'}
+                </div>
+              </div>
+              <span className="chip chip-ok" style={{ fontSize: 10 }}>Live</span>
             </div>
-            <span className="chip chip-ok" style={{ fontSize: 10 }}>Live</span>
+            {err && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{err}</p>}
+            <button className="btn btn-sm btn-ghost" onClick={disconnect} disabled={busy}
+              style={{ color: 'var(--bad)', borderColor: 'color-mix(in srgb, var(--bad) 30%, transparent)' }}>
+              {busy ? <Spinner size={11} /> : 'Disconnect'}
+            </button>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={disconnect} disabled={busy}
-            style={{ color: 'var(--bad)', borderColor: 'color-mix(in srgb, var(--bad) 30%, transparent)' }}>
-            {busy ? <Spinner size={11} /> : 'Disconnect'}
-          </button>
-        </div>
-      ) : step === 'idle' ? (
-        <div className="space-y-3">
-          <p className="text-[12px]" style={{ color: 'var(--text-2)' }}>
-            Connect your personal account to monitor every group in real-time.
-          </p>
-          {err && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{err}</p>}
-          <button className="btn btn-primary" onClick={startQr} disabled={busy}>
-            {busy ? <Spinner size={12} /> : <><IcoQr size={13} /> Scan QR code</>}
-          </button>
-        </div>
-      ) : step === 'qr' ? (
-        <div className="space-y-4">
-          <p className="text-[12px]" style={{ color: 'var(--text-2)' }}>
-            Open Telegram → Settings → Devices → Scan QR code
-          </p>
-          {qrUrl
-            ? <div className="flex justify-center"><div style={{ background: '#fff', padding: 10, borderRadius: 10, border: '1px solid var(--border)' }}><QRCode value={qrUrl} size={160} /></div></div>
-            : <div className="flex justify-center py-4"><Spinner size={20} /></div>}
-          <div className="flex items-center gap-2 justify-center text-[11px]" style={{ color: 'var(--text-3)' }}>
-            <Spinner size={10} /><span>Waiting for scan…</span>
+
+        /* ── QR CODE (active) ── */
+        ) : step === 'qr' ? (
+          <div className="space-y-3">
+            <div className="text-[11px] font-mono uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>
+              Telegram → Settings → Devices → Scan QR
+            </div>
+            <div className="flex justify-center">
+              {qrUrl ? (
+                <div style={{ background: '#fff', padding: 12, borderRadius: 12, border: '1px solid var(--border)', boxShadow: 'inset 0 1px 0 var(--highlight)' }}>
+                  <QRCode value={qrUrl} size={168} fgColor="#0a0d14" bgColor="#ffffff" />
+                </div>
+              ) : (
+                <div className="flex items-center justify-center" style={{ width: 192, height: 192, border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface-2)' }}>
+                  <Spinner size={22} />
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 justify-center" style={{ color: 'var(--text-3)' }}>
+              <Spinner size={10} />
+              <span className="text-[11.5px] font-mono">Waiting for scan…</span>
+            </div>
+            {err && <p className="text-[12px] text-center" style={{ color: 'var(--bad)' }}>{err}</p>}
+            <button className="btn btn-ghost btn-sm w-full" onClick={cancelQr}>Cancel</button>
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={cancel}>Cancel</button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <p className="text-[12px]" style={{ color: 'var(--text-2)' }}>Two-step verification — enter your cloud password.</p>
-          <input className="input" type="password" placeholder="Cloud password"
-            value={pw} onChange={(e) => setPw(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit2fa()} />
-          {err && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{err}</p>}
-          <div className="flex gap-2">
-            <button className="btn btn-ghost btn-sm" onClick={cancel} disabled={busy}>Cancel</button>
-            <button className="btn btn-primary" onClick={submit2fa} disabled={busy || !pw}>
+
+        /* ── QR 2FA ── */
+        ) : step === 'qr_2fa' ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2" style={{ padding: '8px 10px', background: 'color-mix(in srgb, var(--warn) 10%, var(--surface-2))', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)' }}>
+              <span style={{ color: 'var(--warn)', fontSize: 15 }}>⚠</span>
+              <span className="text-[12px]" style={{ color: 'var(--warn)' }}>Two-step verification required</span>
+            </div>
+            <p className="text-[12px]" style={{ color: 'var(--text-2)' }}>Enter your Telegram cloud password to continue.</p>
+            <input className="input" type="password" placeholder="Cloud password" autoFocus
+              value={pw} onChange={(e) => setPw(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submitQr2fa()} />
+            {err && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{err}</p>}
+            <div className="flex gap-2">
+              <button className="btn btn-ghost btn-sm flex-1" onClick={cancelQr} disabled={busy}>Cancel</button>
+              <button className="btn btn-primary flex-1" onClick={submitQr2fa} disabled={busy || !pw}>
+                {busy ? <Spinner size={12} /> : 'Confirm →'}
+              </button>
+            </div>
+          </div>
+
+        /* ── PHONE 2FA ── */
+        ) : step === 'phone_2fa' ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <button onClick={() => { setStep('phone_code'); setErr(null); setPw(''); }}
+                className="btn btn-ghost btn-sm" style={{ padding: '0 8px', height: 26, fontSize: 11 }}>← back</button>
+              <span className="text-[11.5px] font-mono" style={{ color: 'var(--text-3)' }}>Two-step verification</span>
+            </div>
+            <p className="text-[12px]" style={{ color: 'var(--text-2)' }}>Enter your Telegram cloud password.</p>
+            <input className="input" type="password" placeholder="Cloud password" autoFocus
+              value={pw} onChange={(e) => setPw(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submitPhone2fa()} />
+            {err && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{err}</p>}
+            <button className="btn btn-primary w-full" onClick={submitPhone2fa} disabled={busy || !pw}>
               {busy ? <Spinner size={12} /> : 'Confirm →'}
             </button>
           </div>
-        </div>
-      )}
+
+        /* ── PHONE CODE ENTRY ── */
+        ) : step === 'phone_code' ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <button onClick={() => { setStep('phone_input'); setErr(null); setCode(''); }}
+                className="btn btn-ghost btn-sm" style={{ padding: '0 8px', height: 26, fontSize: 11 }}>← back</button>
+              <span className="text-[11.5px] font-mono" style={{ color: 'var(--text-3)' }}>Code sent to {phone}</span>
+            </div>
+            {codeViaApp ? (
+              <div style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)', borderRadius: 10, padding: '10px 12px' }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <IcoTelegram size={13} />
+                  <span className="text-[12px] font-semibold">Check your Telegram app</span>
+                </div>
+                <ol className="text-[11.5px] space-y-1" style={{ color: 'var(--text-2)', paddingLeft: 16, listStyleType: 'decimal' }}>
+                  <li>Open the <strong>Telegram</strong> app on your phone</li>
+                  <li>Look for a message from <strong>"Telegram"</strong> in your chat list</li>
+                  <li>The message will say: <span className="font-mono" style={{ color: 'var(--accent)' }}>Login code: XXXXX</span></li>
+                </ol>
+              </div>
+            ) : (
+              <div style={{ background: 'color-mix(in srgb, var(--ok) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--ok) 25%, transparent)', borderRadius: 10, padding: '10px 12px' }}>
+                <div className="flex items-center gap-2">
+                  <span style={{ color: 'var(--ok)' }}>✓</span>
+                  <span className="text-[11.5px]" style={{ color: 'var(--text-2)' }}>Code sent via SMS to {phone}</span>
+                </div>
+              </div>
+            )}
+            <label className="label">5-digit code</label>
+            <input className="input font-mono text-center"
+              style={{ fontSize: 20, letterSpacing: '0.3em', height: 44 }}
+              inputMode="numeric" placeholder="·····" maxLength={6} autoFocus
+              value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              onKeyDown={(e) => e.key === 'Enter' && verifyCode()} />
+            {err && <p className="text-[12px] text-center" style={{ color: 'var(--bad)' }}>{err}</p>}
+            <button className="btn btn-primary w-full" onClick={verifyCode} disabled={busy || code.length < 4}>
+              {busy ? <Spinner size={12} /> : 'Verify code →'}
+            </button>
+            <div className="text-[11.5px] font-mono text-center" style={{ color: 'var(--text-3)' }}>
+              {resend > 0 ? `Resend in ${resend}s` : (
+                <button onClick={() => { setStep('phone_input'); setErr(null); setCode(''); }}
+                  style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'inherit' }}>
+                  Resend code
+                </button>
+              )}
+            </div>
+          </div>
+
+        /* ── IDLE: QR primary + phone secondary ── */
+        ) : (
+          <div className="space-y-4">
+            <p className="text-[12.5px]" style={{ color: 'var(--text-2)' }}>
+              Connect your personal Telegram account to monitor groups in real-time.
+            </p>
+
+            {err && (
+              <div className="px-3 py-2 rounded-lg text-[12px]"
+                style={{ background: 'color-mix(in srgb, var(--bad) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--bad) 35%, transparent)', color: 'var(--bad)' }}>
+                {err}
+              </div>
+            )}
+
+            {/* Primary: QR code */}
+            <div style={{ padding: '14px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: 'inset 0 1px 0 var(--highlight)' }}>
+              <div className="flex items-center gap-2 mb-3">
+                <IcoQr size={14} />
+                <span className="text-[12px] font-semibold">Scan QR code</span>
+                <span className="chip chip-accent" style={{ fontSize: 10, marginLeft: 'auto' }}>Recommended</span>
+              </div>
+              <p className="text-[11.5px] mb-3" style={{ color: 'var(--text-3)' }}>
+                Open Telegram → Settings → Devices → Link desktop device
+              </p>
+              <button className="btn btn-primary w-full" onClick={startQr} disabled={busy}>
+                {busy ? <><Spinner size={12} /><span>Starting…</span></> : <><IcoQr size={13} /><span>Start QR scan</span></>}
+              </button>
+            </div>
+
+            {/* Divider */}
+            <div className="flex items-center gap-3">
+              <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+              <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>or</span>
+              <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+            </div>
+
+            {/* Secondary: phone + OTP */}
+            <div>
+              <label className="label">Sign in with phone number</label>
+              <div className="flex gap-2">
+                <input className="input flex-1" type="tel" inputMode="numeric"
+                  placeholder="+1 555 000 0000"
+                  value={phone} onChange={(e) => setPhone(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && phone.length >= 7 && sendCode()}
+                  disabled={busy} />
+                <button className="btn btn-ghost btn-sm shrink-0"
+                  style={{ height: 32, minWidth: 86, borderColor: 'color-mix(in srgb, var(--accent) 35%, var(--border))' }}
+                  onClick={sendCode} disabled={busy || phone.length < 7}>
+                  {busy ? <Spinner size={11} /> : 'Send code'}
+                </button>
+              </div>
+              <p className="text-[11px] mt-1.5 font-mono" style={{ color: 'var(--text-3)' }}>
+                Include country code · code delivered via Telegram app, not SMS
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

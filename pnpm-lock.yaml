@@ -125,6 +125,9 @@ importers:
       telegram:
         specifier: ^2.26.22
         version: 2.26.22
+      teleproto:
+        specifier: ^1.224.1
+        version: 1.224.1
       tweetnacl:
         specifier: ^1.0.3
         version: 1.0.3
@@ -5069,6 +5072,9 @@ packages:
 
   telegram@2.26.22:
     resolution: {integrity: sha512-EIj7Yrjiu0Yosa3FZ/7EyPg9s6UiTi/zDQrFmR/2Mg7pIUU+XjAit1n1u9OU9h2oRnRM5M+67/fxzQluZpaJJg==}
+
+  teleproto@1.224.1:
+    resolution: {integrity: sha512-u8FNNaQNWOBxhIN6e5MqrJ5AZWRbdLdcE3UNBJs7SGeNQHBAyxE3FUuN/PyiD0hNC1EODgHUmgOpLYTDkuIr0w==}
 
   terser-webpack-plugin@5.4.0:
     resolution: {integrity: sha512-Bn5vxm48flOIfkdl5CaD2+1CiUVbonWQ3KQPyP7/EuIl9Gbzq/gQFOzaMFUEgVjB1396tcK0SG8XcNJ/2kDH8g==}
@@ -11604,6 +11610,16 @@ snapshots:
       utf-8-validate: 5.0.10
     transitivePeerDependencies:
       - supports-color
+
+  teleproto@1.224.1:
+    dependencies:
+      async-mutex: 0.3.2
+      big-integer: 1.6.52
+      mime: 3.0.0
+      node-localstorage: 2.2.1
+      socks: 2.8.7
+      store2: 2.14.4
+      ts-custom-error: 3.3.1
 
   terser-webpack-plugin@5.4.0(webpack@5.97.1):
     dependencies:

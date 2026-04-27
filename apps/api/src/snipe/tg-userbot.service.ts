@@ -1,9 +1,9 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions';
-import { NewMessage, NewMessageEvent } from 'telegram/events';
-import { Api } from 'telegram/tl';
-import { Logger as TgLogger, LogLevel } from 'telegram/extensions/Logger';
+import { TelegramClient } from 'teleproto';
+import { StringSession } from 'teleproto/sessions';
+import { NewMessage, NewMessageEvent } from 'teleproto/events';
+import { Api } from 'teleproto/tl';
+import { Logger as TgLogger, LogLevel } from 'teleproto/extensions/Logger';
 import { KmsService } from '../wallets/kms.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SnipeGroupService } from './snipe-group.service';
@@ -29,7 +29,7 @@ export interface TgGroupDto {
 }
 
 /**
- * Manages one TelegramClient (MTProto/gramjs) per user.
+ * Manages one TelegramClient (teleproto/MTProto) per user.
  * Reconnects all active sessions on module init.
  *
  * Message routing:
@@ -39,8 +39,10 @@ export interface TgGroupDto {
 @Injectable()
 export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TgUserbotService.name);
-  private clients = new Map<string, TelegramClient>();
-  private reconnecting = new Set<string>(); // prevents duplicate on-demand reconnects
+  private clients      = new Map<string, TelegramClient>();
+  private reconnecting = new Set<string>();
+  private keepAlives   = new Map<string, ReturnType<typeof setInterval>>();
+  private lastUpdate   = new Map<string, number>(); // userId → timestamp of last received message
 
   constructor(
     private prisma: PrismaService,
@@ -56,8 +58,6 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
     }
     const sessions = await this.prisma.tgUserSession.findMany({ where: { isActive: true } });
     this.logger.log(`Reconnecting ${sessions.length} Telegram userbot sessions…`);
-    // Await all reconnects so the HTTP server starts with sessions already live.
-    // allSettled means one failure doesn't block the others.
     await Promise.allSettled(
       sessions.map((row) =>
         this.reconnect(row.userId, row.encryptedSession, row.encryptedDek).catch((e) =>
@@ -69,6 +69,11 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    for (const [userId, iv] of this.keepAlives) {
+      clearInterval(iv);
+      this.logger.debug(`Cleared keepAlive: userId=${userId}`);
+    }
+    this.keepAlives.clear();
     for (const [userId, client] of this.clients) {
       try { await client.disconnect(); } catch {}
       this.logger.debug(`Disconnected userbot: userId=${userId}`);
@@ -95,12 +100,14 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   }
 
   async disconnect(userId: string): Promise<void> {
+    this.stopKeepAlive(userId);
     const client = this.clients.get(userId);
     if (client) {
       try { await client.invoke(new Api.auth.LogOut()); } catch {}
       try { await client.disconnect(); } catch {}
       this.clients.delete(userId);
     }
+    this.lastUpdate.delete(userId);
     await this.prisma.tgUserSession.updateMany({ where: { userId }, data: { isActive: false } });
     this.ws?.emitToUser(userId, 'tg_status', { connected: false, me: null });
     this.logger.log(`Userbot disconnected: userId=${userId}`);
@@ -112,9 +119,8 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * If the gramjs client is missing but the DB says there's an active session,
-   * kick off a background reconnect and return false (frontend will get tg_status
-   * via WS when the reconnect completes).
+   * If the client is missing but DB has an active session, kick off a background
+   * reconnect and return false — frontend gets tg_status via WS when done.
    */
   async ensureConnected(userId: string): Promise<boolean> {
     if (this.isConnected(userId)) return true;
@@ -131,7 +137,7 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
       .catch((e) => this.logger.warn(`On-demand reconnect failed userId=${userId}: ${e.message}`))
       .finally(() => this.reconnecting.delete(userId));
 
-    return false; // still false — WS will push the update when done
+    return false;
   }
 
   getClient(userId: string): TelegramClient | undefined {
@@ -149,8 +155,7 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
       if (!dialog.isGroup && !dialog.isChannel) continue;
       const entity = dialog.entity as any;
       const lastMsg = dialog.message as any;
-      // dialog.id uses Bot API format: -100<channelId> for channels/supergroups, -<chatId> for regular groups.
-      // onNewMessage emits the raw positive channelId/chatId. Normalize here so frontend Map keys match.
+      // Normalize Bot-API signed IDs to raw positive IDs (matches snipeConfig.groupIds)
       const rawId = String(dialog.id ?? 0);
       const normId = rawId.startsWith('-100') ? rawId.slice(4)
                    : rawId.startsWith('-')   ? rawId.slice(1)
@@ -177,8 +182,6 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
     const bigId = BigInt(groupId);
     let msgs: any[] = [];
 
-    // gramjs caches entities from getDialogs calls; passing BigInt lets it resolve from cache.
-    // Fall back to re-fetching dialogs if the entity isn't cached yet.
     try {
       msgs = await client.getMessages(bigId as any, { limit });
     } catch {
@@ -192,8 +195,6 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
 
     const filtered = msgs.filter((m: any) => m.message || m.text);
 
-    // Resolve sender names — deduplicated so each unique user is fetched once.
-    // getSender() returns from gramjs entity cache (warmed by getDialogs) — fast.
     const senderCache = new Map<string, string>();
     const result: TgMessageDto[] = [];
     for (const m of filtered) {
@@ -220,7 +221,7 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
         senderName: senderName || undefined,
       });
     }
-    return result.reverse(); // oldest first (chronological)
+    return result.reverse(); // oldest first
   }
 
   async getMe(userId: string): Promise<{ phone: string; username: string | null; firstName: string } | null> {
@@ -240,8 +241,6 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
     const raw = await this.kms.decrypt({ ciphertext: encCiphertext, encryptedDek: encDek });
     const sessionString = raw.toString('utf8');
     await this.startClient(userId, sessionString);
-    // Notify the frontend that the session is live (in case the page was already loaded
-    // while the reconnect was still in progress — status would have returned false).
     const me = await this.getMe(userId);
     this.ws?.emitToUser(userId, 'tg_status', { connected: true, me });
     await this.prisma.tgUserSession.updateMany({
@@ -251,19 +250,21 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async startClient(userId: string, sessionString: string): Promise<void> {
+    this.stopKeepAlive(userId);
     const existing = this.clients.get(userId);
     if (existing) { try { await existing.disconnect(); } catch {} }
 
     const session = new StringSession(sessionString);
     const client = new TelegramClient(session, TG_API_ID, TG_API_HASH, {
-      connectionRetries: 5,
-      retryDelay: 1000,
+      connectionRetries: 10,
+      retryDelay: 2000,
       autoReconnect: true,
-      baseLogger: new TgLogger(LogLevel.NONE),
+      baseLogger: new TgLogger(LogLevel.WARN),
     });
 
     await client.connect();
     this.clients.set(userId, client);
+    this.lastUpdate.set(userId, Date.now());
 
     client.addEventHandler(
       (event: NewMessageEvent) => this.onNewMessage(userId, event).catch(() => {}),
@@ -271,9 +272,38 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
     );
 
     this.logger.log(`Userbot connected: userId=${userId}`);
+    this.startKeepAlive(userId, sessionString);
+  }
+
+  // ── KeepAlive — detects stalled update loop and force-reconnects ──────────
+
+  private startKeepAlive(userId: string, sessionString: string): void {
+    const iv = setInterval(async () => {
+      const client = this.clients.get(userId);
+      const stale = Date.now() - (this.lastUpdate.get(userId) ?? 0) > 3 * 60_000;
+
+      if (!client || !client.connected || stale) {
+        this.logger.warn(`KeepAlive: reconnecting userId=${userId} (connected=${client?.connected}, stale=${stale})`);
+        try {
+          await this.startClient(userId, sessionString);
+          const me = await this.getMe(userId);
+          this.ws?.emitToUser(userId, 'tg_status', { connected: true, me });
+        } catch (e: any) {
+          this.logger.warn(`KeepAlive reconnect failed userId=${userId}: ${e.message}`);
+        }
+      }
+    }, 90_000);
+
+    this.keepAlives.set(userId, iv);
+  }
+
+  private stopKeepAlive(userId: string): void {
+    const iv = this.keepAlives.get(userId);
+    if (iv) { clearInterval(iv); this.keepAlives.delete(userId); }
   }
 
   private async onNewMessage(userId: string, event: NewMessageEvent): Promise<void> {
+    this.lastUpdate.set(userId, Date.now());
     const msg = event.message;
     const text = (msg as any).text ?? (msg as any).message ?? '';
     if (!text) return;
@@ -284,7 +314,6 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
     else if (peer instanceof Api.PeerChat)  rawId = String(peer.chatId);
     if (!rawId) return; // skip DMs
 
-    // Emit to user's Telegram inbox view for EVERY incoming message (all groups)
     this.logger.debug(`tg_message: userId=${userId} groupId=${rawId} ws=${!!this.ws}`);
     let senderName = '';
     try {
@@ -305,7 +334,6 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
       senderName,
     });
 
-    // Route to snipe handler for CA extraction + buy logic
     await this.snipeGroup.handleGroupMessage(rawId, text, userId);
   }
 }

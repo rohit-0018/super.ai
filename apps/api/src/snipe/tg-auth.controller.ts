@@ -4,6 +4,25 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TgAuthService } from './tg-auth.service';
 import { TgUserbotService } from './tg-userbot.service';
 
+function humanizeTgError(e: any, step: string): string {
+  const raw: string = e?.errorMessage ?? e?.text ?? e?.message ?? '';
+  if (/FLOOD_WAIT_(\d+)/.test(raw)) {
+    const secs = parseInt(raw.match(/FLOOD_WAIT_(\d+)/)?.[1] ?? '0', 10);
+    const mins = Math.ceil(secs / 60);
+    return secs < 60
+      ? `Too many attempts — Telegram says wait ${secs}s before trying again.`
+      : `Too many attempts — Telegram has blocked this number for ${mins} minute${mins > 1 ? 's' : ''}. Please wait before retrying.`;
+  }
+  if (raw.includes('PHONE_NUMBER_INVALID')) return 'Invalid phone number — include your country code (e.g. +91 for India, +1 for US).';
+  if (raw.includes('PHONE_NUMBER_BANNED')) return 'This phone number is banned from Telegram.';
+  if (raw.includes('PHONE_CODE_INVALID')) return 'Wrong code — check your Telegram app and try again.';
+  if (raw.includes('PHONE_CODE_EXPIRED')) return 'Code expired — request a new one.';
+  if (raw.includes('PASSWORD_HASH_INVALID')) return 'Wrong 2FA password.';
+  if (raw.includes('API_ID_INVALID') || raw.includes('API_ID_PUBLISHED_FLOOD')) return 'Telegram API credentials are invalid — check TELEGRAM_API_ID and TELEGRAM_API_HASH in .env.';
+  if (raw.includes('NETWORK') || raw.includes('connection')) return 'Could not connect to Telegram — check server network.';
+  return raw || `${step} failed`;
+}
+
 class SendCodeDto {
   @IsString() @MinLength(7)
   phoneNumber!: string;
@@ -80,20 +99,32 @@ export class TgAuthController {
 
   /** POST /api/snipe/tg/send-code */
   @Post('send-code')
-  sendCode(@Req() req: any, @Body() dto: SendCodeDto) {
-    return this.auth.sendCode(req.user.userId, dto.phoneNumber);
+  async sendCode(@Req() req: any, @Body() dto: SendCodeDto) {
+    try {
+      return await this.auth.sendCode(req.user.userId, dto.phoneNumber);
+    } catch (e: any) {
+      throw new BadRequestException(humanizeTgError(e, 'send-code'));
+    }
   }
 
   /** POST /api/snipe/tg/verify-code */
   @Post('verify-code')
-  verifyCode(@Req() req: any, @Body() dto: VerifyCodeDto) {
-    return this.auth.verifyCode(req.user.userId, dto.code);
+  async verifyCode(@Req() req: any, @Body() dto: VerifyCodeDto) {
+    try {
+      return await this.auth.verifyCode(req.user.userId, dto.code);
+    } catch (e: any) {
+      throw new BadRequestException(humanizeTgError(e, 'verify-code'));
+    }
   }
 
   /** POST /api/snipe/tg/verify-2fa */
   @Post('verify-2fa')
-  verify2fa(@Req() req: any, @Body() dto: Verify2faDto) {
-    return this.auth.verify2fa(req.user.userId, dto.password);
+  async verify2fa(@Req() req: any, @Body() dto: Verify2faDto) {
+    try {
+      return await this.auth.verify2fa(req.user.userId, dto.password);
+    } catch (e: any) {
+      throw new BadRequestException(humanizeTgError(e, 'verify-2fa'));
+    }
   }
 
   /** DELETE /api/snipe/tg/session */
