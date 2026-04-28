@@ -1,8 +1,8 @@
 'use client';
-import { useState, useCallback } from 'react';
 import Link from 'next/link';
-import { useApi, invalidate } from '../../lib/useApi';
+import { useApi } from '../../lib/useApi';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { PortfolioTokenRow, type HoldingRow } from '../../components/PortfolioTokenRow';
 
 /* ── Types ─────────────────────────────────────────────────────── */
 interface Wallet {
@@ -21,128 +21,11 @@ interface WalletBalance {
   error?: string;
 }
 
-interface HoldingRow {
-  mint: string;
-  symbol: string;
-  amount: number;
-  decimals: number;
-  priceUsd: number | null;
-  valueUsd: number | null;
-  entryCostSol: number | null;
-  entryCostUsd: number | null;
-  pnlUsd: number | null;
-  pnlPct: number | null;
-  firstBoughtAt: string | null;
-  txHash: string | null;
-}
-
 /* ── Helpers ───────────────────────────────────────────────────── */
-function fmt(n: number | null | undefined, dp = 2, prefix = ''): string {
-  if (n === null || n === undefined) return '—';
-  return `${prefix}${n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })}`;
-}
 function fmtUsd(n: number | null | undefined) {
   if (n === null || n === undefined) return '—';
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(2)}k`;
   return `$${n.toFixed(2)}`;
-}
-function fmtPct(n: number | null | undefined) {
-  if (n === null || n === undefined) return null;
-  return `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`;
-}
-function relTime(iso: string | null): string {
-  if (!iso) return '—';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return 'just now';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / 86_400_000)}d ago`;
-}
-
-/* ── Token row ─────────────────────────────────────────────────── */
-function TokenRow({ h }: { h: HoldingRow }) {
-  const pnlColor = h.pnlPct === null ? 'var(--text-3)'
-    : h.pnlPct >= 0 ? 'var(--ok)' : 'var(--bad)';
-  const pnlStr = fmtPct(h.pnlPct);
-
-  return (
-    <tr style={{ borderBottom: '1px solid var(--border)' }}>
-      {/* Token */}
-      <td style={{ padding: '10px 14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
-            background: `color-mix(in srgb, var(--accent) 15%, var(--surface-2))`,
-            border: '1px solid var(--border)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 11, fontWeight: 700, color: 'var(--accent)',
-            letterSpacing: '-0.02em',
-          }}>
-            {h.symbol.slice(0, 3).toUpperCase()}
-          </div>
-          <div>
-            <div className="text-[13px] font-semibold">{h.symbol}</div>
-            <div className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
-              {h.mint.slice(0, 6)}…{h.mint.slice(-4)}
-            </div>
-          </div>
-        </div>
-      </td>
-
-      {/* Amount */}
-      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-        <div className="font-mono text-[12px]">{fmt(h.amount, h.amount < 1 ? 6 : 2)}</div>
-      </td>
-
-      {/* Price */}
-      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-        <div className="font-mono text-[12px]">{fmtUsd(h.priceUsd)}</div>
-      </td>
-
-      {/* Value */}
-      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-        <div className="font-mono text-[13px] font-semibold">{fmtUsd(h.valueUsd)}</div>
-        {h.entryCostUsd !== null && (
-          <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>
-            cost {fmtUsd(h.entryCostUsd)}
-          </div>
-        )}
-      </td>
-
-      {/* P&L */}
-      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-        {pnlStr ? (
-          <div>
-            <div className="font-mono text-[12px] font-semibold" style={{ color: pnlColor }}>
-              {pnlStr}
-            </div>
-            {h.pnlUsd !== null && (
-              <div className="font-mono text-[10px]" style={{ color: pnlColor, opacity: 0.8 }}>
-                {h.pnlUsd >= 0 ? '+' : ''}{fmtUsd(h.pnlUsd)}
-              </div>
-            )}
-          </div>
-        ) : (
-          <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>—</span>
-        )}
-      </td>
-
-      {/* Bought */}
-      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-        <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>{relTime(h.firstBoughtAt)}</div>
-        {h.txHash && (
-          <a
-            href={`https://solscan.io/tx/${h.txHash}`}
-            target="_blank" rel="noopener"
-            className="font-mono text-[10px]"
-            style={{ color: 'var(--accent)' }}
-          >
-            {h.txHash.slice(0, 6)}…↗
-          </a>
-        )}
-      </td>
-    </tr>
-  );
 }
 
 /* ── Per-wallet holdings panel ─────────────────────────────────── */
@@ -216,26 +99,41 @@ function WalletHoldings({ wallet, nativeUsd }: { wallet: Wallet; nativeUsd: numb
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Token', 'Amount', 'Price', 'Value', 'P&L', 'Bought'].map((h, i) => (
-                  <th key={h} style={{
-                    padding: '8px 14px',
-                    textAlign: i === 0 ? 'left' : 'right',
-                    fontSize: 10, fontWeight: 600,
-                    color: 'var(--text-3)',
-                    letterSpacing: '0.08em', textTransform: 'uppercase',
-                    background: 'var(--surface-2)',
-                    whiteSpace: 'nowrap',
-                  }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(holdings ?? []).map((h) => <TokenRow key={h.mint} h={h} />)}
-            </tbody>
-          </table>
+          {/* Column header — matches PortfolioTokenRow's grid */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(180px, 2fr) repeat(5, minmax(80px, 1fr)) auto',
+              alignItems: 'center',
+              gap: 12,
+              padding: '8px 14px',
+              background: 'var(--surface-2)',
+              borderBottom: '1px solid var(--border)',
+              fontSize: 10,
+              fontWeight: 600,
+              color: 'var(--text-3)',
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <div>Token</div>
+            <div style={{ textAlign: 'right' }}>Price · 24h</div>
+            <div style={{ textAlign: 'right' }}>Mcap</div>
+            <div style={{ textAlign: 'right' }}>Liquidity</div>
+            <div style={{ textAlign: 'right' }}>Vol 24h</div>
+            <div style={{ textAlign: 'right' }}>Value · P&amp;L</div>
+            <div />
+          </div>
+
+          {(holdings ?? []).map((h) => (
+            <PortfolioTokenRow
+              key={h.mint}
+              h={h}
+              walletId={wallet.id}
+              walletChain={wallet.chain}
+            />
+          ))}
         </div>
       )}
     </div>

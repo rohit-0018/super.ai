@@ -1,9 +1,18 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { MarketDataService } from './market-data.service';
+import { TokenMetadataService } from './token-metadata.service';
 
 @Controller('market')
 export class MarketDataController {
-  constructor(private svc: MarketDataService) {}
+  constructor(
+    private svc: MarketDataService,
+    private tokens: TokenMetadataService,
+  ) {}
+
+  /** Lazy-loaded token detail used by portfolio rows. Cached server-side (60s). */
+  @Get('tokens/:mint') tokenDetail(@Param('mint') mint: string) {
+    return this.tokens.get(mint);
+  }
 
   @Get('trending') trending() { return this.svc.trending(); }
   @Get('top-movers') movers() { return this.svc.topMovers(); }
