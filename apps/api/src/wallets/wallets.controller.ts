@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { WalletsService } from './wallets.service';
 import { IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
@@ -13,6 +13,10 @@ class ImportWalletDto {
   @IsEnum(Chain) chain!: Chain;
   @IsString() privateKey!: string;
   @IsOptional() @IsString() label?: string;
+}
+
+class RenameLabelDto {
+  @IsString() label!: string;
 }
 
 class WithdrawDto {
@@ -36,12 +40,20 @@ export class WalletsController {
     return this.wallets.importWallet(req.user.userId, dto.chain, dto.privateKey, dto.label);
   }
 
+  @Post('export-all') exportAll(@Req() req: any) {
+    return this.wallets.exportAll(req.user.userId);
+  }
+
   @Post(':id/export') export(@Req() req: any, @Param('id') id: string) {
     return this.wallets.exportKey(req.user.userId, id).then((key) => ({ key }));
   }
 
   @Post(':id/confirm-backup') confirmBackup(@Req() req: any, @Param('id') id: string) {
     return this.wallets.confirmBackup(req.user.userId, id).then(() => ({ ok: true }));
+  }
+
+  @Patch(':id/label') rename(@Req() req: any, @Param('id') id: string, @Body() dto: RenameLabelDto) {
+    return this.wallets.renameWallet(req.user.userId, id, dto.label.trim());
   }
 
   @Post(':id/primary') primary(@Req() req: any, @Param('id') id: string) {

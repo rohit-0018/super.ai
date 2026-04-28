@@ -31,9 +31,10 @@ export default function Wallets() {
   const { data: balances, loading: balLoading } = useApi<WalletBalance[]>('/wallets/balances');
   const [depositId, setDepositId] = useState<string | null>(null);
   const [withdrawId, setWithdrawId] = useState<string | null>(null);
-  const [exportTarget, setExportTarget] = useState<{ id: string; address: string; chain: string } | null>(null);
-  const [newWallet, setNewWallet] = useState<{ id: string; address: string; chain: string; privateKey: string } | null>(null);
+  const [exportTarget, setExportTarget] = useState<{ id: string; address: string; chain: string; label: string } | null>(null);
+  const [newWallet, setNewWallet] = useState<{ id: string; address: string; chain: string; privateKey: string; label: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
 
   const balMap = new Map<string, WalletBalance>();
   balances?.forEach((b) => balMap.set(b.walletId, b));
@@ -42,11 +43,26 @@ export default function Wallets() {
     const { data } = await api.post('/wallets', { chain });
     invalidate('/wallets');
     // Show mandatory backup modal with the one-time private key
-    setNewWallet({ id: data.id, address: data.address, chain: data.chain, privateKey: data.privateKey });
+    setNewWallet({ id: data.id, address: data.address, chain: data.chain, privateKey: data.privateKey, label: data.label ?? '' });
   }
 
   function openExport(wallet: Wallet) {
-    setExportTarget({ id: wallet.id, address: wallet.address, chain: wallet.chain });
+    setExportTarget({ id: wallet.id, address: wallet.address, chain: wallet.chain, label: wallet.label ?? '' });
+  }
+
+  async function backupAll() {
+    setBackingUp(true);
+    try {
+      const { data } = await api.post('/wallets/export-all', {});
+      const json = JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), wallets: data }, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = `qwai-wallets-${Date.now()}.json`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(e?.message ?? 'Backup failed');
+    } finally { setBackingUp(false); }
   }
 
   async function setPrimary(id: string) {
@@ -73,6 +89,9 @@ export default function Wallets() {
           <button onClick={() => create('SOLANA')} className="btn flex-1 sm:flex-none">+ Solana</button>
           <button onClick={() => create('EVM')} className="btn flex-1 sm:flex-none">+ EVM</button>
           <button onClick={() => setShowImport(true)} className="btn btn-ghost flex-1 sm:flex-none">Import key</button>
+          <button onClick={backupAll} disabled={backingUp || !wallets?.length} className="btn btn-ghost flex-1 sm:flex-none">
+            {backingUp ? 'Exporting…' : '↓ Backup all'}
+          </button>
         </div>
       </header>
 
@@ -147,26 +166,17 @@ export default function Wallets() {
                       {w.chain === 'SOLANA' ? 'SOL' : 'ETH'}
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-[12.5px] truncate max-w-[120px] md:max-w-[260px]">{w.address}</span>
-                        {w.isPrimary && (
-                          <span className="chip chip-accent">Primary</span>
-                        )}
-                        {w.isImported && (
-                          <span className="chip" style={{ fontSize: 9, background: 'color-mix(in srgb, var(--accent-2) 12%, var(--surface-2))', color: 'var(--accent-2)', borderColor: 'color-mix(in srgb, var(--accent-2) 30%, transparent)' }}>Imported</span>
-                        )}
-                        {!w.backedUpAt && !w.isImported && (
-                          <span
-                            className="chip chip-warn"
-                            title="Key not backed up — click Export key and save it offline"
-                            style={{ fontSize: 9, cursor: 'help' }}
-                          >
-                            ⚠ Backup key
-                          </span>
-                        )}
+                      {/* Wallet name — inline editable */}
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <WalletNameEditor walletId={w.id} label={w.label ?? ''} />
+                        {w.isPrimary && <span className="chip chip-accent" style={{ fontSize: 9 }}>Primary</span>}
+                        {w.isImported && <span className="chip" style={{ fontSize: 9, background: 'color-mix(in srgb, var(--accent-2) 12%, var(--surface-2))', color: 'var(--accent-2)', borderColor: 'color-mix(in srgb, var(--accent-2) 30%, transparent)' }}>Imported</span>}
+                        {!w.backedUpAt && !w.isImported && <QuickBackupButton walletId={w.id} address={w.address} chain={w.chain} label={w.label ?? ''} />}
                       </div>
-                      <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
-                        {w.chain} · {isTestnet ? (w.chain === 'SOLANA' ? 'devnet' : 'Sepolia') : 'mainnet'}
+                      {/* Address + network */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-[11px] truncate max-w-[120px] md:max-w-[260px]" style={{ color: 'var(--text-3)' }}>{w.address}</span>
+                        <span className="text-[10px]" style={{ color: 'var(--text-3)', flexShrink: 0 }}>· {isTestnet ? (w.chain === 'SOLANA' ? 'devnet' : 'Sepolia') : 'mainnet'}</span>
                       </div>
                     </div>
                   </div>
@@ -302,6 +312,7 @@ export default function Wallets() {
           address={newWallet.address}
           chain={newWallet.chain}
           privateKey={newWallet.privateKey}
+          label={newWallet.label}
           onClose={() => { setNewWallet(null); invalidate('/wallets'); }}
         />
       )}
@@ -311,6 +322,7 @@ export default function Wallets() {
           walletId={exportTarget.id}
           address={exportTarget.address}
           chain={exportTarget.chain}
+          label={exportTarget.label}
           onClose={() => { setExportTarget(null); invalidate('/wallets'); }}
         />
       )}
@@ -321,6 +333,7 @@ export default function Wallets() {
           onImported={() => { setShowImport(false); invalidate('/wallets'); invalidate('/wallets/balances'); }}
         />
       )}
+
     </div>
   );
 }
@@ -461,24 +474,77 @@ function FaucetButton({ walletId }: { walletId: string }) {
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-function downloadKeyFile(chain: string, address: string, privateKey: string) {
-  const content = [
-    'qwai Wallet Backup',
-    '==================',
-    `Chain:       ${chain}`,
-    `Address:     ${address}`,
-    `Private Key: ${privateKey}`,
-    `Format:      ${chain === 'SOLANA' ? 'base58' : 'hex (0x-prefixed)'}`,
-    `Exported:    ${new Date().toISOString()}`,
+function downloadKeyFile(chain: string, address: string, privateKey: string, label?: string) {
+  const isSolana = chain === 'SOLANA';
+
+  // Derive the explorer URL for the address
+  const explorerUrl = isSolana
+    ? `https://solscan.io/account/${address}`
+    : `https://etherscan.io/address/${address}`;
+
+  // For Solana, show the uint8 array format (compatible with Phantom, Solflare, CLI)
+  let uint8Line = '';
+  if (isSolana) {
+    try {
+      // base58 → bytes → uint8 array string
+      const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+      let num = BigInt(0);
+      for (const c of privateKey) {
+        num = num * BigInt(58) + BigInt(alphabet.indexOf(c));
+      }
+      const bytes: number[] = [];
+      let tmp = num;
+      while (tmp > 0n) { bytes.unshift(Number(tmp & 0xffn)); tmp >>= 8n; }
+      while (bytes.length < 64) bytes.unshift(0);
+      uint8Line = `Uint8 Array:  [${bytes.join(',')}]`;
+    } catch { uint8Line = ''; }
+  }
+
+  const lines = [
+    '╔══════════════════════════════════════════════════════════════╗',
+    '║               qwai Wallet Backup — KEEP OFFLINE             ║',
+    '╚══════════════════════════════════════════════════════════════╝',
     '',
-    'WARNING: Anyone with this file can drain all funds from this wallet.',
-    'Store it encrypted and offline. Never share it or upload it anywhere.',
-  ].join('\n');
+    ...(label ? [`Name:         ${label}`, ''] : []),
+    `Chain:        ${chain}`,
+    `Network:      ${isSolana ? 'Solana Mainnet-Beta' : 'Ethereum Mainnet (EVM-compatible)'}`,
+    `Address:      ${address}`,
+    `Explorer:     ${explorerUrl}`,
+    '',
+    '── Private Key ─────────────────────────────────────────────────',
+    `Format:       ${isSolana ? 'base58 (Phantom / Solflare / CLI compatible)' : 'hex, 0x-prefixed (MetaMask / Hardhat compatible)'}`,
+    `Private Key:  ${privateKey}`,
+    ...(uint8Line ? [`${uint8Line}`, '(uint8 array = Solana CLI / @solana/web3.js format)'] : []),
+    '',
+    '── How to use this key ─────────────────────────────────────────',
+    ...(isSolana ? [
+      'Phantom:      Settings → Manage Accounts → Import Private Key → paste base58',
+      'Solflare:     Access Wallet → Private Key → paste base58',
+      'CLI:          solana config set --keypair <(echo "[<uint8 bytes>]")',
+    ] : [
+      'MetaMask:     Accounts → Import Account → paste 0x hex key',
+      'Hardhat:      hardhat.config.js accounts: ["<0x key>"]',
+    ]),
+    '',
+    `Exported:     ${new Date().toISOString()}`,
+    `App:          qwai — AI Trading Agent`,
+    '',
+    '⚠  WARNING ────────────────────────────────────────────────────',
+    '   Anyone with this file controls ALL funds in this wallet.',
+    '   • Store encrypted and offline (USB, password manager, safe)',
+    '   • Never paste into websites, chats, or emails',
+    '   • Never upload to cloud storage or share with anyone',
+    '   • Delete this file after storing it securely',
+    '────────────────────────────────────────────────────────────────',
+  ];
+
+  const content = lines.join('\n');
   const blob = new Blob([content], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `qwai-wallet-${address.slice(0, 8)}.txt`;
+  const slug = label ? label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : address.slice(0, 8);
+  a.download = `qwai-wallet-${slug}.txt`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -546,7 +612,7 @@ function ModalShell({ title, titleColor, onClose, children }: {
   );
 }
 
-function KeyRevealBox({ privateKey, chain }: { privateKey: string; chain: string }) {
+function KeyRevealBox({ privateKey, chain, address, label }: { privateKey: string; chain: string; address?: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -590,7 +656,7 @@ function KeyRevealBox({ privateKey, chain }: { privateKey: string; chain: string
           ) : 'Copy to clipboard'}
         </button>
         <button
-          onClick={() => downloadKeyFile(chain, '', privateKey)}
+          onClick={() => downloadKeyFile(chain, address ?? '', privateKey, label)}
           className="btn btn-sm"
           style={{ border: '1px solid var(--border-2)' }}
         >
@@ -609,23 +675,15 @@ function KeyRevealBox({ privateKey, chain }: { privateKey: string; chain: string
 // the user confirming they've saved the key.
 
 function NewWalletBackupModal({
-  walletId,
-  address,
-  chain,
-  privateKey,
-  onClose,
+  walletId, address, chain, privateKey, label, onClose,
 }: {
-  walletId: string;
-  address: string;
-  chain: string;
-  privateKey: string;
-  onClose: () => void;
+  walletId: string; address: string; chain: string; privateKey: string; label: string; onClose: () => void;
 }) {
   const [confirmed, setConfirmed] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
 
   function handleDownload() {
-    downloadKeyFile(chain, address, privateKey);
+    downloadKeyFile(chain, address, privateKey, label);
     setDownloaded(true);
     // Mark backed up server-side
     api.post(`/wallets/${walletId}/confirm-backup`, {}).catch(() => {});
@@ -694,7 +752,7 @@ function NewWalletBackupModal({
             </ul>
           </div>
 
-          <KeyRevealBox privateKey={privateKey} chain={chain} />
+          <KeyRevealBox privateKey={privateKey} chain={chain} address={address} label={label} />
 
           {/* Download shortcut — prominent CTA */}
           <button
@@ -765,20 +823,24 @@ function NewWalletBackupModal({
 }
 
 // ─── Import Wallet Modal ──────────────────────────────────────────────────────
+// Accepts either:
+//   • A raw private key (base58 for Solana, 0x hex for EVM)
+//   • The full text of a qwai backup .txt file (chain + key parsed automatically)
 
-function ImportWalletModal({
-  onClose,
-  onImported,
-}: {
-  onClose: () => void;
-  onImported: () => void;
-}) {
-  const [chain, setChain] = useState<'SOLANA' | 'EVM'>('SOLANA');
-  const [privateKey, setPrivateKey] = useState('');
-  const [label, setLabel] = useState('');
+function parseBackupText(raw: string): { chain: 'SOLANA' | 'EVM'; privateKey: string } | null {
+  const chainLine = raw.match(/^Chain:\s+(\S+)/mi);
+  const keyLine   = raw.match(/^Private Key:\s+(\S+)/mi);
+  if (!chainLine || !keyLine) return null;
+  const chain = chainLine[1].toUpperCase() === 'EVM' ? 'EVM' : 'SOLANA';
+  return { chain, privateKey: keyLine[1].trim() };
+}
+
+function ImportWalletModal({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
+  const [raw, setRaw]         = useState('');
+  const [label, setLabel]     = useState('');
   const [showKey, setShowKey] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy]       = useState(false);
+  const [error, setError]     = useState<string | null>(null);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
@@ -786,44 +848,45 @@ function ImportWalletModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // Parse chain + key from whatever was pasted
+  const parsed = parseBackupText(raw);
+  // If it looks like a backup file, use parsed values; otherwise treat the whole text as the raw key
+  const isBackupFile = !!parsed;
+  const privateKey   = parsed ? parsed.privateKey : raw.trim();
+  const chain: 'SOLANA' | 'EVM' = parsed
+    ? parsed.chain
+    : (raw.trim().startsWith('0x') ? 'EVM' : 'SOLANA');
+
+  // Detected info to show the user
+  const detectedChip = raw.trim().length > 0
+    ? isBackupFile
+      ? `Backup file detected — ${chain}`
+      : `Raw key — ${chain}`
+    : null;
+
   async function submit() {
-    if (!privateKey.trim()) { setError('Private key required'); return; }
-    setBusy(true);
-    setError(null);
+    if (!privateKey) { setError('Private key required'); return; }
+    setBusy(true); setError(null);
     try {
-      await api.post('/wallets/import', { chain, privateKey: privateKey.trim(), label: label.trim() || undefined });
+      await api.post('/wallets/import', { chain, privateKey, label: label.trim() || undefined });
       onImported();
     } catch (e: any) {
       setError(e?.message ?? 'Import failed');
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        className="w-full max-w-md rounded-[14px] fade-in"
-        style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--border-2)',
-          boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 64px rgba(0,0,0,0.6)',
-        }}
-      >
-        <div
-          className="flex items-center justify-between px-5 py-3.5"
-          style={{ borderBottom: '1px solid var(--border)' }}
-        >
-          <span className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>Import wallet by private key</span>
-          <button
-            onClick={onClose}
-            className="btn btn-ghost btn-sm"
-            style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          >
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-md rounded-[14px] fade-in"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border-2)', boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 64px rgba(0,0,0,0.6)' }}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-[13px] font-semibold">Import hot wallet</span>
+          <button onClick={onClose} className="btn btn-ghost btn-sm"
+            style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
               <path d="M1 1l12 12M13 1L1 13" />
             </svg>
@@ -832,97 +895,80 @@ function ImportWalletModal({
 
         <div className="p-5 space-y-4">
           <p className="text-[12px]" style={{ color: 'var(--text-2)' }}>
-            Paste the private key of an existing wallet. qwai will encrypt and store it — you can use it for trading without ever entering the key again.
+            Paste the contents of your <strong>qwai wallet backup .txt</strong> file, or just paste the raw private key directly. Chain is detected automatically.
           </p>
 
-          {/* Chain toggle */}
-          <div className="flex gap-1 p-1 rounded-[10px]" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-            {(['SOLANA', 'EVM'] as const).map((c) => (
-              <button
-                key={c}
-                onClick={() => setChain(c)}
-                className="flex-1 text-[12px] font-medium rounded-[8px] py-1.5 transition-all"
-                style={{
-                  background: chain === c ? 'var(--surface-hover)' : 'transparent',
-                  color: chain === c ? 'var(--text)' : 'var(--text-3)',
-                  border: chain === c ? '1px solid var(--border-2)' : '1px solid transparent',
-                }}
-              >
-                {c === 'SOLANA' ? 'Solana (base58)' : 'EVM (0x hex)'}
-              </button>
-            ))}
-          </div>
-
-          {/* Private key input */}
+          {/* Paste area */}
           <div className="space-y-1.5">
-            <div className="text-[11px] uppercase tracking-widest font-medium" style={{ color: 'var(--text-3)' }}>Private key</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="text-[11px] uppercase tracking-widest font-medium" style={{ color: 'var(--text-3)' }}>
+                Backup text or private key
+              </span>
+              {detectedChip && (
+                <span className="chip text-[10px]" style={{
+                  background: isBackupFile ? 'color-mix(in srgb, var(--ok) 12%, var(--surface-2))' : 'var(--surface-2)',
+                  color: isBackupFile ? 'var(--ok)' : 'var(--text-2)',
+                  border: `1px solid ${isBackupFile ? 'color-mix(in srgb, var(--ok) 30%, transparent)' : 'var(--border)'}`,
+                }}>
+                  {detectedChip}
+                </span>
+              )}
+            </div>
             <div className="relative">
               <textarea
-                value={privateKey}
-                onChange={(e) => setPrivateKey(e.target.value)}
-                placeholder={chain === 'SOLANA' ? 'base58 encoded key…' : '0x… or hex…'}
-                rows={3}
+                value={raw}
+                onChange={(e) => { setRaw(e.target.value); setError(null); }}
+                placeholder={`Paste backup file text:\n\nqwai Wallet Backup\n==================\nChain:       SOLANA\nPrivate Key: <base58>…\n\n— or just paste the raw key`}
+                rows={6}
                 autoComplete="off"
                 spellCheck={false}
-                className="input w-full font-mono text-[12px] resize-none leading-relaxed break-all"
+                className="input w-full font-mono text-[11px] resize-none leading-relaxed"
                 style={{
                   paddingRight: 40,
-                  filter: showKey ? 'none' : 'blur(4px)',
+                  filter: showKey ? 'none' : (raw.length > 0 ? 'blur(3px)' : 'none'),
                   userSelect: showKey ? 'auto' : 'none',
                 }}
               />
-              <button
-                type="button"
-                onClick={() => setShowKey((v) => !v)}
-                className="absolute right-2 top-2 btn btn-ghost btn-sm"
-                style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                title={showKey ? 'Hide' : 'Reveal'}
-              >
-                {showKey ? (
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 7s2.5-4.5 6-4.5S13 7 13 7s-2.5 4.5-6 4.5S1 7 1 7z" />
-                    <circle cx="7" cy="7" r="1.5" />
-                    <path d="M1 1l12 12" />
-                  </svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 7s2.5-4.5 6-4.5S13 7 13 7s-2.5 4.5-6 4.5S1 7 1 7z" />
-                    <circle cx="7" cy="7" r="1.5" />
-                  </svg>
-                )}
-              </button>
+              {raw.length > 0 && (
+                <button type="button" onClick={() => setShowKey((v) => !v)}
+                  className="absolute right-2 top-2 btn btn-ghost btn-sm"
+                  style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  title={showKey ? 'Hide' : 'Reveal'}>
+                  {showKey ? (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 7s2.5-4.5 6-4.5S13 7 13 7s-2.5 4.5-6 4.5S1 7 1 7z" /><circle cx="7" cy="7" r="1.5" /><path d="M1 1l12 12" />
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 7s2.5-4.5 6-4.5S13 7 13 7s-2.5 4.5-6 4.5S1 7 1 7z" /><circle cx="7" cy="7" r="1.5" />
+                    </svg>
+                  )}
+                </button>
+              )}
             </div>
-            {!showKey && privateKey.length > 0 && (
-              <p className="text-[10px]" style={{ color: 'var(--text-3)' }}>Key hidden — click the eye icon to reveal</p>
-            )}
           </div>
 
           {/* Optional label */}
-          <input
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
+          <input value={label} onChange={(e) => setLabel(e.target.value)}
             placeholder="Label (optional, e.g. Trading wallet)"
-            className="input text-[12px]"
-          />
+            className="input text-[12px]" />
 
           {error && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{error}</p>}
 
-          <div
-            className="flex items-start gap-2 px-3 py-2.5 rounded-[8px]"
-            style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)' }}
-          >
+          <div className="flex items-start gap-2 px-3 py-2.5 rounded-[8px]"
+            style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)' }}>
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: 1, flexShrink: 0 }}>
               <circle cx="6.5" cy="6.5" r="5.5" /><path d="M6.5 4v3M6.5 9v.5" />
             </svg>
             <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-              Your key is encrypted with AES-256-GCM and stored only on this server. It is never sent elsewhere.
+              Encrypted with AES-256-GCM and stored only on this server. Never sent elsewhere.
             </span>
           </div>
 
           <div className="flex gap-2">
             <button onClick={onClose} className="btn btn-ghost btn-sm flex-1">Cancel</button>
-            <button onClick={submit} disabled={busy || !privateKey.trim()} className="btn btn-primary btn-sm flex-1">
-              {busy ? <Spinner size={12} /> : 'Import wallet'}
+            <button onClick={submit} disabled={busy || !privateKey} className="btn btn-primary btn-sm flex-1">
+              {busy ? <Spinner size={12} /> : `Import ${chain === 'SOLANA' ? 'Solana' : 'EVM'} wallet`}
             </button>
           </div>
         </div>
@@ -931,16 +977,94 @@ function ImportWalletModal({
   );
 }
 
+// Inline editable wallet name — click to edit, Enter/blur to save
+function WalletNameEditor({ walletId, label }: { walletId: string; label: string }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue]     = useState(label);
+  const [saving, setSaving]   = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { setValue(label); }, [label]);
+  useEffect(() => { if (editing) setTimeout(() => inputRef.current?.select(), 30); }, [editing]);
+
+  async function save() {
+    setEditing(false);
+    const trimmed = value.trim();
+    if (trimmed === label) return;
+    setSaving(true);
+    try {
+      await api.patch(`/wallets/${walletId}/label`, { label: trimmed });
+      invalidate('/wallets');
+    } catch { setValue(label); }
+    finally { setSaving(false); }
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { setValue(label); setEditing(false); } }}
+        className="input font-mono"
+        style={{ height: 22, fontSize: 12, padding: '0 6px', width: Math.max(120, value.length * 7.5 + 20) }}
+        maxLength={40}
+      />
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setEditing(true)}
+      title="Click to rename"
+      style={{
+        fontSize: 13, fontWeight: 600, color: 'var(--text)',
+        background: 'transparent', border: 'none', cursor: 'text',
+        padding: 0, display: 'flex', alignItems: 'center', gap: 5,
+        opacity: saving ? 0.5 : 1,
+      }}
+    >
+      {value || <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 12 }}>Unnamed wallet</span>}
+      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--text-3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8.5 1.5l2 2L3 11H1V9L8.5 1.5z" />
+      </svg>
+    </button>
+  );
+}
+
+// Inline button on wallet row — fetches key + downloads .txt in one click
+function QuickBackupButton({ walletId, address, chain, label }: { walletId: string; address: string; chain: string; label: string }) {
+  const [busy, setBusy] = useState(false);
+
+  async function download() {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/wallets/${walletId}/export`, {});
+      downloadKeyFile(chain, address, data.key, label);
+      api.post(`/wallets/${walletId}/confirm-backup`, {}).catch(() => {});
+      invalidate('/wallets');
+    } catch { /* silent — user can use Export key button */ }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <button
+      onClick={download}
+      disabled={busy}
+      className="chip chip-warn"
+      style={{ fontSize: 9, cursor: 'pointer', border: '1px solid color-mix(in srgb, var(--warn) 40%, transparent)', background: 'color-mix(in srgb, var(--warn) 12%, var(--surface-2))' }}
+      title="Download private key backup as .txt"
+    >
+      {busy ? '…' : '↓ Backup key'}
+    </button>
+  );
+}
+
 function ExportKeyModal({
-  walletId,
-  address,
-  chain,
-  onClose,
+  walletId, address, chain, label, onClose,
 }: {
-  walletId: string;
-  address: string;
-  chain: string;
-  onClose: () => void;
+  walletId: string; address: string; chain: string; label: string; onClose: () => void;
 }) {
   type Stage = 'confirm' | 'loading' | 'revealed' | 'error';
   const [stage, setStage] = useState<Stage>('confirm');
@@ -1041,7 +1165,10 @@ function ExportKeyModal({
             >
               {chain === 'SOLANA' ? 'SOL' : 'ETH'}
             </div>
-            <span className="font-mono text-[12px] truncate" style={{ color: 'var(--text-2)' }}>{address}</span>
+            <div className="min-w-0">
+              {label && <div className="text-[12px] font-semibold truncate">{label}</div>}
+              <span className="font-mono text-[11px] truncate" style={{ color: 'var(--text-3)' }}>{address}</span>
+            </div>
           </div>
 
           {stage === 'confirm' && (
@@ -1123,10 +1250,7 @@ function ExportKeyModal({
               </div>
 
               <div className="flex gap-2">
-                <button
-                  onClick={copy}
-                  className="btn btn-primary btn-sm flex-1"
-                >
+                <button onClick={copy} className="btn btn-primary btn-sm flex-1">
                   {copied ? (
                     <span className="flex items-center gap-1.5 justify-center">
                       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1134,7 +1258,14 @@ function ExportKeyModal({
                       </svg>
                       Copied
                     </span>
-                  ) : 'Copy to clipboard'}
+                  ) : 'Copy'}
+                </button>
+                <button
+                  onClick={() => { downloadKeyFile(chain, address, privateKey, label); api.post(`/wallets/${walletId}/confirm-backup`, {}).catch(() => {}); invalidate('/wallets'); }}
+                  className="btn btn-sm"
+                  style={{ flexShrink: 0 }}
+                >
+                  ↓ Download .txt
                 </button>
                 <button onClick={handleClose} className="btn btn-ghost btn-sm">Done</button>
               </div>
@@ -1158,3 +1289,4 @@ function ExportKeyModal({
     </div>
   );
 }
+

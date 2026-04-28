@@ -410,6 +410,10 @@ export class WalletsService {
       throw new ForbiddenException(`Wallet cap reached (${MAX_WALLETS_PER_USER})`);
     }
 
+    // Auto-generate a default label if none provided
+    const chainCount = await this.prisma.wallet.count({ where: { userId, chain } });
+    const defaultLabel = label ?? `${chain === 'SOLANA' ? 'Solana' : 'EVM'} Wallet ${chainCount + 1}`;
+
     const { address, secret } = this.generateKeypair(chain);
     const env = await this.kms.encrypt(secret);
 
@@ -420,7 +424,7 @@ export class WalletsService {
         address,
         encryptedKey: env.ciphertext,
         encryptedDek: env.encryptedDek,
-        label,
+        label: defaultLabel,
         isPrimary: count === 0,
         isImported: false,
       },
@@ -508,6 +512,27 @@ export class WalletsService {
       data: { userId, action: 'wallet.export', target: wallet.address },
     });
     return wallet.chain === 'SOLANA' ? bs58.encode(secret) : '0x' + secret.toString('hex');
+  }
+
+  async exportAll(userId: string): Promise<{ chain: string; address: string; label: string | null; isPrimary: boolean; privateKey: string }[]> {
+    const wallets = await this.prisma.wallet.findMany({ where: { userId } });
+    const out = await Promise.all(wallets.map(async (w) => {
+      const secret = await this.kms.decrypt({ ciphertext: w.encryptedKey, encryptedDek: w.encryptedDek });
+      const privateKey = w.chain === 'SOLANA' ? bs58.encode(secret) : '0x' + secret.toString('hex');
+      return { chain: w.chain, address: w.address, label: w.label, isPrimary: w.isPrimary, privateKey };
+    }));
+    await this.prisma.auditLog.create({ data: { userId, action: 'wallet.export_all', target: `${wallets.length} wallets` } });
+    return out;
+  }
+
+  async renameWallet(userId: string, walletId: string, label: string) {
+    const wallet = await this.prisma.wallet.findFirst({ where: { id: walletId, userId } });
+    if (!wallet) throw new ForbiddenException();
+    return this.prisma.wallet.update({
+      where: { id: walletId },
+      data: { label: label || null },
+      select: { id: true, chain: true, address: true, label: true, isPrimary: true, isImported: true, backedUpAt: true, createdAt: true },
+    });
   }
 
   async setPrimary(userId: string, walletId: string) {

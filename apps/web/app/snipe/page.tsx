@@ -281,16 +281,16 @@ export default function SnipePage() {
         style={expandedCol ? { gridTemplateColumns: '1fr', gridTemplateAreas: '"active"' } : undefined}
       >
         {/* Col 1: setup */}
-        <div className="snipe-col-setup" style={!isColVisible('setup') ? { display: 'none' } : undefined}>
+        <div className="snipe-col-setup" style={!isColVisible('setup') ? { display: 'none' } : expandedCol === 'setup' ? { gridArea: 'active', width: '100%' } : undefined}>
           <TgPanel status={tgStatus} headerRight={mkExpandBtn('setup')} />
           <ConfigPanel config={config} wallets={wallets ?? []} />
         </div>
         {/* Col 2: inbox */}
-        <div className="snipe-col-inbox" style={!isColVisible('inbox') ? { display: 'none' } : undefined}>
+        <div className="snipe-col-inbox" style={!isColVisible('inbox') ? { display: 'none' } : expandedCol === 'inbox' ? { gridArea: 'active', width: '100%' } : undefined}>
           <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} headerRight={mkExpandBtn('inbox')} />
         </div>
         {/* Col 3: history */}
-        <div className="snipe-col-history" style={!isColVisible('history') ? { display: 'none' } : undefined}>
+        <div className="snipe-col-history" style={!isColVisible('history') ? { display: 'none' } : expandedCol === 'history' ? { gridArea: 'active', width: '100%' } : undefined}>
           <HistoryPanel trades={history ?? []} loading={histLoading} headerRight={mkExpandBtn('history')} />
         </div>
       </div>
