@@ -270,32 +270,41 @@ function CmdStub({ onClose }: { onClose: () => void }) {
 /* ============================================================ */
 
 function BottomStatusBar() {
-  const { data: agents } = useApi<{ id: string; status: string }[]>('/agents', { pollMs: 30_000 });
-  const { data: perf }   = useApi<{ totalPnl: number; weekly: { pnl: number } }>('/analytics/performance', { pollMs: 60_000 });
-  const { data: user }   = useApi<{ paperMode: boolean }>('/users', { pollMs: 60_000 });
+  const { data: agents, error: agentsErr } = useApi<{ id: string; status: string }[]>('/agents', { pollMs: 30_000 });
+  const { data: perf }                     = useApi<{ totalPnl: number; weekly: { pnl: number } }>('/analytics/performance', { pollMs: 60_000 });
+  // Must use '/me' — same key as PaperModePill — so mutate('/me') propagates here instantly.
+  const { data: me, error: meErr }         = useApi<{ paperMode: boolean }>('/me', { pollMs: 60_000 });
 
   const running = agents?.filter((a) => a.status === 'RUNNING').length ?? null;
-  const pnl24h  = perf?.weekly?.pnl ?? null;
-  const isPaper = user?.paperMode ?? null;
+  const pnl7d   = perf?.weekly?.pnl ?? null;
+  const isPaper = me?.paperMode ?? null;
+  const apiDown = !!(meErr && agentsErr); // both failed → likely offline
 
   return (
     <div className="statusbar-bottom">
+      {/* API connectivity */}
       <span>
         <span style={{ color: 'var(--text-2)' }}>status</span>{' '}
-        <span style={{ color: 'var(--ok)' }}>● online</span>
+        <span style={{ color: apiDown ? 'var(--bad)' : 'var(--ok)' }}>
+          ● {apiDown ? 'offline' : 'online'}
+        </span>
       </span>
       <span className="sep" />
+
+      {/* Trade mode — live from /me, in sync with PaperModePill */}
       <span>
         <span style={{ color: 'var(--text-2)' }}>mode</span>{' '}
         {isPaper === null ? (
           <span style={{ color: 'var(--text-3)' }}>—</span>
         ) : (
-          <span style={{ color: isPaper ? 'var(--warn)' : 'var(--ok)' }}>
+          <span style={{ color: isPaper ? 'var(--warn)' : 'var(--ok)', fontWeight: 500 }}>
             {isPaper ? 'paper' : 'live'}
           </span>
         )}
       </span>
       <span className="sep" />
+
+      {/* Running agents */}
       <span>
         <span style={{ color: 'var(--text-2)' }}>agents</span>{' '}
         <span style={{ color: 'var(--text)' }}>
@@ -303,17 +312,20 @@ function BottomStatusBar() {
         </span>
       </span>
       <span className="sep" />
+
+      {/* 7-day P&L */}
       <span>
         <span style={{ color: 'var(--text-2)' }}>7d pnl</span>{' '}
-        {pnl24h === null ? (
+        {pnl7d === null ? (
           <span style={{ color: 'var(--text-3)' }}>—</span>
         ) : (
-          <span style={{ color: pnl24h >= 0 ? 'var(--ok)' : 'var(--bad)' }}>
-            {pnl24h >= 0 ? '+' : ''}${Math.abs(pnl24h).toFixed(2)}
+          <span style={{ color: pnl7d >= 0 ? 'var(--ok)' : 'var(--bad)' }}>
+            {pnl7d >= 0 ? '+' : ''}${Math.abs(pnl7d).toFixed(2)}
           </span>
         )}
       </span>
       <span className="sep" />
+
       <span style={{ marginLeft: 'auto' }}>
         <span style={{ color: 'var(--text-3)' }}>qwai v0.1 · solana + evm</span>
       </span>

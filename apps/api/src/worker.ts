@@ -14,8 +14,9 @@ async function main() {
   // are all initialized before the worker tries to use them.
   const app = await NestFactory.createApplicationContext(AppModule);
   app.enableShutdownHooks();
-  const boot = app.get(WorkerBootstrap);
-  await boot.start();
+  // onModuleInit already calls boot.start() — don't call it again here.
+  // Keeping a reference just so the import stays and the service is eagerly resolved.
+  app.get(WorkerBootstrap);
   Logger.log('QWAI background workers running', 'Worker');
 
   const shutdown = async (signal: string) => {

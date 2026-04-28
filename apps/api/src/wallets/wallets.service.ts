@@ -22,7 +22,7 @@ export class WalletsService {
   async list(userId: string) {
     const rows = await this.prisma.wallet.findMany({
       where: { userId },
-      select: { id: true, chain: true, address: true, label: true, isPrimary: true, createdAt: true },
+      select: { id: true, chain: true, address: true, label: true, isPrimary: true, isImported: true, backedUpAt: true, createdAt: true },
     });
     // Attach paper balances (from trades)
     const paperBalances = await this.prisma.paperBalance.findMany({ where: { userId } });
@@ -284,13 +284,79 @@ export class WalletsService {
         encryptedDek: env.encryptedDek,
         label,
         isPrimary: count === 0,
+        isImported: false,
       },
-      select: { id: true, chain: true, address: true, label: true, isPrimary: true, createdAt: true },
+      select: { id: true, chain: true, address: true, label: true, isPrimary: true, isImported: true, backedUpAt: true, createdAt: true },
     });
     await this.prisma.auditLog.create({
       data: { userId, action: 'wallet.create', target: address, payload: { chain } },
     });
+
+    // Return the plaintext private key ONE TIME so the frontend can prompt backup.
+    // It is never stored in plaintext — this is the only moment the client sees it.
+    const privateKey = chain === 'SOLANA' ? bs58.encode(secret) : '0x' + secret.toString('hex');
+    return { ...wallet, privateKey };
+  }
+
+  /** Import an existing wallet by its private key. */
+  async importWallet(userId: string, chain: Chain, rawKey: string, label?: string) {
+    const count = await this.prisma.wallet.count({ where: { userId } });
+    if (count >= MAX_WALLETS_PER_USER) {
+      throw new ForbiddenException(`Wallet cap reached (${MAX_WALLETS_PER_USER})`);
+    }
+
+    let address: string;
+    let secret: Buffer;
+
+    try {
+      if (chain === 'SOLANA') {
+        const { Keypair } = await import('@solana/web3.js');
+        const decoded = bs58.decode(rawKey.trim());
+        const kp = Keypair.fromSecretKey(decoded);
+        address = kp.publicKey.toBase58();
+        secret = Buffer.from(decoded);
+      } else {
+        const normalised = rawKey.trim().startsWith('0x') ? rawKey.trim() : '0x' + rawKey.trim();
+        const w = new ethers.Wallet(normalised);
+        address = w.address;
+        secret = Buffer.from(normalised.slice(2), 'hex');
+      }
+    } catch {
+      throw new ForbiddenException('Invalid private key format');
+    }
+
+    const existing = await this.prisma.wallet.findFirst({ where: { userId, address } });
+    if (existing) throw new ForbiddenException('This wallet is already in your account');
+
+    const env = await this.kms.encrypt(secret);
+    secret.fill(0);
+
+    const wallet = await this.prisma.wallet.create({
+      data: {
+        userId,
+        chain,
+        address,
+        encryptedKey: env.ciphertext,
+        encryptedDek: env.encryptedDek,
+        label: label ?? `Imported ${chain}`,
+        isPrimary: count === 0,
+        isImported: true,
+        backedUpAt: new Date(), // user already has the key — mark as backed up
+      },
+      select: { id: true, chain: true, address: true, label: true, isPrimary: true, isImported: true, backedUpAt: true, createdAt: true },
+    });
+    await this.prisma.auditLog.create({
+      data: { userId, action: 'wallet.import', target: address, payload: { chain } },
+    });
     return wallet;
+  }
+
+  /** Called after user confirms they have saved their key. */
+  async confirmBackup(userId: string, walletId: string) {
+    await this.prisma.wallet.updateMany({
+      where: { id: walletId, userId },
+      data: { backedUpAt: new Date() },
+    });
   }
 
   async exportKey(userId: string, walletId: string): Promise<string> {

@@ -11,7 +11,7 @@ export interface AuthTokens {
   expiresIn: number;
 }
 
-const ACCESS_TTL_SECONDS = parseDurationSeconds(process.env.JWT_EXPIRES_IN ?? '15m');
+const ACCESS_TTL_SECONDS = parseDurationSeconds(process.env.JWT_EXPIRES_IN ?? '15m'); // seconds
 const REFRESH_TTL_MS = parseDurationSeconds(process.env.JWT_REFRESH_EXPIRES_IN ?? '7d') * 1000;
 
 @Injectable()
@@ -32,7 +32,7 @@ export class AuthService {
         userId: user.id,
         refreshHash: 'pending',
         nonce,
-        expiresAt: new Date(Date.now() + 5 * 60_000),
+        expiresAt: new Date(Date.now() + 15 * 60_000),
       },
     });
     return nonce;

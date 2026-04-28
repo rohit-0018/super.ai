@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationShutdown,
@@ -35,7 +36,9 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
   private sendQueue: Queue | null = null;
   private started = false;
 
-  constructor(private readonly tgBot: TelegramBot) {}
+  // Explicit @Inject: TelegramBot's own forwardRef(ApprovalsService) corrupts
+  // Reflect metadata so type inference alone fails to inject it here.
+  constructor(@Inject(TelegramBot) private readonly tgBot: TelegramBot) {}
 
   async onModuleInit() {
     // Avoid double-bring-up in split api/worker topologies: the bot itself

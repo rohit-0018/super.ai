@@ -82,6 +82,9 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
     @Inject(forwardRef(() => TelegramService))
     private telegram: TelegramService,
     private guardrails: GuardrailsService,
+    // Explicit @Inject required: the forwardRef(TelegramService) above confuses
+    // Reflect metadata so TypeScript type inference alone doesn't resolve ModuleRef.
+    @Inject(ModuleRef)
     private moduleRef: ModuleRef,
   ) {}
 

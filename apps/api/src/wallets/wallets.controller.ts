@@ -9,6 +9,12 @@ class CreateWalletDto {
   @IsOptional() @IsString() label?: string;
 }
 
+class ImportWalletDto {
+  @IsEnum(Chain) chain!: Chain;
+  @IsString() privateKey!: string;
+  @IsOptional() @IsString() label?: string;
+}
+
 class WithdrawDto {
   @IsString() toAddress!: string;
   @IsString() tokenMint!: string;
@@ -26,8 +32,16 @@ export class WalletsController {
     return this.wallets.create(req.user.userId, dto.chain, dto.label);
   }
 
+  @Post('import') import(@Req() req: any, @Body() dto: ImportWalletDto) {
+    return this.wallets.importWallet(req.user.userId, dto.chain, dto.privateKey, dto.label);
+  }
+
   @Post(':id/export') export(@Req() req: any, @Param('id') id: string) {
     return this.wallets.exportKey(req.user.userId, id).then((key) => ({ key }));
+  }
+
+  @Post(':id/confirm-backup') confirmBackup(@Req() req: any, @Param('id') id: string) {
+    return this.wallets.confirmBackup(req.user.userId, id).then(() => ({ ok: true }));
   }
 
   @Post(':id/primary') primary(@Req() req: any, @Param('id') id: string) {

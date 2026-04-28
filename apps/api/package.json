@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "nest start --watch --preserveWatchOutput",
-    "dev:worker": "tsx watch src/worker.ts",
+    "dev:worker": "QWAI_ROLE=worker tsx watch src/worker.ts",
     "build": "nest build",
     "start": "node dist/main.js",
     "worker": "node dist/worker.js",

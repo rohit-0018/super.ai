@@ -192,16 +192,18 @@ model User {
 }
 
 model Wallet {
-  id            String  @id @default(cuid())
+  id            String    @id @default(cuid())
   userId        String
-  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain         Chain
   address       String
-  encryptedKey  String  // KMS envelope ciphertext (base64)
-  encryptedDek  String  // wrapped data key (base64)
+  encryptedKey  String    // KMS envelope ciphertext (base64)
+  encryptedDek  String    // wrapped data key (base64)
   label         String?
-  isPrimary     Boolean @default(false)
-  createdAt     DateTime @default(now())
+  isPrimary     Boolean   @default(false)
+  isImported    Boolean   @default(false)  // true = user-supplied key, not qwai-generated
+  backedUpAt    DateTime?                  // null = user has never confirmed a key backup
+  createdAt     DateTime  @default(now())
 
   @@unique([userId, address])
   @@index([userId])

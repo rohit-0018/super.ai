@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../../lib/api';
 import { useApi, invalidate } from '../../lib/useApi';
 import { Skeleton, Spinner } from '../../components/ui/Skeleton';
@@ -19,6 +19,8 @@ interface Wallet {
   chain: 'SOLANA' | 'EVM';
   address: string;
   isPrimary?: boolean;
+  isImported?: boolean;
+  backedUpAt?: string | null;
   label?: string;
   paperBalance?: number | null;
   recentTrades?: { tokenIn: string; tokenOut: string; amountIn: string; amountOut: string; priceUsd: number | null; mode: string; createdAt: string }[];
@@ -29,18 +31,22 @@ export default function Wallets() {
   const { data: balances, loading: balLoading } = useApi<WalletBalance[]>('/wallets/balances');
   const [depositId, setDepositId] = useState<string | null>(null);
   const [withdrawId, setWithdrawId] = useState<string | null>(null);
+  const [exportTarget, setExportTarget] = useState<{ id: string; address: string; chain: string } | null>(null);
+  const [newWallet, setNewWallet] = useState<{ id: string; address: string; chain: string; privateKey: string } | null>(null);
+  const [showImport, setShowImport] = useState(false);
 
   const balMap = new Map<string, WalletBalance>();
   balances?.forEach((b) => balMap.set(b.walletId, b));
 
   async function create(chain: 'SOLANA' | 'EVM') {
-    await api.post('/wallets', { chain });
+    const { data } = await api.post('/wallets', { chain });
     invalidate('/wallets');
+    // Show mandatory backup modal with the one-time private key
+    setNewWallet({ id: data.id, address: data.address, chain: data.chain, privateKey: data.privateKey });
   }
 
-  async function exportKey(id: string) {
-    const { data } = await api.post(`/wallets/${id}/export`, {});
-    alert('Private key (store offline):\n\n' + data.key);
+  function openExport(wallet: Wallet) {
+    setExportTarget({ id: wallet.id, address: wallet.address, chain: wallet.chain });
   }
 
   async function setPrimary(id: string) {
@@ -66,6 +72,7 @@ export default function Wallets() {
           <a href="/wallets/analyze" className="btn btn-primary flex-1 sm:flex-none">Analyze wallet →</a>
           <button onClick={() => create('SOLANA')} className="btn flex-1 sm:flex-none">+ Solana</button>
           <button onClick={() => create('EVM')} className="btn flex-1 sm:flex-none">+ EVM</button>
+          <button onClick={() => setShowImport(true)} className="btn btn-ghost flex-1 sm:flex-none">Import key</button>
         </div>
       </header>
 
@@ -144,6 +151,18 @@ export default function Wallets() {
                         <span className="font-mono text-[12.5px] truncate max-w-[120px] md:max-w-[260px]">{w.address}</span>
                         {w.isPrimary && (
                           <span className="chip chip-accent">Primary</span>
+                        )}
+                        {w.isImported && (
+                          <span className="chip" style={{ fontSize: 9, background: 'color-mix(in srgb, var(--accent-2) 12%, var(--surface-2))', color: 'var(--accent-2)', borderColor: 'color-mix(in srgb, var(--accent-2) 30%, transparent)' }}>Imported</span>
+                        )}
+                        {!w.backedUpAt && !w.isImported && (
+                          <span
+                            className="chip chip-warn"
+                            title="Key not backed up — click Export key and save it offline"
+                            style={{ fontSize: 9, cursor: 'help' }}
+                          >
+                            ⚠ Backup key
+                          </span>
                         )}
                       </div>
                       <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
@@ -232,7 +251,7 @@ export default function Wallets() {
                     </button>
                   )}
                   <button
-                    onClick={() => exportKey(w.id)}
+                    onClick={() => openExport(w)}
                     className="btn btn-sm btn-ghost"
                     style={{ color: 'var(--bad)' }}
                   >
@@ -276,6 +295,32 @@ export default function Wallets() {
       </section>
 
       <CexPortfolio />
+
+      {newWallet && (
+        <NewWalletBackupModal
+          walletId={newWallet.id}
+          address={newWallet.address}
+          chain={newWallet.chain}
+          privateKey={newWallet.privateKey}
+          onClose={() => { setNewWallet(null); invalidate('/wallets'); }}
+        />
+      )}
+
+      {exportTarget && (
+        <ExportKeyModal
+          walletId={exportTarget.id}
+          address={exportTarget.address}
+          chain={exportTarget.chain}
+          onClose={() => { setExportTarget(null); invalidate('/wallets'); }}
+        />
+      )}
+
+      {showImport && (
+        <ImportWalletModal
+          onClose={() => setShowImport(false)}
+          onImported={() => { setShowImport(false); invalidate('/wallets'); invalidate('/wallets/balances'); }}
+        />
+      )}
     </div>
   );
 }
@@ -410,6 +455,706 @@ function FaucetButton({ walletId }: { walletId: string }) {
       {result?.success && (
         <span className="text-[10px]" style={{ color: 'var(--ok)' }}>{result.message}</span>
       )}
+    </div>
+  );
+}
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+function downloadKeyFile(chain: string, address: string, privateKey: string) {
+  const content = [
+    'qwai Wallet Backup',
+    '==================',
+    `Chain:       ${chain}`,
+    `Address:     ${address}`,
+    `Private Key: ${privateKey}`,
+    `Format:      ${chain === 'SOLANA' ? 'base58' : 'hex (0x-prefixed)'}`,
+    `Exported:    ${new Date().toISOString()}`,
+    '',
+    'WARNING: Anyone with this file can drain all funds from this wallet.',
+    'Store it encrypted and offline. Never share it or upload it anywhere.',
+  ].join('\n');
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `qwai-wallet-${address.slice(0, 8)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ChainBadge({ chain }: { chain: string }) {
+  return (
+    <div
+      className="w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-semibold shrink-0"
+      style={{
+        background: chain === 'SOLANA'
+          ? 'linear-gradient(135deg, #9945FF 0%, #14F195 100%)'
+          : 'linear-gradient(135deg, #627EEA 0%, #3C3C3D 100%)',
+        color: 'white',
+      }}
+    >
+      {chain === 'SOLANA' ? 'SOL' : 'ETH'}
+    </div>
+  );
+}
+
+function ModalShell({ title, titleColor, onClose, children }: {
+  title: string;
+  titleColor?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="w-full max-w-md rounded-[14px] fade-in"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border-2)',
+          boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 64px rgba(0,0,0,0.6)',
+        }}
+      >
+        <div
+          className="flex items-center justify-between px-5 py-3.5"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <span className="text-[13px] font-semibold" style={{ color: titleColor ?? 'var(--text)' }}>{title}</span>
+          <button
+            onClick={onClose}
+            className="btn btn-ghost btn-sm"
+            style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M1 1l12 12M13 1L1 13" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-5 space-y-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function KeyRevealBox({ privateKey, chain }: { privateKey: string; chain: string }) {
+  const [copied, setCopied] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(privateKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      ref.current?.select();
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] uppercase tracking-widest font-medium" style={{ color: 'var(--text-3)' }}>
+        Private key — {chain === 'SOLANA' ? 'base58' : 'hex'}
+      </div>
+      <div className="rounded-[10px] p-3" style={{ background: 'var(--bg)', border: '1px solid var(--border-2)' }}>
+        <textarea
+          ref={ref}
+          readOnly
+          value={privateKey}
+          rows={3}
+          onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+          className="w-full bg-transparent font-mono text-[12px] resize-none outline-none leading-relaxed break-all"
+          style={{ color: 'var(--text)', caretColor: 'transparent' }}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </div>
+      <div className="flex gap-2">
+        <button onClick={copy} className="btn btn-primary btn-sm flex-1">
+          {copied ? (
+            <span className="flex items-center gap-1.5 justify-center">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 6l3 3 5-5" />
+              </svg>
+              Copied
+            </span>
+          ) : 'Copy to clipboard'}
+        </button>
+        <button
+          onClick={() => downloadKeyFile(chain, '', privateKey)}
+          className="btn btn-sm"
+          style={{ border: '1px solid var(--border-2)' }}
+        >
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline', marginRight: 5 }}>
+            <path d="M6.5 1v8M3 6l3.5 3.5L10 6" /><path d="M1 11h11" />
+          </svg>
+          Download .txt
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── New Wallet Backup Modal ──────────────────────────────────────────────────
+// Shown immediately after wallet creation. Cannot be fully closed without
+// the user confirming they've saved the key.
+
+function NewWalletBackupModal({
+  walletId,
+  address,
+  chain,
+  privateKey,
+  onClose,
+}: {
+  walletId: string;
+  address: string;
+  chain: string;
+  privateKey: string;
+  onClose: () => void;
+}) {
+  const [confirmed, setConfirmed] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
+
+  function handleDownload() {
+    downloadKeyFile(chain, address, privateKey);
+    setDownloaded(true);
+    // Mark backed up server-side
+    api.post(`/wallets/${walletId}/confirm-backup`, {}).catch(() => {});
+  }
+
+  function handleClose() {
+    if (!confirmed) return;
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(6px)' }}
+    >
+      <div
+        className="w-full max-w-md rounded-[14px] fade-in"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid color-mix(in srgb, var(--warn) 40%, var(--border-2))',
+          boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 80px rgba(0,0,0,0.7)',
+        }}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center gap-2.5 px-5 py-3.5"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--warn)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 1L1 13h14L8 1z" /><path d="M8 6v3.5M8 11.5v.5" />
+          </svg>
+          <span className="text-[13px] font-semibold" style={{ color: 'var(--warn)' }}>
+            Back up your private key before continuing
+          </span>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Wallet identity row */}
+          <div
+            className="flex items-center gap-3 px-3 py-2.5 rounded-[10px]"
+            style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
+          >
+            <ChainBadge chain={chain} />
+            <div className="min-w-0">
+              <div className="font-mono text-[12px] truncate" style={{ color: 'var(--text-2)' }}>{address}</div>
+              <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-3)' }}>New {chain} wallet · not backed up yet</div>
+            </div>
+          </div>
+
+          {/* Critical notice */}
+          <div
+            className="rounded-[10px] px-4 py-3 space-y-1.5"
+            style={{ background: 'color-mix(in srgb, var(--bad) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--bad) 30%, transparent)' }}
+          >
+            <div className="text-[12px] font-semibold" style={{ color: 'var(--bad)' }}>This is the only time qwai shows you this key</div>
+            <ul className="space-y-1">
+              {[
+                'If you skip this step and the database is wiped, your funds are gone permanently.',
+                'This key is shown nowhere else in the UI after you close this window.',
+                'Download the .txt file and store it offline — password manager, USB drive, paper.',
+              ].map((t) => (
+                <li key={t} className="flex items-start gap-2 text-[12px]" style={{ color: 'var(--text-2)' }}>
+                  <span style={{ color: 'var(--bad)', marginTop: 1 }}>·</span>{t}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <KeyRevealBox privateKey={privateKey} chain={chain} />
+
+          {/* Download shortcut — prominent CTA */}
+          <button
+            onClick={handleDownload}
+            className="btn btn-sm w-full"
+            style={{
+              background: downloaded
+                ? 'color-mix(in srgb, var(--ok) 15%, var(--surface-2))'
+                : 'color-mix(in srgb, var(--warn) 15%, var(--surface-2))',
+              border: `1px solid color-mix(in srgb, ${downloaded ? 'var(--ok)' : 'var(--warn)'} 40%, transparent)`,
+              color: downloaded ? 'var(--ok)' : 'var(--warn)',
+            }}
+          >
+            {downloaded ? (
+              <span className="flex items-center gap-1.5 justify-center">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 6l3 3 5-5" />
+                </svg>
+                Downloaded — save it somewhere safe offline
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 justify-center">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6.5 1v8M3 6l3.5 3.5L10 6" /><path d="M1 11h11" />
+                </svg>
+                Download key file (.txt)
+              </span>
+            )}
+          </button>
+
+          {/* Confirmation checkbox + close */}
+          <div
+            className="flex items-start gap-3 px-3 py-3 rounded-[10px] cursor-pointer select-none"
+            style={{ background: 'var(--surface-2)', border: `1px solid ${confirmed ? 'color-mix(in srgb, var(--ok) 40%, transparent)' : 'var(--border)'}` }}
+            onClick={() => setConfirmed((v) => !v)}
+          >
+            <div
+              className="w-4 h-4 rounded shrink-0 mt-0.5 flex items-center justify-center"
+              style={{
+                border: `1.5px solid ${confirmed ? 'var(--ok)' : 'var(--text-3)'}`,
+                background: confirmed ? 'var(--ok)' : 'transparent',
+                transition: 'all 0.15s',
+              }}
+            >
+              {confirmed && (
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="black" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1.5 5l2.5 2.5 4.5-4.5" />
+                </svg>
+              )}
+            </div>
+            <span className="text-[12px]" style={{ color: 'var(--text-2)' }}>
+              I have saved my private key offline. I understand that qwai cannot recover it if I lose access to the database.
+            </span>
+          </div>
+
+          <button
+            onClick={handleClose}
+            disabled={!confirmed}
+            className="btn btn-primary btn-sm w-full"
+            style={{ opacity: confirmed ? 1 : 0.4, cursor: confirmed ? 'pointer' : 'not-allowed' }}
+          >
+            {confirmed ? "I've backed it up — continue" : 'Check the box above to continue'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Import Wallet Modal ──────────────────────────────────────────────────────
+
+function ImportWalletModal({
+  onClose,
+  onImported,
+}: {
+  onClose: () => void;
+  onImported: () => void;
+}) {
+  const [chain, setChain] = useState<'SOLANA' | 'EVM'>('SOLANA');
+  const [privateKey, setPrivateKey] = useState('');
+  const [label, setLabel] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function submit() {
+    if (!privateKey.trim()) { setError('Private key required'); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post('/wallets/import', { chain, privateKey: privateKey.trim(), label: label.trim() || undefined });
+      onImported();
+    } catch (e: any) {
+      setError(e?.message ?? 'Import failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="w-full max-w-md rounded-[14px] fade-in"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border-2)',
+          boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 64px rgba(0,0,0,0.6)',
+        }}
+      >
+        <div
+          className="flex items-center justify-between px-5 py-3.5"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <span className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>Import wallet by private key</span>
+          <button
+            onClick={onClose}
+            className="btn btn-ghost btn-sm"
+            style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M1 1l12 12M13 1L1 13" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <p className="text-[12px]" style={{ color: 'var(--text-2)' }}>
+            Paste the private key of an existing wallet. qwai will encrypt and store it — you can use it for trading without ever entering the key again.
+          </p>
+
+          {/* Chain toggle */}
+          <div className="flex gap-1 p-1 rounded-[10px]" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+            {(['SOLANA', 'EVM'] as const).map((c) => (
+              <button
+                key={c}
+                onClick={() => setChain(c)}
+                className="flex-1 text-[12px] font-medium rounded-[8px] py-1.5 transition-all"
+                style={{
+                  background: chain === c ? 'var(--surface-hover)' : 'transparent',
+                  color: chain === c ? 'var(--text)' : 'var(--text-3)',
+                  border: chain === c ? '1px solid var(--border-2)' : '1px solid transparent',
+                }}
+              >
+                {c === 'SOLANA' ? 'Solana (base58)' : 'EVM (0x hex)'}
+              </button>
+            ))}
+          </div>
+
+          {/* Private key input */}
+          <div className="space-y-1.5">
+            <div className="text-[11px] uppercase tracking-widest font-medium" style={{ color: 'var(--text-3)' }}>Private key</div>
+            <div className="relative">
+              <textarea
+                value={privateKey}
+                onChange={(e) => setPrivateKey(e.target.value)}
+                placeholder={chain === 'SOLANA' ? 'base58 encoded key…' : '0x… or hex…'}
+                rows={3}
+                autoComplete="off"
+                spellCheck={false}
+                className="input w-full font-mono text-[12px] resize-none leading-relaxed break-all"
+                style={{
+                  paddingRight: 40,
+                  filter: showKey ? 'none' : 'blur(4px)',
+                  userSelect: showKey ? 'auto' : 'none',
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((v) => !v)}
+                className="absolute right-2 top-2 btn btn-ghost btn-sm"
+                style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                title={showKey ? 'Hide' : 'Reveal'}
+              >
+                {showKey ? (
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1 7s2.5-4.5 6-4.5S13 7 13 7s-2.5 4.5-6 4.5S1 7 1 7z" />
+                    <circle cx="7" cy="7" r="1.5" />
+                    <path d="M1 1l12 12" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1 7s2.5-4.5 6-4.5S13 7 13 7s-2.5 4.5-6 4.5S1 7 1 7z" />
+                    <circle cx="7" cy="7" r="1.5" />
+                  </svg>
+                )}
+              </button>
+            </div>
+            {!showKey && privateKey.length > 0 && (
+              <p className="text-[10px]" style={{ color: 'var(--text-3)' }}>Key hidden — click the eye icon to reveal</p>
+            )}
+          </div>
+
+          {/* Optional label */}
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Label (optional, e.g. Trading wallet)"
+            className="input text-[12px]"
+          />
+
+          {error && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{error}</p>}
+
+          <div
+            className="flex items-start gap-2 px-3 py-2.5 rounded-[8px]"
+            style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)' }}
+          >
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: 1, flexShrink: 0 }}>
+              <circle cx="6.5" cy="6.5" r="5.5" /><path d="M6.5 4v3M6.5 9v.5" />
+            </svg>
+            <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+              Your key is encrypted with AES-256-GCM and stored only on this server. It is never sent elsewhere.
+            </span>
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={onClose} className="btn btn-ghost btn-sm flex-1">Cancel</button>
+            <button onClick={submit} disabled={busy || !privateKey.trim()} className="btn btn-primary btn-sm flex-1">
+              {busy ? <Spinner size={12} /> : 'Import wallet'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExportKeyModal({
+  walletId,
+  address,
+  chain,
+  onClose,
+}: {
+  walletId: string;
+  address: string;
+  chain: string;
+  onClose: () => void;
+}) {
+  type Stage = 'confirm' | 'loading' | 'revealed' | 'error';
+  const [stage, setStage] = useState<Stage>('confirm');
+  const [privateKey, setPrivateKey] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const keyRef = useRef<HTMLTextAreaElement>(null);
+
+  // Close on Escape
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function reveal() {
+    setStage('loading');
+    try {
+      const { data } = await api.post(`/wallets/${walletId}/export`, {});
+      setPrivateKey(data.key);
+      setStage('revealed');
+      setTimeout(() => keyRef.current?.select(), 80);
+      // Mark backed up so the warning badge clears
+      api.post(`/wallets/${walletId}/confirm-backup`, {}).catch(() => {});
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? 'Failed to export key');
+      setStage('error');
+    }
+  }
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(privateKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      keyRef.current?.select();
+    }
+  }
+
+  function handleClose() {
+    // Zero the key string before unmounting
+    setPrivateKey('');
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
+    >
+      <div
+        className="w-full max-w-md rounded-[14px] fade-in"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border-2)',
+          boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 64px rgba(0,0,0,0.6)',
+        }}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-5 py-3.5"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <div className="flex items-center gap-2.5">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--bad)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 1L1 13h14L8 1z" />
+              <path d="M8 6v3.5M8 11.5v.5" />
+            </svg>
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--bad)' }}>Export private key</span>
+          </div>
+          <button
+            onClick={handleClose}
+            className="btn btn-ghost btn-sm"
+            style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M1 1l12 12M13 1L1 13" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Wallet identity */}
+          <div
+            className="flex items-center gap-3 px-3 py-2.5 rounded-[10px]"
+            style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
+          >
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-semibold shrink-0"
+              style={{
+                background: chain === 'SOLANA'
+                  ? 'linear-gradient(135deg, #9945FF 0%, #14F195 100%)'
+                  : 'linear-gradient(135deg, #627EEA 0%, #3C3C3D 100%)',
+                color: 'white',
+              }}
+            >
+              {chain === 'SOLANA' ? 'SOL' : 'ETH'}
+            </div>
+            <span className="font-mono text-[12px] truncate" style={{ color: 'var(--text-2)' }}>{address}</span>
+          </div>
+
+          {stage === 'confirm' && (
+            <>
+              {/* Warning block */}
+              <div
+                className="rounded-[10px] px-4 py-3 space-y-1.5"
+                style={{ background: 'color-mix(in srgb, var(--bad) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--bad) 30%, transparent)' }}
+              >
+                <div className="text-[12px] font-semibold" style={{ color: 'var(--bad)' }}>Never share your private key</div>
+                <ul className="space-y-1">
+                  {[
+                    'Anyone with this key controls all funds in this wallet — permanently.',
+                    'qwai support will never ask for it.',
+                    'Save it offline, in cold storage, not in notes or messages.',
+                  ].map((t) => (
+                    <li key={t} className="flex items-start gap-2 text-[12px]" style={{ color: 'var(--text-2)' }}>
+                      <span style={{ color: 'var(--bad)', marginTop: 1 }}>·</span>
+                      {t}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button onClick={handleClose} className="btn btn-ghost btn-sm flex-1">Cancel</button>
+                <button
+                  onClick={reveal}
+                  className="btn btn-sm flex-1"
+                  style={{
+                    background: 'color-mix(in srgb, var(--bad) 15%, var(--surface-2))',
+                    border: '1px solid color-mix(in srgb, var(--bad) 40%, transparent)',
+                    color: 'var(--bad)',
+                  }}
+                >
+                  I understand — reveal key
+                </button>
+              </div>
+            </>
+          )}
+
+          {stage === 'loading' && (
+            <div className="flex items-center justify-center py-8 gap-3" style={{ color: 'var(--text-3)' }}>
+              <Spinner size={16} />
+              <span className="text-[13px]">Decrypting…</span>
+            </div>
+          )}
+
+          {stage === 'error' && (
+            <div className="space-y-3">
+              <p className="text-[13px]" style={{ color: 'var(--bad)' }}>{errorMsg}</p>
+              <button onClick={handleClose} className="btn btn-sm btn-ghost">Close</button>
+            </div>
+          )}
+
+          {stage === 'revealed' && (
+            <>
+              <div className="space-y-2">
+                <div className="text-[11px] uppercase tracking-widest font-medium" style={{ color: 'var(--text-3)' }}>
+                  Private key — {chain === 'SOLANA' ? 'base58' : 'hex'}
+                </div>
+                <div
+                  className="rounded-[10px] p-3"
+                  style={{ background: 'var(--bg)', border: '1px solid var(--border-2)' }}
+                >
+                  <textarea
+                    ref={keyRef}
+                    readOnly
+                    value={privateKey}
+                    rows={3}
+                    onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                    className="w-full bg-transparent font-mono text-[12px] resize-none outline-none leading-relaxed break-all"
+                    style={{ color: 'var(--text)', caretColor: 'transparent' }}
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </div>
+                <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>Click the field to select all, then copy.</p>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={copy}
+                  className="btn btn-primary btn-sm flex-1"
+                >
+                  {copied ? (
+                    <span className="flex items-center gap-1.5 justify-center">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M2 6l3 3 5-5" />
+                      </svg>
+                      Copied
+                    </span>
+                  ) : 'Copy to clipboard'}
+                </button>
+                <button onClick={handleClose} className="btn btn-ghost btn-sm">Done</button>
+              </div>
+
+              <div
+                className="flex items-start gap-2 px-3 py-2.5 rounded-[8px]"
+                style={{ background: 'color-mix(in srgb, var(--warn) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--warn) 25%, transparent)' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="var(--warn)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginTop: 1, flexShrink: 0 }}>
+                  <circle cx="6.5" cy="6.5" r="5.5" />
+                  <path d="M6.5 4v3M6.5 9v.5" />
+                </svg>
+                <span className="text-[11px]" style={{ color: 'var(--warn)' }}>
+                  Store offline immediately. Close this window when done.
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
