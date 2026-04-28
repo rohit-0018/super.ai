@@ -1113,6 +1113,13 @@ body { position: relative; overflow-x: hidden; }
   55%  { transform: scale(1)   rotate(0deg);  opacity: 1; }
   100% { transform: scale(2.4) rotate(8deg);  opacity: 0; }
 }
+/* Complete variant — check mark punches in then fades up */
+@keyframes snipe-check {
+  0%   { transform: scale(0)   translateY(8px);  opacity: 0; }
+  18%  { transform: scale(1.5) translateY(-4px); opacity: 1; }
+  50%  { transform: scale(1)   translateY(0);    opacity: 1; }
+  100% { transform: scale(1.8) translateY(-12px); opacity: 0; }
+}
 @keyframes snipe-ray {
   0%   { transform: var(--ray-rotate) scaleX(0); opacity: 1; }
   100% { transform: var(--ray-rotate) scaleX(1); opacity: 0; }
@@ -1155,11 +1162,12 @@ body { position: relative; overflow-x: hidden; }
   grid-template-areas: "setup inbox history";
   gap: 16px;
   align-items: stretch;
-  min-height: 600px;
+  /* Fixed height so panels don't grow/shrink with content */
+  height: calc(100dvh - 152px);
 }
-.snipe-col-setup   { grid-area: setup;   display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
-.snipe-col-inbox   { grid-area: inbox;   min-height: 0; display: flex; flex-direction: column; }
-.snipe-col-history { grid-area: history; min-height: 0; display: flex; flex-direction: column; }
+.snipe-col-setup   { grid-area: setup;   display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; overflow: hidden; }
+.snipe-col-inbox   { grid-area: inbox;   height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.snipe-col-history { grid-area: history; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 /* Tablet: 2-col — setup sidebar + inbox/history stacked on right */
 @media (min-width: 768px) and (max-width: 1279px) {
@@ -1169,26 +1177,103 @@ body { position: relative; overflow-x: hidden; }
     grid-template-areas:
       "setup inbox"
       "setup history";
-    min-height: 700px;
+    height: calc(100dvh - 152px);
   }
-  .snipe-col-inbox   { min-height: 280px; }
-  .snipe-col-history { min-height: 280px; }
 }
 
-/* Mobile: single column stack */
+/* Mobile: single visible panel at a time, driven by data-panel attribute */
 @media (max-width: 767px) {
   .snipe-3col {
     grid-template-columns: 1fr;
-    grid-template-areas:
-      "setup"
-      "inbox"
-      "history";
+    grid-template-areas: "active";
     min-height: unset;
+    gap: 0;
   }
-  .snipe-col-setup, .snipe-col-inbox, .snipe-col-history { min-height: auto; }
-  .snipe-col-inbox   { min-height: 360px; }
-  .snipe-col-history { min-height: 320px; }
+
+  /* All panels share the same grid area so they stack — JS hides inactive ones */
+  .snipe-col-setup,
+  .snipe-col-inbox,
+  .snipe-col-history {
+    grid-area: active;
+    min-height: calc(100dvh - 260px);
+    max-height: calc(100dvh - 220px);
+  }
+
+  /* Hide inactive panels via data-panel attribute */
+  .snipe-3col[data-panel="setup"] .snipe-col-inbox,
+  .snipe-3col[data-panel="setup"] .snipe-col-history { display: none; }
+
+  .snipe-3col[data-panel="inbox"] .snipe-col-setup,
+  .snipe-3col[data-panel="inbox"] .snipe-col-history { display: none; }
+
+  .snipe-3col[data-panel="trades"] .snipe-col-setup,
+  .snipe-3col[data-panel="trades"] .snipe-col-inbox { display: none; }
 }
+
+/* Mobile panel switcher tab bar */
+.snipe-mobile-tabs { display: none; }
+@media (max-width: 767px) {
+  .snipe-mobile-tabs {
+    display: flex;
+    gap: 3px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 3px;
+    margin-bottom: 8px;
+  }
+  .snipe-mobile-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px 6px;
+    border-radius: 7px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-3);
+    transition: background 120ms, color 120ms;
+    min-height: 40px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .snipe-mobile-tab.active {
+    background: var(--surface);
+    color: var(--accent);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  }
+}
+
+/* Snipe page — compact terminal base font */
+.snipe-terminal {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.snipe-terminal .section-title { font-size: 11px; }
+/* Inputs must stay >=16px on mobile to prevent iOS auto-zoom */
+@media (max-width: 767px) {
+  .snipe-terminal input,
+  .snipe-terminal select { font-size: 16px !important; }
+}
+
+/* Column expand/collapse button */
+.snipe-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-3);
+  transition: color 120ms, background 120ms;
+}
+.snipe-expand-btn:hover { color: var(--text); background: var(--surface-hover); }
+/* Hide expand buttons on mobile — use the tab switcher instead */
+@media (max-width: 767px) { .snipe-expand-btn { display: none; } }
 
 /* Honor reduced motion */
 @media (prefers-reduced-motion: reduce) {
@@ -1259,5 +1344,33 @@ body { position: relative; overflow-x: hidden; }
   .snipe-notice {
     flex-wrap: wrap;
     align-items: flex-start;
+  }
+
+  /* Snipe page compact — reduce page padding on mobile */
+  .page.page-wide { padding: 10px 12px; }
+
+  /* Remove rail on mobile — already display:none via media, but also collapse the gap */
+  .rail { display: none; }
+
+  /* Prevent pull-to-refresh interfering with panel scrolling */
+  .panel, .section { overscroll-behavior: contain; }
+
+  /* Kill the table min-width on mobile — compact rows don't need it */
+  .table-scroll .table { min-width: unset; }
+
+  /* Better scroll momentum on iOS */
+  [style*="overflowY: auto"], [style*="overflow-y: auto"],
+  .overflow-y-auto, .panel, .section {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Active state feedback for tap */
+  button:active { opacity: 0.75; }
+  a:active      { opacity: 0.75; }
+
+  /* Prevent text selection on interactive elements */
+  .btn, .rail-item, .tab, .snipe-mobile-tab, .snipe-col-setup button {
+    -webkit-user-select: none;
+    user-select: none;
   }
 }

@@ -50,9 +50,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
 const MOBILE_TABS: { href: string; label: string; icon: (props: { size?: number }) => JSX.Element }[] = [
   { href: '/dashboard', label: 'Home',     icon: IconDashboard },
-  { href: '/trade',     label: 'Trade',    icon: IconTrade },
-  { href: '/agents',    label: 'Agents',   icon: IconAgents },
+  { href: '/snipe',     label: 'Snipe',    icon: IconSnipe },
   { href: '/chat',      label: 'Chat',     icon: IconChat },
+  { href: '/portfolio', label: 'Portfolio',icon: IconPortfolio },
   { href: '/settings',  label: 'More',     icon: IconSettings },
 ];
 

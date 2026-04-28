@@ -1,10 +1,39 @@
 'use client';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
+
+/* ── Virtual scroll row heights (px) ── */
+const GROUP_ROW_H = 56;
+const MSG_ROW_H   = 50;
+
+/* ── useVirtual: fixed-height windowed list engine ── */
+function useVirtual(count: number, rowH: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [st, setSt] = useState(0);
+  const [ch, setCh] = useState(500);
+
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    setCh(el.clientHeight);
+    const ro = new ResizeObserver(() => setCh(el.clientHeight));
+    ro.observe(el); return () => ro.disconnect();
+  }, []);
+
+  const OV    = 4;
+  const start = Math.max(0, Math.floor(st / rowH) - OV);
+  const end   = Math.min(count, Math.ceil((st + ch) / rowH) + OV);
+  const total = count * rowH;
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => setSt(e.currentTarget.scrollTop);
+
+  return { ref, start, end, total, onScroll, scrollTop: st };
+}
 import QRCode from 'react-qr-code';
 import { useApi, invalidate, mutate } from '../../lib/useApi';
 import { useRealtime } from '../../lib/useRealtime';
 import { api } from '../../lib/api';
 import { Skeleton, Spinner } from '../../components/ui/Skeleton';
+
+type ColKey = 'setup' | 'inbox' | 'history';
 
 /* ─────────────────────────────────────────────────────────────
    Types
@@ -112,8 +141,11 @@ export default function SnipePage() {
   }, []));
 
   const [banner, setBanner]       = useState<SnipeBannerData | null>(null);
-  const [fireAnim, setFireAnim]   = useState(0); // increment = re-trigger animation
+  const [startAnim, setStartAnim]       = useState(0); // yellow — shot fired
+  const [completeAnim, setCompleteAnim] = useState(0); // green  — tx confirmed
   const [killing, setKilling]     = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<'setup' | 'inbox' | 'trades'>('inbox');
+  const [expandedCol, setExpandedCol] = useState<ColKey | null>(null);
   const bannerKeyRef  = useRef(0);
   const bannerTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoStarted   = useRef(false);
@@ -138,7 +170,14 @@ export default function SnipePage() {
     bannerKeyRef.current += 1;
     setBanner({ status: evt.status, mint: evt.mint, durationMs: evt.durationMs, txHash: evt.txHash, error: evt.error, key: bannerKeyRef.current });
     bannerTimer.current = setTimeout(() => setBanner(null), 3300);
-    if (evt.status !== 'failed') setFireAnim((n) => n + 1);
+    // Yellow burst when shot is fired (broadcast), regardless of outcome
+    if (evt.status !== 'failed') setStartAnim((n) => n + 1);
+  }, []));
+
+  useRealtime('snipe_update', useCallback((evt: any) => {
+    invalidate('/snipe/history?limit=50');
+    // Green burst when tx lands on-chain
+    if (evt.status === 'confirmed') setCompleteAnim((n) => n + 1);
   }, []));
 
   useRealtime('snipe_sold', useCallback(() => {
@@ -167,18 +206,39 @@ export default function SnipePage() {
 
   if (configLoading || tgLoading) return <PageSkeleton />;
 
+  const isColVisible = (k: ColKey) => !expandedCol || expandedCol === k;
+  const mkExpandBtn = (k: ColKey) => (
+    <button
+      className="snipe-expand-btn"
+      title={expandedCol === k ? 'Restore' : 'Expand'}
+      onClick={() => setExpandedCol(expandedCol === k ? null : k)}
+    >
+      {expandedCol === k ? (
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+          <path d="M8 3v3a2 2 0 01-2 2H3m18 0h-3a2 2 0 01-2-2V3m0 18v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
+        </svg>
+      ) : (
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+        </svg>
+      )}
+    </button>
+  );
+
   return (
-    <div className="page page-wide" style={{ paddingTop: 12 }}>
-      {fireAnim > 0 && <SnipeFireAnimation key={fireAnim} />}
+    <div className="page page-wide snipe-terminal" style={{ paddingTop: 10 }}>
+      {startAnim > 0    && <SnipeFireAnimation key={`s${startAnim}`}    variant="start" />}
+      {completeAnim > 0 && <SnipeFireAnimation key={`c${completeAnim}`} variant="complete" />}
       {banner && <SnipeBanner key={banner.key} banner={banner} onDismiss={() => setBanner(null)} />}
 
-      {/* Compact DEX-style header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <IcoSnipe size={16} />
-          <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.02em' }}>Sniper</span>
-          <span className="text-[10px] font-mono" style={{
-            color: 'var(--text-3)', padding: '2px 6px', borderRadius: 4,
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <IcoSnipe size={14} />
+          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.02em' }}>Sniper</span>
+          <span style={{
+            fontSize: 9, fontFamily: 'var(--font-mono)',
+            color: 'var(--text-3)', padding: '1px 5px', borderRadius: 3,
             background: 'var(--surface-2)', border: '1px solid var(--border)',
           }}>SOL / CA</span>
         </div>
@@ -187,26 +247,51 @@ export default function SnipePage() {
       </div>
 
       {/* Kill bar or status notice */}
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 8 }}>
         {isLive
           ? <KillBar onKill={killSession} killing={killing} groups={config?.groupIds.length ?? 0} />
           : <SnipeStatusNotice config={config} tgConnected={!!tgStatus?.connected} />
         }
       </div>
 
-      <div className="snipe-3col">
+      {/* Mobile panel switcher */}
+      <div className="snipe-mobile-tabs">
+        {([
+          { key: 'setup',  label: 'Setup',  badge: null },
+          { key: 'inbox',  label: 'Inbox',  badge: tgStatus?.connected ? null : '!' },
+          { key: 'trades', label: 'Trades', badge: history?.length ? String(history.length) : null },
+        ] as const).map(({ key, label, badge }) => (
+          <button key={key} className={`snipe-mobile-tab${mobilePanel === key ? ' active' : ''}`} onClick={() => setMobilePanel(key)}>
+            <span className="font-mono text-[11px] font-semibold">{label}</span>
+            {badge && (
+              <span style={{
+                minWidth: 14, height: 14, borderRadius: 999, padding: '0 3px',
+                background: badge === '!' ? 'var(--warn)' : 'var(--accent)',
+                color: '#fff', fontSize: 8, fontWeight: 700,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: 3,
+              }}>{badge}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <div
+        className="snipe-3col"
+        data-panel={mobilePanel}
+        style={expandedCol ? { gridTemplateColumns: '1fr', gridTemplateAreas: '"active"' } : undefined}
+      >
         {/* Col 1: setup */}
-        <div className="snipe-col-setup">
-          <TgPanel status={tgStatus} />
+        <div className="snipe-col-setup" style={!isColVisible('setup') ? { display: 'none' } : undefined}>
+          <TgPanel status={tgStatus} headerRight={mkExpandBtn('setup')} />
           <ConfigPanel config={config} wallets={wallets ?? []} />
         </div>
         {/* Col 2: inbox */}
-        <div className="snipe-col-inbox">
-          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} />
+        <div className="snipe-col-inbox" style={!isColVisible('inbox') ? { display: 'none' } : undefined}>
+          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} headerRight={mkExpandBtn('inbox')} />
         </div>
-        {/* Col 3: history — main panel */}
-        <div className="snipe-col-history">
-          <HistoryPanel trades={history ?? []} loading={histLoading} />
+        {/* Col 3: history */}
+        <div className="snipe-col-history" style={!isColVisible('history') ? { display: 'none' } : undefined}>
+          <HistoryPanel trades={history ?? []} loading={histLoading} headerRight={mkExpandBtn('history')} />
         </div>
       </div>
     </div>
@@ -331,11 +416,18 @@ function SnipeBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Snipe fire animation — pure CSS burst, pointer-events:none
-   Mounts fresh on each snipe (key prop forces remount)
+   Snipe fire animations
+   variant="start"    → yellow burst (shot fired / broadcast)
+   variant="complete" → green burst  (tx confirmed on-chain)
+   Mounts fresh on each event — key prop forces remount.
 ───────────────────────────────────────────────────────────── */
-function SnipeFireAnimation() {
-  const RAYS = 8;
+function SnipeFireAnimation({ variant }: { variant: 'start' | 'complete' }) {
+  const isComplete = variant === 'complete';
+  const color      = isComplete ? '#22c55e' : '#fbbf24';
+  const rgba       = isComplete ? 'rgba(34,197,94,' : 'rgba(251,191,36,';
+  const RAYS       = isComplete ? 12 : 8;
+  const RAY_LEN    = isComplete ? 200 : 160;
+
   return (
     <div
       aria-hidden
@@ -348,40 +440,54 @@ function SnipeFireAnimation() {
       {/* Screen tint */}
       <div style={{
         position: 'absolute', inset: 0,
-        background: 'radial-gradient(ellipse at 50% 40%, rgba(251,191,36,0.18) 0%, transparent 70%)',
+        background: `radial-gradient(ellipse at 50% 40%, ${rgba}0.18) 0%, transparent 70%)`,
         animation: 'snipe-tint 700ms ease-out forwards',
       }} />
 
-      {/* Expanding ring */}
+      {/* Primary expanding ring */}
       <div style={{
         position: 'absolute',
         width: 80, height: 80, borderRadius: '50%',
-        border: '2px solid rgba(251,191,36,0.7)',
+        border: `2px solid ${rgba}0.8)`,
         animation: 'snipe-ring 700ms ease-out forwards',
       }} />
+
+      {/* Second ring (complete only — staggered for impact) */}
+      {isComplete && (
+        <div style={{
+          position: 'absolute',
+          width: 80, height: 80, borderRadius: '50%',
+          border: `1.5px solid ${rgba}0.5)`,
+          animation: 'snipe-ring 900ms ease-out forwards',
+          animationDelay: '120ms',
+        }} />
+      )}
 
       {/* Rays */}
       {Array.from({ length: RAYS }).map((_, i) => (
         <div key={i} style={{
           position: 'absolute',
-          width: 160, height: 2,
+          width: RAY_LEN, height: isComplete ? 1.5 : 2,
           left: '50%', top: '50%',
           transformOrigin: 'left center',
           '--ray-rotate': `translateY(-50%) rotate(${i * (360 / RAYS)}deg)`,
           transform: `var(--ray-rotate)`,
-          background: 'linear-gradient(90deg, rgba(251,191,36,0.9) 0%, rgba(251,191,36,0) 100%)',
-          animation: `snipe-ray 650ms ease-out forwards`,
-          animationDelay: `${i * 10}ms`,
+          background: `linear-gradient(90deg, ${rgba}0.95) 0%, ${rgba}0) 100%)`,
+          animation: `snipe-ray ${isComplete ? 800 : 650}ms ease-out forwards`,
+          animationDelay: `${i * (isComplete ? 8 : 10)}ms`,
         } as React.CSSProperties} />
       ))}
 
-      {/* Central bolt */}
+      {/* Central icon */}
       <div style={{
         position: 'relative', zIndex: 1,
-        fontSize: 42, lineHeight: 1,
-        filter: 'drop-shadow(0 0 12px rgba(251,191,36,0.9))',
-        animation: 'snipe-bolt 700ms ease-out forwards',
-      }}>⚡</div>
+        fontSize: isComplete ? 48 : 42, lineHeight: 1,
+        color: color,
+        filter: `drop-shadow(0 0 ${isComplete ? 16 : 12}px ${rgba}0.95))`,
+        animation: `${isComplete ? 'snipe-check' : 'snipe-bolt'} 750ms ease-out forwards`,
+      }}>
+        {isComplete ? '✓' : '⚡'}
+      </div>
     </div>
   );
 }
@@ -548,7 +654,8 @@ type AuthStep =
   | 'phone_code'    // OTP code entry
   | 'phone_2fa';    // 2FA after code verified
 
-function TgPanel({ status }: { status: TgStatus | null }) {
+function TgPanel(props: { status: TgStatus | null; headerRight?: React.ReactNode }) {
+  const { status } = props;
   const connected = status?.connected ?? false;
   const [step, setStep]   = useState<AuthStep>('idle');
   const [qrUrl, setQrUrl] = useState<string | null>(null);
@@ -653,11 +760,11 @@ function TgPanel({ status }: { status: TgStatus | null }) {
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="panel" style={{ padding: 0 }}>
-      {/* Header */}
-      <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
-        <IcoTelegram size={13} />
-        <h2 className="section-title" style={{ margin: 0, flex: 1, fontSize: 12 }}>Telegram</h2>
-        {connected && <span className="chip chip-ok" style={{ fontSize: 9 }}>Live</span>}
+      <div style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <IcoTelegram size={12} />
+        <h2 style={{ margin: 0, flex: 1, fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>Telegram</h2>
+        {connected && <span className="chip chip-ok" style={{ fontSize: 8, padding: '1px 5px' }}>Live</span>}
+        {props.headerRight}
       </div>
 
       <div style={{ padding: 12 }}>
@@ -1158,7 +1265,7 @@ function highlightCAs(text: string): React.ReactNode[] {
   return parts;
 }
 
-function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | null; tgConnected: boolean; session: { active: boolean; balanceLamports?: number } }) {
+function TgInboxPanel({ config, tgConnected, session, headerRight }: { config: SnipeConfig | null; tgConnected: boolean; session: { active: boolean; balanceLamports?: number }; headerRight?: React.ReactNode }) {
   const solBalance = session.balanceLamports !== undefined ? session.balanceLamports / 1e9 : null;
   const snipeWillRun = config?.enabled && session.active && tgConnected && (solBalance === null || solBalance >= 0.005);
   const snipeWarning = config?.enabled && tgConnected
@@ -1292,18 +1399,17 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
   return (
     <div className="panel" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       {/* Panel header */}
-      <div className="flex items-center justify-between" style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-        <div className="flex items-center gap-2">
-          <IcoTelegram size={14} />
-          <span className="section-title">Telegram Inbox</span>
-          {tgConnected && <span className="live-dot" style={{ marginLeft: 2 }} />}
-          {snipeWillRun && <span className="chip chip-ok" style={{ fontSize: 10 }}>● Sniping</span>}
-        </div>
+      <div style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <IcoTelegram size={12} />
+        <span style={{ fontSize: 11, fontWeight: 600, flex: 1, color: 'var(--text)' }}>Inbox</span>
+        {tgConnected && <span className="live-dot" />}
+        {snipeWillRun && <span className="chip chip-ok" style={{ fontSize: 8, padding: '1px 5px' }}>Sniping</span>}
         {groups.length > 0 && (
-          <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-            {groups.length} groups · {localGroupIds.length} watching
+          <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
+            {localGroupIds.length}/{groups.length}
           </span>
         )}
+        {headerRight}
       </div>
 
       {/* No-session warning — snipe is on but wallet key not loaded */}
@@ -1341,79 +1447,16 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
               />
             </div>
 
-            {/* Group rows */}
-            <div style={{ flex: 1, overflowY: 'auto' }}>
-              {groupsLoading ? (
-                <div className="space-y-1 p-2">
-                  {[...Array(6)].map((_, i) => <Skeleton key={i} h={52} rounded="md" />)}
-                </div>
-              ) : filtered.length === 0 ? (
-                <div style={{ padding: '32px 16px', textAlign: 'center' }}>
-                  <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>{search ? 'No match' : 'No groups found'}</p>
-                </div>
-              ) : filtered.map((g) => {
-                const isSelected = selected === g.id;
-                const watching   = isWatching(g.id);
-                const unreadCnt  = unread.get(g.id) ?? 0;
-                const color      = groupInitialColor(g.id);
-                return (
-                  <button
-                    key={g.id}
-                    onClick={() => setSelected(g.id)}
-                    style={{
-                      width: '100%', display: 'flex', alignItems: 'center', gap: 9,
-                      padding: '8px 10px', textAlign: 'left', cursor: 'pointer',
-                      background: isSelected
-                        ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
-                        : 'transparent',
-                      borderLeft: isSelected ? `2px solid var(--accent)` : '2px solid transparent',
-                      borderBottom: '1px solid var(--border)',
-                      transition: 'background 120ms',
-                    }}
-                  >
-                    {/* Avatar */}
-                    <div style={{
-                      width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
-                      background: `color-mix(in srgb, ${color} 20%, var(--surface-2))`,
-                      border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 14, fontWeight: 600, color,
-                    }}>
-                      {g.title[0]?.toUpperCase() ?? '?'}
-                    </div>
-
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span className="text-[12px] font-semibold truncate" style={{ flex: 1, color: isSelected ? 'var(--accent)' : 'var(--text)' }}>
-                          {g.title}
-                        </span>
-                        {g.lastMessage && (
-                          <span className="text-[10px] font-mono" style={{ color: 'var(--text-3)', flexShrink: 0 }}>
-                            {relativeTime(g.lastMessage.ts)}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                        {watching && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ok)', flexShrink: 0 }} />}
-                        <span className="text-[11px] truncate" style={{ color: 'var(--text-3)', flex: 1 }}>
-                          {g.lastMessage?.text || (g.isChannel ? 'Channel' : 'Group')}
-                        </span>
-                        {unreadCnt > 0 && (
-                          <span style={{
-                            minWidth: 18, height: 18, borderRadius: 999, padding: '0 4px',
-                            background: 'var(--accent)', color: '#fff', fontSize: 10,
-                            fontFamily: 'var(--font-mono)', display: 'flex',
-                            alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                          }}>
-                            {unreadCnt > 99 ? '99+' : unreadCnt}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            {/* Group rows — virtual scroll, fixed GROUP_ROW_H per item */}
+            <GroupVirtualList
+              items={filtered}
+              loading={groupsLoading}
+              search={search}
+              selected={selected}
+              unread={unread}
+              localGroupIds={localGroupIds}
+              onSelect={setSelected}
+            />
           </div>
 
           {/* ── Right: chat view ── */}
@@ -1562,58 +1605,189 @@ function ChatHeader({ group, watching, override, onToggleTrack, onSavePattern }:
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Message list — auto-scroll, CA highlighting, live timestamps
-───────────────────────────────────────────────────────────── */
+   GroupVirtualList — fixed GROUP_ROW_H per item
+─────────────────────────────────────────────────────────────── */
+function GroupVirtualList({ items, loading, search, selected, unread, localGroupIds, onSelect }: {
+  items: TgGroup[];
+  loading: boolean;
+  search: string;
+  selected: string | null;
+  unread: Map<string, number>;
+  localGroupIds: string[];
+  onSelect: (id: string) => void;
+}) {
+  const virt = useVirtual(items.length, GROUP_ROW_H);
+
+  if (loading) {
+    return (
+      <div style={{ flex: 1, padding: 8, overflow: 'hidden' }}>
+        <div className="space-y-1">
+          {[...Array(6)].map((_, i) => <Skeleton key={i} h={GROUP_ROW_H - 2} rounded="md" />)}
+        </div>
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>{search ? 'No match' : 'No groups found'}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={virt.ref}
+      onScroll={virt.onScroll}
+      style={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain' }}
+    >
+      <div style={{ height: virt.total, position: 'relative' }}>
+        {items.slice(virt.start, virt.end).map((g, i) => {
+          const idx        = virt.start + i;
+          const isSelected = selected === g.id;
+          const watching   = localGroupIds.includes(g.id);
+          const unreadCnt  = unread.get(g.id) ?? 0;
+          const color      = groupInitialColor(g.id);
+          return (
+            <button
+              key={g.id}
+              onClick={() => onSelect(g.id)}
+              style={{
+                position: 'absolute', top: idx * GROUP_ROW_H, left: 0, right: 0,
+                height: GROUP_ROW_H,
+                display: 'flex', alignItems: 'center', gap: 9,
+                padding: '0 10px', textAlign: 'left', cursor: 'pointer',
+                background: isSelected ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent',
+                borderLeft: isSelected ? '2px solid var(--accent)' : '2px solid transparent',
+                borderBottom: '1px solid var(--border)',
+                transition: 'background 120ms',
+              }}
+            >
+              {/* Avatar */}
+              <div style={{
+                width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                background: `color-mix(in srgb, ${color} 20%, var(--surface-2))`,
+                border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 14, fontWeight: 600, color,
+              }}>
+                {g.title[0]?.toUpperCase() ?? '?'}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span className="text-[12px] font-semibold truncate" style={{ flex: 1, color: isSelected ? 'var(--accent)' : 'var(--text)' }}>
+                    {g.title}
+                  </span>
+                  {g.lastMessage && (
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--text-3)', flexShrink: 0 }}>
+                      {relativeTime(g.lastMessage.ts)}
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                  {watching && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ok)', flexShrink: 0 }} />}
+                  <span className="text-[11px] truncate" style={{ color: 'var(--text-3)', flex: 1 }}>
+                    {g.lastMessage?.text || (g.isChannel ? 'Channel' : 'Group')}
+                  </span>
+                  {unreadCnt > 0 && (
+                    <span style={{
+                      minWidth: 18, height: 18, borderRadius: 999, padding: '0 4px',
+                      background: 'var(--accent)', color: '#fff', fontSize: 10,
+                      fontFamily: 'var(--font-mono)', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      {unreadCnt > 99 ? '99+' : unreadCnt}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Message list — virtual scroll, fixed MSG_ROW_H, auto-scroll,
+   CA highlighting, time separators
+─────────────────────────────────────────────────────────────── */
+type MsgItem =
+  | { kind: 'sep';  key: string; ts: number }
+  | { kind: 'msg';  key: string; msg: TgMessage; showSender: boolean };
+
 function MessageList({ messages, loading, groupId }: { messages: TgMessage[]; loading: boolean; groupId: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [newCount, setNewCount] = useState(0);
   const prevLenRef = useRef(messages.length);
 
-  // Track new messages when not at bottom
+  // Flatten messages + time-separators into a single fixed-height item list
+  const items = useMemo<MsgItem[]>(() => {
+    const out: MsgItem[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const msg  = messages[i];
+      const prev = messages[i - 1];
+      const gap  = !prev || msg.ts - prev.ts > 5 * 60_000;
+      if (gap) out.push({ kind: 'sep', key: `sep-${msg.ts}-${i}`, ts: msg.ts });
+      const showSender = !!msg.senderName && (!prev || prev.fromId !== msg.fromId || gap);
+      out.push({ kind: 'msg', key: `msg-${msg.id}`, msg, showSender });
+    }
+    return out;
+  }, [messages]);
+
+  const virt = useVirtual(items.length, MSG_ROW_H);
+
+  // Track new unread when not at bottom
   useEffect(() => {
     const delta = messages.length - prevLenRef.current;
     prevLenRef.current = messages.length;
     if (delta > 0 && !atBottom) setNewCount((n) => n + delta);
   }, [messages.length, atBottom]);
 
-  // Scroll to bottom on new messages if at bottom
+  // Auto-scroll to bottom when new messages arrive and already at bottom
   useEffect(() => {
-    const el = containerRef.current;
+    const el = virt.ref.current;
     if (!el || !atBottom) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages, atBottom]);
+    el.scrollTop = items.length * MSG_ROW_H;
+  }, [items.length, atBottom]);
 
-  // Reset scroll on group change
+  // Reset scroll position on group change
   useEffect(() => {
-    const el = containerRef.current;
-    if (el) { el.scrollTop = el.scrollHeight; setAtBottom(true); setNewCount(0); prevLenRef.current = messages.length; }
+    const el = virt.ref.current;
+    if (el) {
+      el.scrollTop = items.length * MSG_ROW_H;
+      setAtBottom(true);
+      setNewCount(0);
+      prevLenRef.current = messages.length;
+    }
   }, [groupId]);
 
-  const handleScroll = () => {
-    const el = containerRef.current;
-    if (!el) return;
-    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    virt.onScroll(e);
+    const el = e.currentTarget;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < MSG_ROW_H + 10;
     setAtBottom(isAtBottom);
     if (isAtBottom) setNewCount(0);
   };
 
   const scrollToBottom = () => {
-    const el = containerRef.current;
-    if (el) { el.scrollTop = el.scrollHeight; setAtBottom(true); setNewCount(0); }
+    const el = virt.ref.current;
+    if (el) { el.scrollTop = items.length * MSG_ROW_H; setAtBottom(true); setNewCount(0); }
   };
 
   if (loading) {
     return (
       <div style={{ flex: 1, padding: 14, overflow: 'hidden' }}>
-        <div className="space-y-3">
-          {[...Array(5)].map((_, i) => <Skeleton key={i} h={i % 2 === 0 ? 40 : 28} rounded="md" />)}
+        <div className="space-y-2">
+          {[...Array(5)].map((_, i) => <Skeleton key={i} h={MSG_ROW_H - 6} rounded="md" />)}
         </div>
       </div>
     );
   }
 
-  if (messages.length === 0) {
+  if (items.length === 0) {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>No messages yet — new ones will appear here live.</p>
@@ -1624,68 +1798,72 @@ function MessageList({ messages, loading, groupId }: { messages: TgMessage[]; lo
   return (
     <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div
-        ref={containerRef}
+        ref={virt.ref}
         onScroll={handleScroll}
-        style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
+        style={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain' }}
       >
-        {messages.map((msg, i) => {
-          const prev = messages[i - 1];
-          const showTimeSep = !prev || msg.ts - prev.ts > 5 * 60_000;
-          const parts = highlightCAs(msg.text);
-          const hasCA = parts.some((p) => typeof p !== 'string');
-          const timeStr = new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        <div style={{ height: virt.total, position: 'relative' }}>
+          {items.slice(virt.start, virt.end).map((item, i) => {
+            const idx = virt.start + i;
+            const top = idx * MSG_ROW_H;
 
-          const showSender = msg.senderName && (!prev || prev.fromId !== msg.fromId || showTimeSep);
-
-          return (
-            <div key={msg.id} className="fade-in" style={{ paddingBottom: 1 }}>
-              {/* Time separator — shown when >5min gap between messages */}
-              {showTimeSep && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px 4px' }}>
+            if (item.kind === 'sep') {
+              const timeStr = new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              const isToday = new Date(item.ts).toDateString() === new Date().toDateString();
+              return (
+                <div key={item.key} style={{
+                  position: 'absolute', top, left: 0, right: 0, height: MSG_ROW_H,
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '0 14px',
+                }}>
                   <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-                  <span className="text-[10px] font-mono" style={{ color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                    {new Date(msg.ts).toLocaleDateString([], { month: 'short', day: 'numeric' }) !== new Date(Date.now()).toLocaleDateString([], { month: 'short', day: 'numeric' })
-                      ? new Date(msg.ts).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                      : timeStr}
+                  <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                    {isToday
+                      ? timeStr
+                      : new Date(item.ts).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                   </span>
                   <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
                 </div>
-              )}
+              );
+            }
 
-              {/* Message row */}
-              <div
-                style={{
-                  display: 'flex', alignItems: 'flex-start', gap: 0,
-                  padding: '3px 14px',
-                  background: hasCA ? 'color-mix(in srgb, var(--accent) 5%, transparent)' : 'transparent',
-                  borderLeft: hasCA ? '2px solid color-mix(in srgb, var(--accent) 35%, transparent)' : '2px solid transparent',
-                  transition: 'background 120ms',
-                }}
-              >
+            const { msg, showSender } = item;
+            const parts   = highlightCAs(msg.text);
+            const hasCA   = parts.some((p) => typeof p !== 'string');
+            const timeStr = new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            return (
+              <div key={item.key} style={{
+                position: 'absolute', top, left: 0, right: 0, height: MSG_ROW_H,
+                display: 'flex', alignItems: 'flex-start',
+                padding: '5px 14px 0',
+                background: hasCA ? 'color-mix(in srgb, var(--accent) 5%, transparent)' : 'transparent',
+                borderLeft: hasCA ? '2px solid color-mix(in srgb, var(--accent) 35%, transparent)' : '2px solid transparent',
+                overflow: 'hidden',
+              }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   {showSender && (
-                    <div className="text-[11px] font-medium" style={{ color: 'var(--accent)', marginBottom: 1 }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--accent)', marginBottom: 1, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {msg.senderName}
                     </div>
                   )}
-                  <div className="text-[13px]" style={{ color: 'var(--text)', lineHeight: 1.55, wordBreak: 'break-word' }}>
+                  <div style={{
+                    fontSize: 12, color: 'var(--text)', lineHeight: 1.45, wordBreak: 'break-word',
+                    display: '-webkit-box', WebkitLineClamp: showSender ? 2 : 3,
+                    WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                  }}>
                     {parts}
                   </div>
                 </div>
-                {/* Per-message timestamp (right-aligned, always visible) */}
-                <span
-                  className="font-mono"
-                  style={{ fontSize: 10, color: 'var(--text-3)', flexShrink: 0, marginLeft: 8, marginTop: 3, whiteSpace: 'nowrap' }}
-                >
+                <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-3)', flexShrink: 0, marginLeft: 8, marginTop: 1, whiteSpace: 'nowrap' }}>
                   {timeStr}
                 </span>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
-      {/* Jump-to-bottom button when new messages arrive off screen */}
+      {/* Jump-to-bottom button */}
       {!atBottom && newCount > 0 && (
         <button
           onClick={scrollToBottom}
@@ -1693,7 +1871,7 @@ function MessageList({ messages, loading, groupId }: { messages: TgMessage[]; lo
             position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)',
             background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 999,
             padding: '4px 12px', fontSize: 11, fontFamily: 'var(--font-mono)', cursor: 'pointer',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', gap: 5,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', gap: 5, zIndex: 2,
           }}
         >
           ↓ {newCount} new
@@ -1702,6 +1880,7 @@ function MessageList({ messages, loading, groupId }: { messages: TgMessage[]; lo
     </div>
   );
 }
+
 
 /* ─────────────────────────────────────────────────────────────
    Trigger row
@@ -1769,7 +1948,7 @@ function formatSnipeTime(iso: string): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + timeStr;
 }
 
-function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: boolean }) {
+function HistoryPanel({ trades, loading, headerRight }: { trades: SnipeTrade[]; loading: boolean; headerRight?: React.ReactNode }) {
   const [sellingId, setSellingId] = useState<string | null>(null);
   const [selected, setSelected]  = useState<SnipeTrade | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -1806,25 +1985,16 @@ function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: bool
   return (
     <div className="panel" style={{ padding: 0, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       {/* Header with live stats */}
-      <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span className="section-title" style={{ flex: 1 }}>Trades</span>
+      <div style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, flex: 1, color: 'var(--text)' }}>Trades</span>
         {trades.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {confirmedTotal > 0 && (
-              <span className="font-mono text-[10px] font-bold" style={{ color: 'var(--ok)' }}>
-                {confirmedTotal}✓
-              </span>
-            )}
-            {failedTotal > 0 && (
-              <span className="font-mono text-[10px] font-bold" style={{ color: 'var(--bad)' }}>
-                {failedTotal}✗
-              </span>
-            )}
-            <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
-              {trades.length} total · {groups.length} src
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            {confirmedTotal > 0 && <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--ok)' }}>{confirmedTotal}✓</span>}
+            {failedTotal   > 0 && <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--bad)' }}>{failedTotal}✗</span>}
+            <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>{trades.length}tx</span>
           </div>
         )}
+        {headerRight}
       </div>
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
@@ -1979,110 +2149,189 @@ function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: bool
           )}
         </div>
 
-        {selected && (
-          <TradeDetail trade={selected} onClose={() => setSelected(null)} />
-        )}
+        {selected && typeof document !== 'undefined' &&
+          createPortal(
+            <TradeModal trade={selected} onClose={() => setSelected(null)} />,
+            document.body
+          )
+        }
       </div>
     </div>
   );
 }
 
-function TradeDetail({ trade, onClose }: { trade: SnipeTrade; onClose: () => void }) {
-  const ok = trade.status !== 'failed';
-  const sol = (Number(trade.amountRaw) / 1e9).toFixed(6);
-  const outSol = trade.outAmount ? (Number(trade.outAmount) / 1e9).toFixed(6) : null;
-
-  const DetailRow = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
-      <span className="text-[11px]" style={{ color: 'var(--text-3)', width: 88, flexShrink: 0, paddingTop: 1 }}>{label}</span>
-      <span className="text-[12px] font-mono" style={{ color: 'var(--text)', wordBreak: 'break-all', flex: 1 }}>{children}</span>
+/* ─────────────────────────────────────────────────────────────
+   Trade detail modal (portal — no layout distortion)
+───────────────────────────────────────────────────────────── */
+function StatCell({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 7, padding: '8px 10px' }}>
+      <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', fontWeight: 600, color: color ?? 'var(--text)' }}>{value}</div>
     </div>
   );
+}
+
+function TradeModal({ trade, onClose }: { trade: SnipeTrade; onClose: () => void }) {
+  const sol    = (Number(trade.amountRaw) / 1e9).toFixed(4);
+  const outSol = trade.outAmount ? (Number(trade.outAmount) / 1e9).toFixed(4) : null;
+  const statusColor =
+    trade.status === 'confirmed' ? 'var(--ok)' :
+    trade.status === 'failed'    ? 'var(--bad)' : 'var(--warn)';
+  const statusLabel =
+    trade.status === 'confirmed' ? 'FILLED' :
+    trade.status === 'failed'    ? 'FAILED' :
+    trade.status === 'broadcast' ? 'PENDING' : trade.status.toUpperCase();
+  const attempts = trade.attempts ?? 1;
+
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', fn);
+    return () => document.removeEventListener('keydown', fn);
+  }, [onClose]);
 
   return (
-    <div className="trade-detail-drawer fade-in" style={{
-      width: 300, flexShrink: 0, borderLeft: '1px solid var(--border)',
-      background: 'var(--surface-2)', padding: '14px', display: 'flex', flexDirection: 'column', gap: 0,
-    }}>
-      {/* Header */}
-      <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
-        <span className="text-[12px] font-semibold" style={{ color: 'var(--text-2)' }}>Trade detail</span>
-        <button className="btn btn-ghost btn-sm" style={{ height: 22, padding: '0 6px', fontSize: 13 }} onClick={onClose}>×</button>
-      </div>
-
-      {/* Status badge */}
-      <div style={{ marginBottom: 10 }}>
-        <span className={`chip ${ok ? 'chip-ok' : 'chip-bad'}`} style={{ fontSize: 11 }}>{trade.status.toUpperCase()}</span>
-      </div>
-
-      <DetailRow label="Token">
-        {trade.mint}
-      </DetailRow>
-      <DetailRow label="Chain">{trade.chain}</DetailRow>
-      <DetailRow label="Buy amount">{sol} SOL</DetailRow>
-      {outSol && Number(outSol) > 0 && (
-        <DetailRow label="Received">{outSol} (raw)</DetailRow>
-      )}
-      <DetailRow label="Group">{trade.groupId}</DetailRow>
-      <DetailRow label="Time">
-        {formatSnipeTime(trade.createdAt)} · {new Date(trade.createdAt).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })} {new Date(trade.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-      </DetailRow>
-
-      {trade.txHash ? (
-        <DetailRow label="Tx hash">
-          <a href={`https://solscan.io/tx/${trade.txHash}`} target="_blank" rel="noopener"
-            style={{ color: 'var(--accent)' }}>
-            {trade.txHash.slice(0, 16)}…{trade.txHash.slice(-8)}
-          </a>
-        </DetailRow>
-      ) : (
-        <DetailRow label="Tx hash"><span style={{ color: 'var(--text-3)' }}>Not broadcast</span></DetailRow>
-      )}
-
-      {trade.errorMsg && (
-        <div style={{ marginTop: 8 }}>
-          <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--bad)', letterSpacing: '0.08em' }}>FAILURE REASON</div>
-          <div style={{
-            background: 'color-mix(in srgb, var(--bad) 8%, var(--surface))',
-            border: '1px solid color-mix(in srgb, var(--bad) 25%, transparent)',
-            borderRadius: 6, padding: '8px 10px',
-            fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--bad)',
-            lineHeight: 1.5, wordBreak: 'break-word',
-          }}>
-            {trade.errorMsg}
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9000,
+        background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '16px',
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border-2)',
+          borderRadius: 14,
+          width: '100%', maxWidth: 460,
+          maxHeight: '88vh', overflowY: 'auto',
+          boxShadow: '0 32px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.04)',
+          animation: 'qwai-fade-in 150ms ease-out both',
+          overscrollBehavior: 'contain',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 14px', borderBottom: '1px solid var(--border)',
+          position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1,
+          borderRadius: '14px 14px 0 0',
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor, flexShrink: 0, boxShadow: `0 0 6px ${statusColor}` }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: statusColor, letterSpacing: '0.04em' }}>{statusLabel}</div>
+            <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-3)', marginTop: 1 }}>
+              {new Date(trade.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </div>
           </div>
+          <button
+            onClick={onClose}
+            style={{
+              width: 26, height: 26, borderRadius: 7, flexShrink: 0,
+              background: 'var(--surface-2)', border: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', fontSize: 16, color: 'var(--text-2)', lineHeight: 1,
+            }}
+          >×</button>
         </div>
-      )}
 
-      {trade.sourceMsg && (
-        <div style={{ marginTop: 8 }}>
-          <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>SOURCE MESSAGE</div>
+        <div style={{ padding: '14px 14px 18px' }}>
+          {/* Token CA */}
           <div style={{
-            background: 'var(--surface)', border: '1px solid var(--border)',
-            borderRadius: 6, padding: '8px 10px',
-            fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5,
-            maxHeight: 80, overflowY: 'auto',
+            background: 'var(--surface-2)', border: '1px solid var(--border)',
+            borderRadius: 8, padding: '9px 12px', marginBottom: 12,
+            display: 'flex', alignItems: 'flex-start', gap: 8,
           }}>
-            {trade.sourceMsg}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.1em', marginBottom: 4, textTransform: 'uppercase' }}>Token</div>
+              <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text)', wordBreak: 'break-all', lineHeight: 1.5 }}>{trade.mint}</div>
+            </div>
+            <a
+              href={`https://solscan.io/token/${trade.mint}`}
+              target="_blank" rel="noopener"
+              style={{ fontSize: 10, color: 'var(--accent)', fontFamily: 'var(--font-mono)', flexShrink: 0, marginTop: 18 }}
+              onClick={(e) => e.stopPropagation()}
+            >view ↗</a>
           </div>
-        </div>
-      )}
 
-      {trade.sellStatus && (
-        <div style={{ marginTop: 8 }}>
-          <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>SELL</div>
-          <div className="flex items-center gap-2">
-            <span className="chip" style={{ fontSize: 10 }}>{trade.sellStatus}</span>
-            {trade.sellReason && <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{trade.sellReason}</span>}
+          {/* Stats grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+            <StatCell label="Buy size" value={`${sol} SOL`} />
+            {outSol && Number(outSol) > 0
+              ? <StatCell label="Received" value={outSol} />
+              : <StatCell label="Chain" value={trade.chain} />
+            }
+            <StatCell label="Retries" value={`×${attempts}`} color={attempts > 1 ? 'var(--warn)' : undefined} />
+            <StatCell label="Source" value={trade.groupId.length > 14 ? `${trade.groupId.slice(0, 10)}…` : trade.groupId} />
           </div>
-          {trade.sellTxHash && (
-            <a href={`https://solscan.io/tx/${trade.sellTxHash}`} target="_blank" rel="noopener"
-              className="font-mono text-[11px] block mt-1" style={{ color: 'var(--accent)' }}>
-              {trade.sellTxHash.slice(0, 16)}…
-            </a>
+
+          {/* TX hash */}
+          {trade.txHash && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5 }}>Transaction</div>
+              <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 7, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text)', flex: 1, wordBreak: 'break-all' }}>{trade.txHash}</span>
+                <a href={`https://solscan.io/tx/${trade.txHash}`} target="_blank" rel="noopener"
+                  style={{ fontSize: 10, color: 'var(--accent)', flexShrink: 0, fontFamily: 'var(--font-mono)' }}
+                  onClick={(e) => e.stopPropagation()}>
+                  ↗
+                </a>
+              </div>
+            </div>
+          )}
+
+          {/* Failure reason */}
+          {trade.errorMsg && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--bad)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5 }}>Failure reason</div>
+              <div style={{
+                background: 'color-mix(in srgb, var(--bad) 8%, var(--surface-2))',
+                border: '1px solid color-mix(in srgb, var(--bad) 22%, transparent)',
+                borderRadius: 7, padding: '8px 10px',
+                fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--bad)', lineHeight: 1.5, wordBreak: 'break-word',
+              }}>
+                {trade.errorMsg}
+              </div>
+            </div>
+          )}
+
+          {/* Source message */}
+          {trade.sourceMsg && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5 }}>Source message</div>
+              <div style={{
+                background: 'var(--surface-2)', border: '1px solid var(--border)',
+                borderRadius: 7, padding: '8px 10px',
+                fontSize: 11, color: 'var(--text-2)', lineHeight: 1.6,
+                maxHeight: 90, overflowY: 'auto',
+              }}>
+                {trade.sourceMsg}
+              </div>
+            </div>
+          )}
+
+          {/* Sell info */}
+          {trade.sellStatus && (
+            <div>
+              <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5 }}>Exit</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span className="chip" style={{ fontSize: 10 }}>{trade.sellStatus}</span>
+                {trade.sellReason && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{trade.sellReason}</span>}
+              </div>
+              {trade.sellTxHash && (
+                <a href={`https://solscan.io/tx/${trade.sellTxHash}`} target="_blank" rel="noopener"
+                  style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--accent)', display: 'block', marginTop: 5 }}
+                  onClick={(e) => e.stopPropagation()}>
+                  {trade.sellTxHash.slice(0, 18)}… ↗
+                </a>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

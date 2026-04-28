@@ -16,16 +16,29 @@ const display = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: 'QWAI — Your Personal AI Trading Agent',
+  title: 'QWAI — AI Trading Agent',
   description:
     'QWAI learns your trading style, executes on Solana and EVM 24/7, monitors positions while you sleep, and chats naturally on web and Telegram.',
   applicationName: 'QWAI',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'QWAI',
+  },
+  icons: {
+    icon: '/icon.svg',
+    apple: '/icon.svg',
+  },
 };
 
 export const viewport: Viewport = {
   themeColor: '#0a0d14',
   width: 'device-width',
   initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: 'cover',
 };
 
 // Prevent theme flash on first paint.
@@ -49,6 +62,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: noFlashScript }} />
+        <script dangerouslySetInnerHTML={{ __html: `
+if('serviceWorker' in navigator){
+  window.addEventListener('load',function(){
+    navigator.serviceWorker.register('/sw.js').catch(function(){});
+  });
+}` }} />
       </head>
       <body suppressHydrationWarning>
         <ErrorSink />
