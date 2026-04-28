@@ -1473,6 +1473,22 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 /* ─────────────────────────────────────────────────────────────
    History panel + trade detail drawer
 ───────────────────────────────────────────────────────────── */
+
+function formatSnipeTime(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfYesterday = new Date(startOfToday.getTime() - 86_400_000);
+  const daysAgo = Math.floor((startOfToday.getTime() - d.getTime()) / 86_400_000);
+
+  if (d >= startOfToday) return `Today ${timeStr}`;
+  if (d >= startOfYesterday) return `Yesterday ${timeStr}`;
+  if (daysAgo <= 6) return `${daysAgo}d ago ${timeStr}`;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + timeStr;
+}
+
 function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: boolean }) {
   const [sellingId, setSellingId] = useState<string | null>(null);
   const [selected, setSelected]  = useState<SnipeTrade | null>(null);
@@ -1545,8 +1561,8 @@ function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: bool
                             ? <span className="chip" style={{ fontSize: 10 }}>{t.sellStatus}</span>
                             : <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>—</span>}
                         </td>
-                        <td className="num font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
-                          {new Date(t.createdAt).toLocaleTimeString()}
+                        <td className="num text-[11px]" style={{ color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                          {formatSnipeTime(t.createdAt)}
                         </td>
                         <td onClick={(e) => e.stopPropagation()}>
                           {canSell && (
@@ -1611,7 +1627,9 @@ function TradeDetail({ trade, onClose }: { trade: SnipeTrade; onClose: () => voi
         <DetailRow label="Received">{outSol} (raw)</DetailRow>
       )}
       <DetailRow label="Group">{trade.groupId}</DetailRow>
-      <DetailRow label="Time">{new Date(trade.createdAt).toLocaleString()}</DetailRow>
+      <DetailRow label="Time">
+        {formatSnipeTime(trade.createdAt)} · {new Date(trade.createdAt).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })} {new Date(trade.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+      </DetailRow>
 
       {trade.txHash ? (
         <DetailRow label="Tx hash">

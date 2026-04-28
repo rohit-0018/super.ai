@@ -10,6 +10,7 @@ interface WalletBalance {
   native: number;
   symbol: string;
   usd: number;
+  tokens?: Array<{ mint: string; symbol: string; amount: number; usd: number }>;
   error?: string;
 }
 
@@ -155,18 +156,7 @@ export default function Wallets() {
                   <div className="text-right">
                     {(() => {
                       const bal = balMap.get(w.id);
-                      if (bal && !bal.error) {
-                        return (
-                          <div className="fade-in">
-                            <div className="font-mono text-[15px] font-semibold">
-                              {bal.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {bal.symbol}
-                            </div>
-                            <div className="font-mono text-[11px] text-[color:var(--text-3)]">
-                              ${bal.usd.toFixed(2)}
-                            </div>
-                          </div>
-                        );
-                      }
+                      // Still fetching initial load
                       if (balLoading && !balances) {
                         return (
                           <div className="space-y-1.5">
@@ -175,13 +165,40 @@ export default function Wallets() {
                           </div>
                         );
                       }
-                      if (bal?.error) {
-                        return <div className="text-[11px] text-[color:var(--text-3)]">Balance unavailable</div>;
+                      // RPC error or wallet not in response
+                      if (!bal || bal.error) {
+                        return (
+                          <div className="fade-in">
+                            <div className="text-[11px] font-medium" style={{ color: 'var(--bad)' }}>
+                              Balance fetch failed
+                            </div>
+                            <button
+                              onClick={() => invalidate('/wallets/balances')}
+                              className="btn btn-ghost btn-sm mt-0.5"
+                              style={{ fontSize: 10, height: 20, padding: '0 6px' }}
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        );
                       }
+                      // Success — show native + any SPL tokens
                       return (
-                        <div className="space-y-1.5">
-                          <Skeleton w={110} h={16} />
-                          <Skeleton w={70} h={10} />
+                        <div className="fade-in">
+                          <div className="font-mono text-[15px] font-semibold">
+                            {bal.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {bal.symbol}
+                          </div>
+                          <div className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
+                            ${bal.usd.toFixed(2)}
+                          </div>
+                          {bal.tokens && bal.tokens.map((t) => (
+                            <div key={t.mint} className="font-mono text-[11px] mt-0.5" style={{ color: 'var(--text-2)' }}>
+                              {t.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })} {t.symbol}
+                              {t.usd > 0 && (
+                                <span style={{ color: 'var(--text-3)' }}> · ${t.usd.toFixed(2)}</span>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       );
                     })()}
@@ -194,7 +211,11 @@ export default function Wallets() {
                     <FaucetButton walletId={w.id} />
                   )}
                   <button
-                    onClick={() => setDepositId(depositId === w.id ? null : w.id)}
+                    onClick={() => {
+                      const closing = depositId === w.id;
+                      setDepositId(closing ? null : w.id);
+                      if (closing) invalidate('/wallets/balances');
+                    }}
                     className="btn btn-sm"
                   >
                     Deposit

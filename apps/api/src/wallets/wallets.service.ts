@@ -68,48 +68,174 @@ export class WalletsService {
   private readonly BAL_CACHE_TTL = 30_000; // 30 seconds
   private solConn: any = null;
   private evmProvider: any = null;
+  private readonly logger = new Logger(WalletsService.name);
 
-  /** Fetch all wallet balances — cached + parallel + 5s timeout per wallet. */
+  // Well-known SPL tokens with stable prices — mint address → metadata
+  private readonly SPL_KNOWN: Record<string, { symbol: string; price: number }> = {
+    EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: { symbol: 'USDC', price: 1 },
+    Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: { symbol: 'USDT', price: 1 },
+    bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1: { symbol: 'bSOL', price: 0 },
+    mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So: { symbol: 'mSOL', price: 0 },
+  };
+
+  private readonly SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+
+  /** Probes RPC URLs once, caches the first working connection. */
+  private async getSolanaConnection(): Promise<any> {
+    if (this.solConn) return this.solConn;
+    const { Connection } = await import('@solana/web3.js');
+    const urls = [
+      getSolanaRpcUrl(),
+      ...(process.env.SOLANA_RPC_FALLBACK_URLS ?? '').split(',').map((u) => u.trim()).filter(Boolean),
+    ].filter((u, i, a) => a.indexOf(u) === i);
+
+    for (const url of urls) {
+      try {
+        const conn = new Connection(url, 'confirmed');
+        await conn.getSlot();
+        this.solConn = conn;
+        return conn;
+      } catch (err) {
+        this.logger.warn(`Solana RPC ${url} unreachable: ${(err as any)?.message}`);
+      }
+    }
+    throw new Error('All Solana RPC endpoints failed');
+  }
+
+  /** Fetches balances for all user wallets.
+   *  Solana: one batched getMultipleAccountsInfo call + parallel token account fetches.
+   *  EVM: parallel individual calls (no on-chain batching without a multicall contract).
+   */
   async getAllBalances(userId: string) {
     const rows = await this.prisma.wallet.findMany({
       where: { userId },
       select: { id: true, chain: true, address: true },
     });
 
-    const results = await Promise.all(
-      rows.map(async (w) => {
-        // Check cache first
-        const cached = this.balanceCache.get(w.id);
-        if (cached && Date.now() - cached.ts < this.BAL_CACHE_TTL) {
-          return cached.bal;
-        }
-        try {
-          const bal = await this.withTimeout(
-            this.fetchOnChainBalance(w.chain as 'SOLANA' | 'EVM', w.address),
-            5000,
-          );
-          const result = { walletId: w.id, chain: w.chain, address: w.address, ...bal };
-          this.balanceCache.set(w.id, { bal: result, ts: Date.now() });
-          return result;
-        } catch (e: any) {
-          return { walletId: w.id, chain: w.chain, address: w.address, native: 0, symbol: w.chain === 'SOLANA' ? 'SOL' : 'ETH', usd: 0, error: e?.message };
-        }
-      }),
-    );
-    return results;
+    const now = Date.now();
+    const stale = (w: { id: string }) => {
+      const c = this.balanceCache.get(w.id);
+      return !c || now - c.ts >= this.BAL_CACHE_TTL;
+    };
+
+    const staleSol = rows.filter((w) => w.chain === 'SOLANA' && stale(w));
+    const staleEvm = rows.filter((w) => w.chain === 'EVM' && stale(w));
+
+    await Promise.all([
+      staleSol.length > 0 ? this.fetchSolanaBalancesBatch(staleSol) : Promise.resolve(),
+      ...staleEvm.map((w) => this.fetchEvmBalance(w)),
+    ]);
+
+    return rows.map((w) => {
+      const entry = this.balanceCache.get(w.id);
+      return entry?.bal ?? { walletId: w.id, chain: w.chain, address: w.address, native: 0, symbol: w.chain === 'SOLANA' ? 'SOL' : 'ETH', usd: 0, error: 'Balance unavailable' };
+    });
   }
 
-  private async fetchOnChainBalance(chain: 'SOLANA' | 'EVM', address: string): Promise<{ native: number; symbol: string; usd: number }> {
+  /** One getMultipleAccountsInfo call for all Solana wallets + parallel token account fetches. */
+  private async fetchSolanaBalancesBatch(wallets: { id: string; chain: string; address: string }[]) {
+    const { PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
+
+    let conn: any;
+    try {
+      conn = await this.withTimeout(this.getSolanaConnection(), 10_000);
+    } catch (e: any) {
+      this.logger.warn(`Solana connection failed: ${e.message}`);
+      for (const w of wallets) {
+        if (!this.balanceCache.get(w.id)) {
+          this.balanceCache.set(w.id, { bal: { walletId: w.id, chain: w.chain, address: w.address, native: 0, symbol: 'SOL', usd: 0, error: e.message }, ts: 0 });
+        }
+      }
+      return;
+    }
+
+    const pubkeys = wallets.map((w) => new PublicKey(w.address));
+
+    // Single batched call for native balances + parallel token account fetches — all in one round trip
+    const [accountInfos, ...tokenResults] = await Promise.all([
+      conn.getMultipleAccountsInfo(pubkeys),
+      ...wallets.map((w) =>
+        conn.getParsedTokenAccountsByOwner(new PublicKey(w.address), {
+          programId: new PublicKey(this.SPL_TOKEN_PROGRAM),
+        }).catch(() => ({ value: [] as any[] })),
+      ),
+    ]);
+
+    const solPrice = await this.getPrice('solana').catch(() => 140);
+
+    wallets.forEach((w, i) => {
+      const sol = ((accountInfos[i] as any)?.lamports ?? 0) / LAMPORTS_PER_SOL;
+      const tokenAccts: any[] = (tokenResults[i] as any).value ?? [];
+
+      const tokens = tokenAccts
+        .map((acct: any) => {
+          const info = acct.account.data?.parsed?.info;
+          if (!info) return null;
+          const amount: number = info.tokenAmount?.uiAmount ?? 0;
+          if (amount === 0) return null;
+          const mint: string = info.mint;
+          const known = this.SPL_KNOWN[mint];
+          return { mint, symbol: known?.symbol ?? mint.slice(0, 6) + '…', amount, usd: known ? amount * known.price : 0 };
+        })
+        .filter((t): t is NonNullable<typeof t> => t !== null);
+
+      const tokensUsd = tokens.reduce((s, t) => s + t.usd, 0);
+      const bal = {
+        walletId: w.id, chain: w.chain, address: w.address,
+        native: sol, symbol: 'SOL', usd: sol * solPrice + tokensUsd,
+        ...(tokens.length > 0 && { tokens }),
+      };
+      this.balanceCache.set(w.id, { bal, ts: Date.now() });
+    });
+  }
+
+  private async fetchEvmBalance(w: { id: string; chain: string; address: string }) {
+    try {
+      if (!this.evmProvider) this.evmProvider = new ethers.JsonRpcProvider(getEvmRpcUrl());
+      const wei: bigint = await this.withTimeout(this.evmProvider.getBalance(w.address), 10_000);
+      const eth = parseFloat(ethers.formatEther(wei));
+      const ethPrice = await this.getPrice('ethereum').catch(() => 2500);
+      const bal = { walletId: w.id, chain: w.chain, address: w.address, native: eth, symbol: 'ETH', usd: eth * ethPrice };
+      this.balanceCache.set(w.id, { bal, ts: Date.now() });
+    } catch (e: any) {
+      this.logger.warn(`EVM balance fetch failed for ${w.id}: ${e.message}`);
+      const stale = this.balanceCache.get(w.id);
+      if (stale) this.balanceCache.set(w.id, { bal: { ...stale.bal, stale: true }, ts: stale.ts });
+    }
+  }
+
+  /** Used by GET /wallets/:id/balance — single wallet, reuses cached connection. */
+  async fetchOnChainBalance(chain: 'SOLANA' | 'EVM', address: string): Promise<{
+    native: number; symbol: string; usd: number;
+    tokens?: Array<{ mint: string; symbol: string; amount: number; usd: number }>;
+  }> {
     if (chain === 'SOLANA') {
-      const { Connection, PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
-      // Reuse connection instead of creating a new one each time
-      if (!this.solConn) this.solConn = new Connection(getSolanaRpcUrl(), 'confirmed');
-      const lamports = await this.solConn.getBalance(new PublicKey(address));
+      const { PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
+      const conn = await this.getSolanaConnection();
+      const pubkey = new PublicKey(address);
+      const [lamports, tokenResult] = await Promise.all([
+        conn.getBalance(pubkey),
+        conn.getParsedTokenAccountsByOwner(pubkey, {
+          programId: new PublicKey(this.SPL_TOKEN_PROGRAM),
+        }).catch(() => ({ value: [] as any[] })),
+      ]);
       const sol = lamports / LAMPORTS_PER_SOL;
       const solPrice = await this.getPrice('solana').catch(() => 140);
-      return { native: sol, symbol: 'SOL', usd: sol * solPrice };
+      type SplToken = { mint: string; symbol: string; amount: number; usd: number };
+      const tokens = (tokenResult.value as any[])
+        .map((acct: any): SplToken | null => {
+          const info = acct.account.data?.parsed?.info;
+          if (!info) return null;
+          const amount: number = info.tokenAmount?.uiAmount ?? 0;
+          if (amount === 0) return null;
+          const mint: string = info.mint;
+          const known = this.SPL_KNOWN[mint];
+          return { mint, symbol: known?.symbol ?? mint.slice(0, 6) + '…', amount, usd: known ? amount * known.price : 0 };
+        })
+        .filter((t: SplToken | null): t is SplToken => t !== null);
+      const tokensUsd = tokens.reduce((s: number, t: SplToken) => s + t.usd, 0);
+      return { native: sol, symbol: 'SOL', usd: sol * solPrice + tokensUsd, ...(tokens.length > 0 && { tokens }) };
     }
-    // Reuse provider
     if (!this.evmProvider) this.evmProvider = new ethers.JsonRpcProvider(getEvmRpcUrl());
     const wei = await this.evmProvider.getBalance(address);
     const eth = parseFloat(ethers.formatEther(wei));

@@ -21,7 +21,12 @@ export function getSolanaRpcUrl(): string {
   if (isTestnet()) {
     return process.env.SOLANA_TESTNET_RPC_URL ?? 'https://api.devnet.solana.com';
   }
-  return process.env.SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
+  // HELIUS_RPC_URL is checked first so a Helius key works without renaming the var
+  return (
+    process.env.HELIUS_RPC_URL ??
+    process.env.SOLANA_RPC_URL ??
+    'https://api.mainnet-beta.solana.com'
+  );
 }
 
 export function getJupiterApiBase(): string {
