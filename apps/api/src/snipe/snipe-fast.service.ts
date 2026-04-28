@@ -205,7 +205,14 @@ export class SnipeFastService {
       if (r.status === 'fulfilled') {
         bundles.push(r.value);
       } else {
-        this.logger.warn(`[trc=${traceId}] level ${i} (${levels[i]}) pre-build failed: ${r.reason?.message}`);
+        const reason = r.reason;
+        const cause = reason?.cause;
+        this.logger.warn(
+          `[trc=${traceId}] level ${i} (${levels[i]}) pre-build failed: ${reason?.message} ` +
+            `name=${reason?.name} code=${reason?.code ?? cause?.code} ` +
+            `causeName=${cause?.name} causeMsg=${cause?.message} ` +
+            `stack=${reason?.stack?.split('\n').slice(0, 3).join(' | ')}`,
+        );
       }
     }
     return bundles;
