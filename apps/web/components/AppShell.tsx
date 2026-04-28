@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState, type ReactNode } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import ThemeToggle from './ThemeToggle';
 import PaperModePill from './PaperModePill';
 import LearningModePill from './LearningModePill';
@@ -9,6 +9,8 @@ import NotificationBell from './NotificationBell';
 import UserMenu from './UserMenu';
 import { TickerBar, type TickerItem } from './ui/TickerBar';
 import AgentLauncher from './AgentLauncher';
+import { useApi } from '../lib/useApi';
+import { api } from '../lib/api';
 
 /**
  * AppShell — pro-terminal shell for qwai.
@@ -131,26 +133,68 @@ function Rail({ pathname }: { pathname: string }) {
 /* Top statusbar (ticker + balance + ⌘K + paper/live + menu)     */
 /* ============================================================ */
 
-const DEMO_TICKER: TickerItem[] = [
-  { symbol: 'SOL',  price: '$142.33', delta: '+4.2%', tone: 'up' },
-  { symbol: 'BTC',  price: '$68,120', delta: '-0.8%', tone: 'down' },
-  { symbol: 'ETH',  price: '$3,214',  delta: '+1.1%', tone: 'up' },
-  { symbol: 'JUP',  price: '$0.82',   delta: '+2.4%', tone: 'up' },
-  { symbol: 'WIF',  price: '$1.94',   delta: '-3.2%', tone: 'down' },
-  { symbol: 'BONK', price: '$0.0000234', delta: '+5.1%', tone: 'up' },
+const TICKER_COINS = [
+  { id: 'solana',   symbol: 'SOL' },
+  { id: 'bitcoin',  symbol: 'BTC' },
+  { id: 'ethereum', symbol: 'ETH' },
+  { id: 'jupiter-exchange-solana', symbol: 'JUP' },
+  { id: 'dogwifcoin', symbol: 'WIF' },
+  { id: 'bonk',    symbol: 'BONK' },
 ];
+
+function useLiveTicker(): TickerItem[] {
+  const [items, setItems] = useState<TickerItem[]>([]);
+  const prevPrices = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    const ids = TICKER_COINS.map((c) => c.id).join(',');
+
+    async function fetchPrices() {
+      try {
+        const resp = await api.get<Record<string, number | null>>(`/market/prices?ids=${ids}`);
+        const next: TickerItem[] = [];
+        for (const coin of TICKER_COINS) {
+          const price = resp.data[coin.id];
+          if (price == null) continue;
+          const prev = prevPrices.current[coin.id];
+          const delta = prev != null && prev !== 0 ? ((price - prev) / prev) * 100 : 0;
+          prevPrices.current[coin.id] = price;
+          next.push({
+            symbol: coin.symbol,
+            price: price >= 1000
+              ? `$${price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+              : price >= 1
+              ? `$${price.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+              : `$${price.toFixed(6)}`,
+            delta: `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%`,
+            tone: delta > 0.05 ? 'up' : delta < -0.05 ? 'down' : 'flat',
+          });
+        }
+        if (next.length > 0) setItems(next);
+      } catch {
+        // silently keep last known prices on failure
+      }
+    }
+
+    fetchPrices();
+    const timer = setInterval(fetchPrices, 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return items;
+}
 
 function TopStatusBar() {
   const [cmdOpen, setCmdOpen] = useState(false);
+  const tickerItems = useLiveTicker();
+
   return (
     <div className="statusbar">
-      {/* Mobile-only brand on the left — shrink-0 so it doesn't flex-grow into the actions */}
       <Link href="/" className="show-mobile flex items-center gap-2 pl-3 pr-2 h-full shrink-0" aria-label="QWAI home"
         style={{ minWidth: 0, overflow: 'hidden' }}>
         <QwaiMark size={22} />
         <span className="font-display font-semibold text-[14px] tracking-tight" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>QWAI</span>
       </Link>
-      {/* Desktop: search + ticker */}
       <div className="hide-mobile flex items-center gap-3 pl-4 pr-2 h-full shrink-0" style={{ borderRight: '1px solid var(--border)' }}>
         <button
           className="btn btn-sm btn-ghost"
@@ -164,8 +208,7 @@ function TopStatusBar() {
           <span className="kbd" style={{ marginLeft: 8 }}>⌘K</span>
         </button>
       </div>
-      <TickerBar items={DEMO_TICKER} />
-      {/* Right-side actions — shrink-0 so they're never pushed off-screen */}
+      <TickerBar items={tickerItems} />
       <div className="flex items-center gap-1 md:gap-2 pr-2 md:pr-3 md:pl-3 h-full ml-auto shrink-0" style={{ borderLeft: '1px solid var(--border)' }}>
         <button
           className="btn-icon show-mobile"
@@ -227,6 +270,14 @@ function CmdStub({ onClose }: { onClose: () => void }) {
 /* ============================================================ */
 
 function BottomStatusBar() {
+  const { data: agents } = useApi<{ id: string; status: string }[]>('/agents', { pollMs: 30_000 });
+  const { data: perf }   = useApi<{ totalPnl: number; weekly: { pnl: number } }>('/analytics/performance', { pollMs: 60_000 });
+  const { data: user }   = useApi<{ paperMode: boolean }>('/users', { pollMs: 60_000 });
+
+  const running = agents?.filter((a) => a.status === 'RUNNING').length ?? null;
+  const pnl24h  = perf?.weekly?.pnl ?? null;
+  const isPaper = user?.paperMode ?? null;
+
   return (
     <div className="statusbar-bottom">
       <span>
@@ -236,22 +287,31 @@ function BottomStatusBar() {
       <span className="sep" />
       <span>
         <span style={{ color: 'var(--text-2)' }}>mode</span>{' '}
-        <span style={{ color: 'var(--warn)' }}>paper</span>
-      </span>
-      <span className="sep" />
-      <span>
-        <span style={{ color: 'var(--text-2)' }}>risk</span>{' '}
-        <span style={{ color: 'var(--text)' }}>low</span>
+        {isPaper === null ? (
+          <span style={{ color: 'var(--text-3)' }}>—</span>
+        ) : (
+          <span style={{ color: isPaper ? 'var(--warn)' : 'var(--ok)' }}>
+            {isPaper ? 'paper' : 'live'}
+          </span>
+        )}
       </span>
       <span className="sep" />
       <span>
         <span style={{ color: 'var(--text-2)' }}>agents</span>{' '}
-        <span style={{ color: 'var(--text)' }}>3 running</span>
+        <span style={{ color: 'var(--text)' }}>
+          {running === null ? '—' : `${running} running`}
+        </span>
       </span>
       <span className="sep" />
       <span>
-        <span style={{ color: 'var(--text-2)' }}>24h</span>{' '}
-        <span style={{ color: 'var(--ok)' }}>+2.31%</span>
+        <span style={{ color: 'var(--text-2)' }}>7d pnl</span>{' '}
+        {pnl24h === null ? (
+          <span style={{ color: 'var(--text-3)' }}>—</span>
+        ) : (
+          <span style={{ color: pnl24h >= 0 ? 'var(--ok)' : 'var(--bad)' }}>
+            {pnl24h >= 0 ? '+' : ''}${Math.abs(pnl24h).toFixed(2)}
+          </span>
+        )}
       </span>
       <span className="sep" />
       <span style={{ marginLeft: 'auto' }}>

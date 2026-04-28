@@ -14,4 +14,10 @@ export class MarketDataService {
     const m = await this.cg.price([symbolOrAddress.toLowerCase()]);
     return m[symbolOrAddress.toLowerCase()]?.usd ?? null;
   }
+
+  /** Single CoinGecko call for multiple IDs — returns { [id]: priceUsd } */
+  async prices(ids: string[]): Promise<Record<string, number | null>> {
+    const m = await this.cg.price(ids.map((id) => id.toLowerCase()));
+    return Object.fromEntries(ids.map((id) => [id, m[id.toLowerCase()]?.usd ?? null]));
+  }
 }
