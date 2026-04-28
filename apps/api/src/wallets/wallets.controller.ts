@@ -64,6 +64,11 @@ export class WalletsController {
     return this.wallets.depositInfo(req.user.userId, id);
   }
 
+  /** GET /api/wallets/:id/holdings — SPL token holdings with Birdeye prices + snipe P&L */
+  @Get(':id/holdings') holdings(@Req() req: any, @Param('id') id: string) {
+    return this.wallets.getHoldings(req.user.userId, id);
+  }
+
   @Post(':id/faucet') faucet(@Req() req: any, @Param('id') id: string) {
     return this.wallets.faucet(req.user.userId, id);
   }

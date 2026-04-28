@@ -81,6 +81,7 @@ const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }
   { href: '/trade',     label: 'Trade',     icon: IconTrade },
   { href: '/agents',    label: 'Agents',    icon: IconAgents },
   { href: '/snipe',     label: 'Sniper',    icon: IconSnipe },
+  { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
   { href: '/tokens',    label: 'Tokens',    icon: IconGem },
   { href: '/wallets',   label: 'Wallets',   icon: IconWallet },
   { href: '/chat',      label: 'Chat',      icon: IconChat },
@@ -507,6 +508,15 @@ function IconGem({ size }: { size?: number }) {
     <Svg size={size}>
       <path d="M6 3h12l3 6-9 12L3 9z" />
       <path d="M3 9h18" />
+    </Svg>
+  );
+}
+function IconPortfolio({ size }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <rect x="3" y="14" width="4" height="7" rx="1" />
+      <rect x="10" y="9" width="4" height="12" rx="1" />
+      <rect x="17" y="3" width="4" height="18" rx="1" />
     </Svg>
   );
 }

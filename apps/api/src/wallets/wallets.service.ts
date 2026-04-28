@@ -10,6 +10,21 @@ import { LiveTradeGuardService } from '../common/live-trade-guard.service';
 
 const MAX_WALLETS_PER_USER = 5;
 
+export interface HoldingRow {
+  mint: string;
+  symbol: string;
+  amount: number;
+  decimals: number;
+  priceUsd: number | null;
+  valueUsd: number | null;
+  entryCostSol: number | null;
+  entryCostUsd: number | null;
+  pnlUsd: number | null;
+  pnlPct: number | null;
+  firstBoughtAt: string | null;
+  txHash: string | null;
+}
+
 @Injectable()
 export class WalletsService {
   constructor(
@@ -263,6 +278,129 @@ export class WalletsService {
       return price;
     } catch {
       return coinId === 'solana' ? 140 : 2500;
+    }
+  }
+
+  // ── Holdings endpoint ────────────────────────────────────────────────────────
+
+  /**
+   * Returns all non-zero SPL token positions for a Solana wallet,
+   * enriched with Birdeye prices and P&L from snipe trade history.
+   */
+  async getHoldings(userId: string, walletId: string): Promise<HoldingRow[]> {
+    const wallet = await this.prisma.wallet.findFirst({ where: { id: walletId, userId } });
+    if (!wallet) throw new ForbiddenException();
+
+    if (wallet.chain !== 'SOLANA') {
+      // EVM: no token-account model; return empty for now
+      return [];
+    }
+
+    const { PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
+    const conn = await this.getSolanaConnection();
+    const pubkey = new PublicKey(wallet.address);
+
+    // Fetch native balance + SPL token accounts in one round-trip
+    const [lamports, tokenResult] = await Promise.all([
+      conn.getBalance(pubkey).catch(() => 0),
+      conn.getParsedTokenAccountsByOwner(pubkey, {
+        programId: new PublicKey(this.SPL_TOKEN_PROGRAM),
+      }).catch(() => ({ value: [] as any[] })),
+    ]);
+
+    // Build raw token list (non-zero amounts only)
+    const rawTokens: Array<{ mint: string; symbol: string; amount: number; decimals: number }> = [];
+    for (const acct of (tokenResult.value as any[])) {
+      const info = acct.account.data?.parsed?.info;
+      if (!info) continue;
+      const amount: number = info.tokenAmount?.uiAmount ?? 0;
+      if (amount === 0) continue;
+      const mint: string = info.mint;
+      const decimals: number = info.tokenAmount?.decimals ?? 9;
+      const known = this.SPL_KNOWN[mint];
+      rawTokens.push({ mint, symbol: known?.symbol ?? mint.slice(0, 6) + '…', amount, decimals });
+    }
+
+    if (rawTokens.length === 0 && lamports === 0) return [];
+
+    const mints = rawTokens.map((t) => t.mint);
+
+    // Batch-price all mints via Birdeye multi-price
+    const priceMap = await this.batchTokenPrices(mints);
+
+    // SOL price for P&L calculations
+    const solPrice = await this.getPrice('solana').catch(() => 140);
+
+    // Fetch snipe trades for these mints — used for P&L
+    const snipeTrades = mints.length > 0
+      ? await this.prisma.snipeTrade.findMany({
+          where: { userId, mint: { in: mints } },
+          orderBy: { createdAt: 'asc' }, // oldest first so we use first buy as cost basis
+        })
+      : [];
+
+    const snipeByMint = new Map<string, (typeof snipeTrades[0])[]>();
+    for (const t of snipeTrades) {
+      const arr = snipeByMint.get(t.mint) ?? [];
+      arr.push(t);
+      snipeByMint.set(t.mint, arr);
+    }
+
+    const rows: HoldingRow[] = rawTokens.map((t) => {
+      const priceUsd = priceMap[t.mint] ?? null;
+      const valueUsd = priceUsd !== null ? priceUsd * t.amount : null;
+
+      // Aggregate all snipe buys for this mint
+      const trades = snipeByMint.get(t.mint) ?? [];
+      const totalSolSpent = trades.reduce((s, tr) => s + Number(tr.amountRaw) / LAMPORTS_PER_SOL, 0);
+      const entryCostUsd = totalSolSpent > 0 ? totalSolSpent * solPrice : null;
+
+      const pnlUsd   = valueUsd !== null && entryCostUsd !== null ? valueUsd - entryCostUsd : null;
+      const pnlPct   = pnlUsd !== null && entryCostUsd ? (pnlUsd / entryCostUsd) * 100 : null;
+      const firstBuy = trades.find((tr) => tr.status !== 'failed');
+
+      return {
+        mint: t.mint,
+        symbol: t.symbol,
+        amount: t.amount,
+        decimals: t.decimals,
+        priceUsd,
+        valueUsd,
+        entryCostSol: totalSolSpent > 0 ? totalSolSpent : null,
+        entryCostUsd,
+        pnlUsd,
+        pnlPct,
+        firstBoughtAt: firstBuy?.createdAt?.toISOString() ?? null,
+        txHash: firstBuy?.txHash ?? null,
+      };
+    });
+
+    return rows.sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0));
+  }
+
+  private async batchTokenPrices(mints: string[]): Promise<Record<string, number | null>> {
+    if (mints.length === 0) return {};
+    const birdeyeKey = process.env.BIRDEYE_API_KEY ?? '';
+    if (!birdeyeKey) return Object.fromEntries(mints.map((m) => [m, null]));
+
+    try {
+      // Birdeye multi_price: GET /defi/multi_price?list_address=addr1,addr2,...
+      const url = `https://public-api.birdeye.so/defi/multi_price?list_address=${mints.join(',')}`;
+      const resp = await fetch(url, {
+        headers: { 'X-API-KEY': birdeyeKey },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!resp.ok) throw new Error(`Birdeye ${resp.status}`);
+      const data: any = await resp.json();
+      // Response: { data: { [mint]: { value: number, ... } } }
+      const result: Record<string, number | null> = {};
+      for (const mint of mints) {
+        result[mint] = data?.data?.[mint]?.value ?? null;
+      }
+      return result;
+    } catch {
+      // Fallback: known stablecoins only
+      return Object.fromEntries(mints.map((m) => [m, this.SPL_KNOWN[m]?.price ?? null]));
     }
   }
 

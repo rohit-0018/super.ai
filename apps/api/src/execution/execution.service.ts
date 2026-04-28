@@ -374,15 +374,31 @@ export class ExecutionService {
       const raw = Buffer.from(swapTxB64, 'base64');
       const tx = VersionedTransaction.deserialize(raw);
       tx.sign([kp]);
+
+      // Fetch the confirmation window BEFORE sending so lastValidBlockHeight is
+      // tied to the same era as the blockhash already embedded in the Jupiter tx.
+      const { lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      const blockhash = tx.message.recentBlockhash; // use the tx's own blockhash
+
       const sig = await connection.sendRawTransaction(tx.serialize(), {
         skipPreflight: false,
         maxRetries: 3,
       });
-      const latest = await connection.getLatestBlockhash('confirmed');
-      await connection.confirmTransaction(
-        { signature: sig, blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight },
+      const result = await connection.confirmTransaction(
+        { signature: sig, blockhash, lastValidBlockHeight },
         'confirmed',
       );
+
+      if (result.value.err) {
+        const errStr = JSON.stringify(result.value.err);
+        // InstructionError with Custom:1 is Jupiter's SlippageToleranceExceeded
+        const isSlippage = errStr.includes('"Custom":1') || errStr.includes('"custom":1');
+        throw new Error(
+          isSlippage
+            ? `Slippage tolerance exceeded — price moved between quote and execution (slippage=${input.slippageBps}bps). txHash=${sig}`
+            : `Transaction confirmed but program failed: ${errStr}. txHash=${sig}`,
+        );
+      }
       return sig;
     });
 

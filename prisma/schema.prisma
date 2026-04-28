@@ -667,6 +667,7 @@ model SnipeTrade {
   sourceMsg String?  @db.Text
   status    String   @default("broadcast")  // broadcast | confirmed | failed
   errorMsg  String?  @db.Text              // error reason when status=failed
+  attempts  Int      @default(1)           // total broadcast attempts including slippage retries
 
   // Sell tracking
   sellTxHash    String?

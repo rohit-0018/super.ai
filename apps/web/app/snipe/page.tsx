@@ -80,6 +80,7 @@ interface SnipeTrade {
   sellStatus: string | null;
   sellTxHash: string | null;
   sellReason: string | null;
+  attempts: number;
   createdAt: string;
 }
 
@@ -110,9 +111,26 @@ export default function SnipePage() {
     invalidate('/snipe/tg/status');
   }, []));
 
-  const [banner, setBanner] = useState<SnipeBannerData | null>(null);
-  const bannerKeyRef = useRef(0);
-  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [banner, setBanner]       = useState<SnipeBannerData | null>(null);
+  const [fireAnim, setFireAnim]   = useState(0); // increment = re-trigger animation
+  const [killing, setKilling]     = useState(false);
+  const bannerKeyRef  = useRef(0);
+  const bannerTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoStarted   = useRef(false);
+
+  // ── Auto-start session silently on page load ─────────────────────────
+  useEffect(() => {
+    if (autoStarted.current) return;
+    if (!configData) return;
+    const cfg = configData.config;
+    if (!cfg?.walletId) return;
+    if (configData.session.active) { autoStarted.current = true; return; }
+    autoStarted.current = true;
+    // Fire-and-forget — if it fails (no KMS key, etc.) the user still sees the UI
+    api.post('/snipe/session/start', { walletId: cfg.walletId })
+      .then(() => invalidate('/snipe/config'))
+      .catch(() => {}); // silent — they can still use the page
+  }, [configData]);
 
   useRealtime('snipe_triggered', useCallback((evt: any) => {
     invalidate('/snipe/history?limit=50');
@@ -120,49 +138,74 @@ export default function SnipePage() {
     bannerKeyRef.current += 1;
     setBanner({ status: evt.status, mint: evt.mint, durationMs: evt.durationMs, txHash: evt.txHash, error: evt.error, key: bannerKeyRef.current });
     bannerTimer.current = setTimeout(() => setBanner(null), 3300);
+    if (evt.status !== 'failed') setFireAnim((n) => n + 1);
   }, []));
 
   useRealtime('snipe_sold', useCallback(() => {
     invalidate('/snipe/history?limit=50');
   }, []));
 
-  // Background confirmation updates (no banner — just refresh history silently)
   useRealtime('snipe_update', useCallback(() => {
     invalidate('/snipe/history?limit=50');
   }, []));
 
+  const killSession = useCallback(async () => {
+    setKilling(true);
+    try {
+      await api.delete('/snipe/session');
+      // Also disable snipe so it doesn't auto-restart next load
+      const cfg = configData?.config;
+      if (cfg) await api.put('/snipe/config', { ...toSnipeDtoSafe(cfg), enabled: false });
+      autoStarted.current = false; // allow re-start if user re-enables
+      invalidate('/snipe/config');
+    } catch { /* swallow */ } finally { setKilling(false); }
+  }, [configData]);
+
   const config  = configData?.config ?? null;
   const session = configData?.session ?? { active: false };
+  const isLive  = !!(session.active && config?.enabled && tgStatus?.connected);
 
   if (configLoading || tgLoading) return <PageSkeleton />;
 
   return (
-    <div className="page page-wide space-y-4">
+    <div className="page page-wide" style={{ paddingTop: 12 }}>
+      {fireAnim > 0 && <SnipeFireAnimation key={fireAnim} />}
       {banner && <SnipeBanner key={banner.key} banner={banner} onDismiss={() => setBanner(null)} />}
-      <header className="page-header">
-        <div>
-          <div className="section-eyebrow">Agents</div>
-          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <IcoSnipe size={20} />
-            Sniper
-          </h1>
-          <p className="page-subtitle">
-            CA detected in your Telegram groups → buy broadcast in &lt;500 ms.
-          </p>
+
+      {/* Compact DEX-style header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <IcoSnipe size={16} />
+          <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.02em' }}>Sniper</span>
+          <span className="text-[10px] font-mono" style={{
+            color: 'var(--text-3)', padding: '2px 6px', borderRadius: 4,
+            background: 'var(--surface-2)', border: '1px solid var(--border)',
+          }}>SOL / CA</span>
         </div>
-        <StatusBar tg={tgStatus} session={session} config={config} />
-      </header>
+        <div style={{ flex: 1 }} />
+        <StatusBar tg={tgStatus} session={session} config={config} onKill={killSession} killing={killing} />
+      </div>
 
-      <SnipeStatusNotice config={config} tgConnected={!!tgStatus?.connected} />
+      {/* Kill bar or status notice */}
+      <div style={{ marginBottom: 12 }}>
+        {isLive
+          ? <KillBar onKill={killSession} killing={killing} groups={config?.groupIds.length ?? 0} />
+          : <SnipeStatusNotice config={config} tgConnected={!!tgStatus?.connected} />
+        }
+      </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4" style={{ alignItems: 'start' }}>
-        <div className="xl:col-span-2 space-y-4">
+      <div className="snipe-3col">
+        {/* Col 1: setup */}
+        <div className="snipe-col-setup">
           <TgPanel status={tgStatus} />
           <ConfigPanel config={config} wallets={wallets ?? []} />
         </div>
-
-        <div className="xl:col-span-3 space-y-4">
+        {/* Col 2: inbox */}
+        <div className="snipe-col-inbox">
           <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} />
+        </div>
+        {/* Col 3: history — main panel */}
+        <div className="snipe-col-history">
           <HistoryPanel trades={history ?? []} loading={histLoading} />
         </div>
       </div>
@@ -170,49 +213,226 @@ export default function SnipePage() {
   );
 }
 
+/** Strip Prisma-only fields — used inside page component too */
+function toSnipeDtoSafe(c: SnipeConfig) {
+  return {
+    enabled: c.enabled, chain: c.chain, walletId: c.walletId,
+    buyAmountRaw: c.buyAmountRaw, maxSlippageBps: c.maxSlippageBps,
+    groupIds: c.groupIds, skipSafety: c.skipSafety, dedupeWindowMs: c.dedupeWindowMs,
+    notifyOnBuy: c.notifyOnBuy, matchPattern: c.matchPattern,
+    sellEnabled: c.sellEnabled, sellMode: c.sellMode,
+    takeProfitPct: c.takeProfitPct, stopLossPct: c.stopLossPct,
+    trailingStopPct: c.trailingStopPct, exitAfterMs: c.exitAfterMs,
+    partialExitPct: c.partialExitPct ?? null,
+  };
+}
+
 /* ─────────────────────────────────────────────────────────────
-   Snipe banner — appears for 3 s on every snipe attempt
+   Snipe toast — fixed bottom-right, dramatic entrance
 ───────────────────────────────────────────────────────────── */
 function SnipeBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss: () => void }) {
-  const ok = banner.status !== 'failed';
-  const color = ok ? 'var(--ok)' : 'var(--bad)';
+  const ok     = banner.status !== 'failed';
+  const accent = ok ? '#f59e0b' : '#ef4444';
+  const DURATION = 3800;
+
   return (
     <div
-      className="snap-banner"
       onClick={onDismiss}
       style={{
-        cursor: 'pointer',
-        background: `color-mix(in srgb, ${color} 12%, var(--surface))`,
-        border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
-        boxShadow: `inset 0 1px 0 var(--highlight), 0 2px 12px rgba(0,0,0,0.3)`,
-        borderRadius: 10,
-        padding: '10px 16px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
+        position: 'fixed', bottom: 28, right: 28, zIndex: 1500,
+        width: 320, cursor: 'pointer', borderRadius: 14, overflow: 'hidden',
+        background: 'color-mix(in srgb, var(--surface-2) 96%, transparent)',
+        border: `1px solid color-mix(in srgb, ${accent} 45%, transparent)`,
+        boxShadow: `0 0 0 1px color-mix(in srgb, ${accent} 15%, transparent), 0 8px 40px rgba(0,0,0,0.55), 0 0 60px color-mix(in srgb, ${accent} 8%, transparent)`,
+        animation: 'snipe-toast-enter 280ms cubic-bezier(0.22,1,0.36,1) forwards',
       }}
     >
-      <span style={{ fontSize: 20, lineHeight: 1 }}>{ok ? '⚡' : '✗'}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="text-[13px] font-semibold" style={{ color }}>
-          {ok ? `Sniped! · ${banner.durationMs}ms` : `Snipe failed · ${banner.durationMs}ms`}
+      {/* Scan line sweep */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, height: 60, pointerEvents: 'none', zIndex: 0,
+        background: `linear-gradient(180deg, transparent 0%, color-mix(in srgb, ${accent} 12%, transparent) 50%, transparent 100%)`,
+        animation: 'snipe-toast-scan 1.4s ease-in-out infinite',
+      }} />
+
+      {/* Body */}
+      <div style={{ position: 'relative', zIndex: 1, padding: '16px 18px 14px' }}>
+        {/* Header row */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <span style={{ fontSize: 24, lineHeight: 1, filter: `drop-shadow(0 0 10px ${accent})` }}>
+            {ok ? '⚡' : '✗'}
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, letterSpacing: '0.07em', color: accent, lineHeight: 1 }}>
+              {ok ? 'SNIPED' : 'FAILED'}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.1em', marginTop: 3 }}>
+              {ok ? 'buy broadcast' : 'trade rejected'}
+            </div>
+          </div>
+          {/* Latency badge */}
+          <div style={{
+            padding: '5px 11px', borderRadius: 8,
+            background: `color-mix(in srgb, ${accent} 15%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${accent} 35%, transparent)`,
+            textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)', color: accent, lineHeight: 1 }}>
+              {banner.durationMs}
+            </div>
+            <div style={{ fontSize: 9, color: 'var(--text-3)', letterSpacing: '0.08em', marginTop: 1 }}>ms</div>
+          </div>
         </div>
-        <div className="font-mono text-[11px] truncate" style={{ color: 'var(--text-2)', marginTop: 1 }}>
-          {banner.mint.slice(0, 8)}…{banner.mint.slice(-4)}
-          {banner.error && <span style={{ color: 'var(--text-3)' }}> · {banner.error.slice(0, 80)}</span>}
+
+        {/* Token address */}
+        <div style={{
+          fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-2)', marginBottom: 10,
+          background: 'color-mix(in srgb, var(--surface) 70%, transparent)',
+          borderRadius: 6, padding: '5px 9px',
+          border: '1px solid var(--border)',
+          letterSpacing: '0.04em',
+        }}>
+          {banner.mint.slice(0, 12)}…{banner.mint.slice(-8)}
         </div>
+
+        {banner.error && (
+          <div style={{ fontSize: 10, color: accent, marginBottom: 10, lineHeight: 1.4, opacity: 0.85 }}>
+            {banner.error.slice(0, 90)}
+          </div>
+        )}
+
+        {banner.txHash && (
+          <a
+            href={`https://solscan.io/tx/${banner.txHash}`}
+            target="_blank" rel="noopener"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontSize: 10, color: accent, fontFamily: 'var(--font-mono)',
+              padding: '4px 9px', borderRadius: 5, textDecoration: 'none',
+              background: `color-mix(in srgb, ${accent} 10%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${accent} 25%, transparent)`,
+            }}
+          >
+            {banner.txHash.slice(0, 8)}…{banner.txHash.slice(-6)}
+            <span style={{ fontSize: 9, opacity: 0.7 }}>↗</span>
+          </a>
+        )}
       </div>
-      {banner.txHash && (
-        <a
-          href={`https://solscan.io/tx/${banner.txHash}`}
-          target="_blank" rel="noopener"
-          className="font-mono text-[11px]"
-          style={{ color: 'var(--accent)', flexShrink: 0 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {banner.txHash.slice(0, 8)}…
-        </a>
-      )}
+
+      {/* Progress countdown bar */}
+      <div style={{ height: 2, background: `color-mix(in srgb, ${accent} 18%, transparent)` }}>
+        <div style={{
+          height: '100%', background: accent, transformOrigin: 'left',
+          animation: `snipe-toast-progress ${DURATION}ms linear forwards`,
+        }} />
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Snipe fire animation — pure CSS burst, pointer-events:none
+   Mounts fresh on each snipe (key prop forces remount)
+───────────────────────────────────────────────────────────── */
+function SnipeFireAnimation() {
+  const RAYS = 8;
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        pointerEvents: 'none', overflow: 'hidden',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      {/* Screen tint */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: 'radial-gradient(ellipse at 50% 40%, rgba(251,191,36,0.18) 0%, transparent 70%)',
+        animation: 'snipe-tint 700ms ease-out forwards',
+      }} />
+
+      {/* Expanding ring */}
+      <div style={{
+        position: 'absolute',
+        width: 80, height: 80, borderRadius: '50%',
+        border: '2px solid rgba(251,191,36,0.7)',
+        animation: 'snipe-ring 700ms ease-out forwards',
+      }} />
+
+      {/* Rays */}
+      {Array.from({ length: RAYS }).map((_, i) => (
+        <div key={i} style={{
+          position: 'absolute',
+          width: 160, height: 2,
+          left: '50%', top: '50%',
+          transformOrigin: 'left center',
+          '--ray-rotate': `translateY(-50%) rotate(${i * (360 / RAYS)}deg)`,
+          transform: `var(--ray-rotate)`,
+          background: 'linear-gradient(90deg, rgba(251,191,36,0.9) 0%, rgba(251,191,36,0) 100%)',
+          animation: `snipe-ray 650ms ease-out forwards`,
+          animationDelay: `${i * 10}ms`,
+        } as React.CSSProperties} />
+      ))}
+
+      {/* Central bolt */}
+      <div style={{
+        position: 'relative', zIndex: 1,
+        fontSize: 42, lineHeight: 1,
+        filter: 'drop-shadow(0 0 12px rgba(251,191,36,0.9))',
+        animation: 'snipe-bolt 700ms ease-out forwards',
+      }}>⚡</div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Kill bar — replaces status notice when sniper is fully live
+───────────────────────────────────────────────────────────── */
+function KillBar({ onKill, killing, groups }: { onKill: () => void; killing: boolean; groups: number }) {
+  return (
+    <div
+      style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: '10px 16px', borderRadius: 10,
+        background: 'color-mix(in srgb, #ef4444 12%, var(--surface))',
+        border: '1px solid color-mix(in srgb, #ef4444 40%, transparent)',
+        animation: 'kill-bar-appear 220ms ease-out',
+      }}
+    >
+      {/* Live pulse dot */}
+      <span style={{
+        width: 8, height: 8, borderRadius: '50%',
+        background: '#ef4444', flexShrink: 0,
+        boxShadow: '0 0 0 0 rgba(239,68,68,0.6)',
+        animation: 'kill-pulse 1.4s ease-in-out infinite',
+      }} />
+
+      <span className="text-[13px] font-semibold flex-1" style={{ color: '#ef4444', letterSpacing: '0.04em' }}>
+        SNIPING LIVE
+      </span>
+
+      <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+        {groups} group{groups !== 1 ? 's' : ''} monitored
+      </span>
+
+      <button
+        onClick={onKill}
+        disabled={killing}
+        style={{
+          height: 32, padding: '0 16px', borderRadius: 7,
+          background: '#ef4444',
+          border: '1px solid color-mix(in srgb, #ef4444 75%, black 15%)',
+          color: '#fff', fontSize: 12, fontWeight: 700,
+          cursor: killing ? 'not-allowed' : 'pointer',
+          letterSpacing: '0.06em',
+          animation: killing ? 'none' : 'kill-pulse 1.4s ease-in-out infinite',
+          opacity: killing ? 0.6 : 1,
+          transition: 'opacity 0.15s',
+        }}
+      >
+        {killing ? 'Killing…' : '■ KILL SNIPING'}
+      </button>
     </div>
   );
 }
@@ -221,57 +441,39 @@ function SnipeBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss
    Setup / activation notice
 ───────────────────────────────────────────────────────────── */
 function SnipeStatusNotice({ config, tgConnected }: { config: SnipeConfig | null; tgConnected: boolean }) {
-  const base: React.CSSProperties = {
-    display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10,
-    padding: '9px 14px', borderRadius: 10, fontSize: 12,
-    border: '1px solid',
-  };
-  const info: React.CSSProperties = {
-    ...base,
-    background: 'color-mix(in srgb, var(--accent) 8%, var(--surface))',
-    borderColor: 'color-mix(in srgb, var(--accent) 25%, transparent)',
-    color: 'var(--text-2)',
-  };
-  const warn: React.CSSProperties = {
-    ...base,
-    background: 'color-mix(in srgb, var(--warn) 10%, var(--surface))',
-    borderColor: 'color-mix(in srgb, var(--warn) 30%, transparent)',
-    color: 'var(--warn)',
-  };
+  const mkStyle = (accent: string): React.CSSProperties => ({
+    display: 'flex', alignItems: 'center', gap: 8,
+    padding: '7px 12px', borderRadius: 8, fontSize: 11,
+    border: `1px solid color-mix(in srgb, ${accent} 25%, transparent)`,
+    background: `color-mix(in srgb, ${accent} 8%, var(--surface))`,
+    color: accent,
+  });
 
   if (!config) return (
-    <div style={info}>
-      <span style={{ fontSize: 16, flexShrink: 0 }}>⚡</span>
-      <span>
-        <strong>Sniper not set up yet.</strong> Pick a wallet in <em>Snipe settings</em>, connect Telegram, track at least one group, then flip the toggle to <strong>On</strong>.
-      </span>
+    <div style={mkStyle('var(--accent)')}>
+      <span style={{ flexShrink: 0 }}>⚡</span>
+      <span><strong>Not set up.</strong> Pick a wallet, connect Telegram, track groups, flip toggle ON.</span>
     </div>
   );
 
   if (!config.enabled) return (
-    <div style={warn}>
-      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
-      <span>
-        <strong>Sniper is OFF — no trades will trigger.</strong> Configure your settings below, then flip the <strong>On / Off</strong> toggle in <em>Snipe settings</em> when you're ready.
-      </span>
+    <div style={mkStyle('var(--warn)')}>
+      <span style={{ flexShrink: 0 }}>⚠</span>
+      <span><strong>Sniper OFF</strong> — flip the toggle in Settings to start.</span>
     </div>
   );
 
   if (config.groupIds.length === 0) return (
-    <div style={warn}>
-      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
-      <span>
-        <strong>No groups being watched.</strong> Sniper is on but has nothing to listen to — open the inbox, select a group and click <strong>+ Watch</strong>.
-      </span>
+    <div style={mkStyle('var(--warn)')}>
+      <span style={{ flexShrink: 0 }}>⚠</span>
+      <span><strong>No groups watched.</strong> Open inbox, select a group, click + Watch.</span>
     </div>
   );
 
   if (!tgConnected) return (
-    <div style={warn}>
-      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
-      <span>
-        <strong>Telegram not connected.</strong> Sniper is on and groups are tracked, but no live feed — connect your account in the <em>Telegram account</em> panel.
-      </span>
+    <div style={mkStyle('var(--warn)')}>
+      <span style={{ flexShrink: 0 }}>⚠</span>
+      <span><strong>Telegram offline.</strong> Connect your account in the Telegram panel.</span>
     </div>
   );
 
@@ -281,13 +483,16 @@ function SnipeStatusNotice({ config, tgConnected }: { config: SnipeConfig | null
 /* ─────────────────────────────────────────────────────────────
    Status bar
 ───────────────────────────────────────────────────────────── */
-function StatusBar({ tg, session, config }: {
+function StatusBar({ tg, session, config, onKill, killing }: {
   tg: TgStatus | null;
   session: { active: boolean; address?: string; balanceLamports?: number };
   config: SnipeConfig | null;
+  onKill: () => void;
+  killing: boolean;
 }) {
   const solBalance = session.balanceLamports !== undefined ? session.balanceLamports / 1e9 : null;
   const lowBalance = solBalance !== null && solBalance < 0.005;
+  const isLive = !!(session.active && config?.enabled && tg?.connected);
 
   return (
     <div className="flex flex-col items-end gap-1.5">
@@ -296,14 +501,27 @@ function StatusBar({ tg, session, config }: {
           ? <span className="chip chip-ok">TG Live</span>
           : <span className="chip chip-bad">TG offline</span>}
         {session.active
-          ? <span className="chip chip-ok">Hot session</span>
-          : <span className="chip">No hot session</span>}
-        {config?.enabled
-          ? <span className="chip chip-accent" style={{ fontWeight: 600 }}>● Sniper ON</span>
-          : <span className="chip">Sniper OFF</span>}
-        {config?.enabled && config.groupIds.length > 0 && (
-          <span className="chip" style={{ color: 'var(--text-2)' }}>{config.groupIds.length} watching</span>
-        )}
+          ? <span className="chip chip-ok">Session ready</span>
+          : <span className="chip" style={{ color: 'var(--text-3)' }}>No session</span>}
+        {isLive
+          ? (
+            <span className="chip" style={{
+              color: '#ef4444', fontWeight: 700, fontSize: 11,
+              borderColor: 'color-mix(in srgb, #ef4444 40%, var(--border))',
+              background: 'color-mix(in srgb, #ef4444 12%, var(--surface-2))',
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: '50%', background: '#ef4444', flexShrink: 0,
+                animation: 'kill-pulse 1.4s ease-in-out infinite',
+              }} />
+              LIVE
+            </span>
+          )
+          : config?.enabled
+            ? <span className="chip chip-accent" style={{ fontWeight: 600 }}>Sniper ON</span>
+            : <span className="chip" style={{ color: 'var(--text-3)' }}>Sniper OFF</span>
+        }
       </div>
       {session.active && solBalance !== null && (
         <div className="flex items-center gap-1.5">
@@ -311,9 +529,7 @@ function StatusBar({ tg, session, config }: {
             {solBalance.toFixed(4)} SOL
           </span>
           {lowBalance && (
-            <span className="chip chip-warn" style={{ fontSize: 10 }}>
-              Low balance — fund wallet or trades will drop
-            </span>
+            <span className="chip chip-warn" style={{ fontSize: 10 }}>Low balance</span>
           )}
         </div>
       )}
@@ -438,35 +654,37 @@ function TgPanel({ status }: { status: TgStatus | null }) {
   return (
     <div className="panel" style={{ padding: 0 }}>
       {/* Header */}
-      <div className="flex items-center justify-between" style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-        <div className="flex items-center gap-2">
-          <IcoTelegram size={15} />
-          <h2 className="section-title" style={{ margin: 0 }}>Telegram account</h2>
-        </div>
-        {connected && <span className="live-dot" />}
+      <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <IcoTelegram size={13} />
+        <h2 className="section-title" style={{ margin: 0, flex: 1, fontSize: 12 }}>Telegram</h2>
+        {connected && <span className="chip chip-ok" style={{ fontSize: 9 }}>Live</span>}
       </div>
 
-      <div style={{ padding: 14 }}>
+      <div style={{ padding: 12 }}>
         {/* ── CONNECTED ── */}
         {connected ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3" style={{ padding: '10px 12px', background: 'var(--bg-2)', borderRadius: 10, border: '1px solid var(--border)', boxShadow: 'inset 0 1px 0 var(--highlight)' }}>
-              <div className="flex items-center justify-center rounded-full font-semibold text-[14px] shrink-0"
-                style={{ width: 38, height: 38, background: 'color-mix(in srgb, var(--accent) 18%, transparent)', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--border)' }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                background: 'color-mix(in srgb, var(--accent) 18%, transparent)',
+                color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, fontWeight: 700,
+              }}>
                 {status?.me?.firstName?.[0]?.toUpperCase() ?? '?'}
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-semibold truncate">{status?.me?.firstName ?? 'Connected'}</div>
-                <div className="text-[11px] font-mono truncate" style={{ color: 'var(--text-3)' }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="text-[12px] font-semibold truncate">{status?.me?.firstName ?? 'Connected'}</div>
+                <div className="font-mono text-[10px] truncate" style={{ color: 'var(--text-3)' }}>
                   {status?.me?.username ? `@${status.me.username}` : status?.me?.phone ?? '—'}
                 </div>
               </div>
-              <span className="chip chip-ok" style={{ fontSize: 10 }}>Live</span>
             </div>
-            {err && <p className="text-[12px]" style={{ color: 'var(--bad)' }}>{err}</p>}
+            {err && <p className="text-[11px]" style={{ color: 'var(--bad)' }}>{err}</p>}
             <button className="btn btn-sm btn-ghost" onClick={disconnect} disabled={busy}
-              style={{ color: 'var(--bad)', borderColor: 'color-mix(in srgb, var(--bad) 30%, transparent)' }}>
-              {busy ? <Spinner size={11} /> : 'Disconnect'}
+              style={{ fontSize: 11, height: 26, color: 'var(--bad)', borderColor: 'color-mix(in srgb, var(--bad) 28%, transparent)' }}>
+              {busy ? <Spinner size={10} /> : 'Disconnect'}
             </button>
           </div>
 
@@ -653,17 +871,7 @@ const SELL_STRATEGIES = [
 ] as const;
 
 /** Strip Prisma-only fields before sending to the API (forbidNonWhitelisted rejects them). */
-function toSnipeDto(c: SnipeConfig) {
-  return {
-    enabled: c.enabled, chain: c.chain, walletId: c.walletId,
-    buyAmountRaw: c.buyAmountRaw, maxSlippageBps: c.maxSlippageBps,
-    groupIds: c.groupIds, skipSafety: c.skipSafety, dedupeWindowMs: c.dedupeWindowMs,
-    notifyOnBuy: c.notifyOnBuy, matchPattern: c.matchPattern,
-    sellEnabled: c.sellEnabled, sellMode: c.sellMode,
-    takeProfitPct: c.takeProfitPct, stopLossPct: c.stopLossPct,
-    trailingStopPct: c.trailingStopPct, exitAfterMs: c.exitAfterMs, partialExitPct: c.partialExitPct,
-  };
-}
+function toSnipeDto(c: SnipeConfig) { return toSnipeDtoSafe(c); }
 
 function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets: Wallet[] }) {
   const [form, setForm] = useState<SnipeConfig>({
@@ -672,110 +880,168 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
     notifyOnBuy: true, matchPattern: null, sellEnabled: true, sellMode: 'TRIGGER',
     takeProfitPct: null, stopLossPct: null, trailingStopPct: null, exitAfterMs: null, partialExitPct: null,
   });
-  const [tab, setTab]       = useState<'buy' | 'sell'>('buy');
-  const [busy, setBusy]     = useState(false);
-  const [hotBusy, setHotBusy] = useState(false);
-  const [msg, setMsg]       = useState<{ text: string; ok: boolean } | null>(null);
+  // Human-readable display values (SOL, %, seconds)
+  const [solInput,  setSolInput]  = useState('0.1000');
+  const [slipInput, setSlipInput] = useState('50.0');
+  const [tab, setTab]             = useState<'buy' | 'sell'>('buy');
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const saveTimer                 = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const userModified              = useRef(false);
 
+  // Sync from server
   useEffect(() => {
-    if (config) setForm((f) => ({
-      ...f, ...config,
-      // Never let a server-side empty walletId overwrite a user selection
-      walletId: config.walletId || f.walletId,
-    }));
+    if (config) {
+      userModified.current = false;
+      setSolInput((Number(config.buyAmountRaw) / 1e9).toFixed(4));
+      setSlipInput((config.maxSlippageBps / 100).toFixed(1));
+      setForm((f) => ({ ...f, ...config, walletId: config.walletId || f.walletId }));
+    }
   }, [config]);
 
-  const set = <K extends keyof SnipeConfig>(k: K, v: SnipeConfig[K]) => setForm((f) => ({ ...f, [k]: v }));
+  // Autosave — 500 ms debounce
+  useEffect(() => {
+    if (!userModified.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      setSaveState('saving');
+      try {
+        await api.put('/snipe/config', toSnipeDto(form));
+        setSaveState('saved');
+        invalidate('/snipe/config');
+        setTimeout(() => setSaveState('idle'), 1200);
+      } catch {
+        setSaveState('error');
+        setTimeout(() => setSaveState('idle'), 3000);
+      }
+    }, 500);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [form]);
 
-  const save = async () => {
-    setBusy(true); setMsg(null);
-    try { await api.put('/snipe/config', toSnipeDto(form)); setMsg({ text: 'Saved', ok: true }); invalidate('/snipe/config'); }
-    catch (e: any) { setMsg({ text: e?.message ?? 'Failed', ok: false }); }
-    finally { setBusy(false); }
+  const set = <K extends keyof SnipeConfig>(k: K, v: SnipeConfig[K]) => {
+    userModified.current = true;
+    setForm((f) => ({ ...f, [k]: v }));
   };
 
-  const loadSession = async () => {
-    if (!form.walletId) return;
-    setHotBusy(true); setMsg(null);
-    try { await api.post('/snipe/session/start', { walletId: form.walletId }); setMsg({ text: 'Hot session started', ok: true }); invalidate('/snipe/config'); }
-    catch (e: any) { setMsg({ text: e?.message ?? 'Failed', ok: false }); }
-    finally { setHotBusy(false); }
+  // SOL input: display in SOL, store as lamports string
+  const handleSolInput = (raw: string) => {
+    setSolInput(raw);
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n > 0) {
+      userModified.current = true;
+      setForm((f) => ({ ...f, buyAmountRaw: String(Math.round(n * 1e9)) }));
+    }
   };
 
-  const applyStrategy = (s: typeof SELL_STRATEGIES[number]) =>
+  // Slippage input: display as %, store as bps
+  const handleSlipInput = (raw: string) => {
+    setSlipInput(raw);
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n > 0) {
+      userModified.current = true;
+      setForm((f) => ({ ...f, maxSlippageBps: Math.round(n * 100) }));
+    }
+  };
+
+  const applyStrategy = (s: typeof SELL_STRATEGIES[number]) => {
+    userModified.current = true;
     setForm((f) => ({ ...f, takeProfitPct: s.tp, stopLossPct: s.sl, trailingStopPct: s.trail ?? null, exitAfterMs: s.exit ?? null }));
+  };
 
-  const solAmount = (Number(form.buyAmountRaw) / 1e9).toFixed(4);
   const filteredWallets = wallets.filter((w) => w.chain === form.chain);
+
+  const inputUnit = (unit: string) => (
+    <span style={{
+      position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+      fontSize: 11, fontWeight: 600, color: 'var(--text-3)', pointerEvents: 'none',
+      fontFamily: 'var(--font-mono)',
+    }}>{unit}</span>
+  );
 
   return (
     <div className="panel space-y-0" style={{ padding: 0 }}>
-      <div className="flex flex-wrap items-center gap-y-1" style={{ borderBottom: '1px solid var(--border)', padding: '10px 14px 0' }}>
-        <h2 className="section-title" style={{ margin: '0 12px 0 0' }}>Snipe settings</h2>
-        <div className="flex gap-1 flex-1 min-w-0">
-          {(['buy', 'sell'] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-ghost'}`}
-              style={{ borderRadius: '6px 6px 0 0', borderBottom: tab === t ? '2px solid var(--accent-2)' : '2px solid transparent' }}>
-              {t.charAt(0).toUpperCase() + t.slice(1)}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 pb-2">
-          <Toggle checked={form.enabled} onChange={(v) => set('enabled', v)} label={form.enabled ? 'On' : 'Off'} />
-          <button className="btn btn-primary btn-sm" onClick={save} disabled={busy || !form.walletId}>
-            {busy ? <Spinner size={11} /> : 'Save'}
-          </button>
+      {/* Header row */}
+      <div style={{ borderBottom: '1px solid var(--border)', padding: '9px 12px' }}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="section-title" style={{ flex: 1 }}>Settings</span>
+          <div className="flex items-center gap-1">
+            {(['buy', 'sell'] as const).map((t) => (
+              <button key={t} onClick={() => setTab(t)}
+                className="btn btn-ghost btn-sm"
+                style={{
+                  fontSize: 11, fontWeight: tab === t ? 700 : 400,
+                  height: 24, padding: '0 8px', borderRadius: 5,
+                  color: tab === t ? 'var(--accent)' : 'var(--text-3)',
+                  background: tab === t ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+                  border: tab === t ? '1px solid color-mix(in srgb, var(--accent) 28%, transparent)' : '1px solid transparent',
+                }}>
+                {t === 'buy' ? 'Buy' : 'Sell'}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Toggle checked={form.enabled} onChange={(v) => set('enabled', v)} />
+            <span className="text-[11px] font-mono" style={{
+              color: saveState === 'saved' ? 'var(--ok)' : saveState === 'error' ? 'var(--bad)' : form.enabled ? 'var(--ok)' : 'var(--text-3)',
+              minWidth: 42, textAlign: 'right',
+            }}>
+              {saveState === 'saving' ? '…' : saveState === 'saved' ? '✓' : saveState === 'error' ? 'err' : form.enabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
         </div>
       </div>
 
-      <div style={{ padding: '14px' }}>
+      <div style={{ padding: '12px' }}>
         {tab === 'buy' && (
-          <div className="space-y-4">
+          <div className="space-y-3">
+            {/* Wallet */}
             <div>
-              <label className="label">Chain</label>
-              <div className="flex gap-1.5">
-                {(['SOLANA', 'EVM'] as const).map((c) => (
-                  <button key={c} onClick={() => set('chain', c)}
-                    className={`btn btn-sm ${form.chain === c ? 'btn-primary' : 'btn-ghost'}`}>{c}</button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="label">Signing wallet</label>
-              <select className="input" value={form.walletId} onChange={(e) => set('walletId', e.target.value)}>
+              <label className="label" style={{ fontSize: 10 }}>Signing wallet</label>
+              <select className="input" style={{ height: 30, fontSize: 12 }} value={form.walletId} onChange={(e) => set('walletId', e.target.value)}>
                 <option value="">Select wallet…</option>
                 {filteredWallets.map((w) => (
                   <option key={w.id} value={w.id}>{w.label ?? `${w.address.slice(0, 8)}…${w.address.slice(-4)}`}</option>
                 ))}
               </select>
+              {filteredWallets.length === 0 && (
+                <p className="text-[10px] mt-1" style={{ color: 'var(--warn)' }}>No Solana wallets — create one on the Wallets page.</p>
+              )}
             </div>
-            {form.walletId && (
-              <button className="btn btn-ghost btn-sm" onClick={loadSession} disabled={hotBusy}>
-                {hotBusy ? <><Spinner size={11} /> Loading…</> : '🔑 Load hot session'}
-              </button>
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+            {/* Buy size + Slippage side by side */}
+            <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="label">Buy amount (lamports)</label>
-                <input className="input font-mono" inputMode="numeric" value={form.buyAmountRaw} onChange={(e) => set('buyAmountRaw', e.target.value)} />
-                <p className="text-[11px] mt-1 font-mono" style={{ color: 'var(--text-3)' }}>≈ {solAmount} SOL</p>
+                <label className="label" style={{ fontSize: 10 }}>Buy size</label>
+                <div style={{ position: 'relative' }}>
+                  <input className="input font-mono" type="number" step="0.001" min="0.001"
+                    value={solInput}
+                    onChange={(e) => handleSolInput(e.target.value)}
+                    style={{ height: 30, fontSize: 12, paddingRight: 36 }} />
+                  {inputUnit('SOL')}
+                </div>
               </div>
               <div>
-                <label className="label">Max slippage (bps)</label>
-                <input className="input font-mono" type="number" inputMode="numeric" min={100} max={9000}
-                  value={form.maxSlippageBps} onChange={(e) => set('maxSlippageBps', +e.target.value)} />
+                <label className="label" style={{ fontSize: 10 }}>Max slippage</label>
+                <div style={{ position: 'relative' }}>
+                  <input className="input font-mono" type="number" step="0.5" min="0.5" max="90"
+                    value={slipInput}
+                    onChange={(e) => handleSlipInput(e.target.value)}
+                    style={{ height: 30, fontSize: 12, paddingRight: 24 }} />
+                  {inputUnit('%')}
+                </div>
               </div>
             </div>
-            <div className="space-y-2.5">
-              {[
-                { k: 'notifyOnBuy' as const, label: 'Telegram notification on buy' },
-                { k: 'skipSafety'  as const, label: 'Skip rug-check (max speed)' },
-              ].map(({ k, label }) => (
-                <label key={k} className="flex items-center gap-2.5 cursor-pointer">
+
+            {/* Flags */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {([
+                { k: 'skipSafety'  as const, label: 'Skip rug-check', hint: 'max speed' },
+                { k: 'notifyOnBuy' as const, label: 'Notify on buy',  hint: 'Telegram msg' },
+              ] as const).map(({ k, label, hint }) => (
+                <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                   <input type="checkbox" checked={form[k] as boolean} onChange={(e) => set(k, e.target.checked)}
-                    className="accent-[color:var(--accent)]" />
-                  <span className="text-[13px]">{label}</span>
+                    className="accent-[color:var(--accent)]" style={{ width: 13, height: 13 }} />
+                  <span className="text-[12px]">{label}</span>
+                  <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>{hint}</span>
                 </label>
               ))}
             </div>
@@ -783,52 +1049,63 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
         )}
 
         {tab === 'sell' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="space-y-3">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
-                <div className="text-[13px] font-medium">Auto-sell</div>
-                <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Exit positions automatically</div>
+                <div className="text-[12px] font-semibold">Auto-sell</div>
+                <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>Exit positions automatically</div>
               </div>
               <Toggle checked={form.sellEnabled} onChange={(v) => set('sellEnabled', v)} />
             </div>
             {form.sellEnabled && (
               <>
-                <div className="grid grid-cols-2 gap-2">
+                {/* Mode */}
+                <div className="grid grid-cols-2 gap-1.5">
                   {(['TRIGGER', 'INTELLIGENT'] as const).map((m) => (
                     <button key={m} onClick={() => set('sellMode', m)}
-                      className={`btn btn-sm ${form.sellMode === m ? 'btn-primary' : 'btn-ghost'}`}
-                      style={{ flexDirection: 'column', height: 'auto', padding: '8px 10px', alignItems: 'flex-start' }}>
-                      <span className="font-semibold text-[12px]">{m}</span>
-                      <span className="text-[10px] font-normal" style={{ color: form.sellMode === m ? 'rgba(255,255,255,0.7)' : 'var(--text-3)' }}>
+                      style={{
+                        padding: '7px 8px', borderRadius: 7, textAlign: 'left', cursor: 'pointer',
+                        background: form.sellMode === m ? 'color-mix(in srgb, var(--accent) 14%, var(--surface-2))' : 'var(--surface-2)',
+                        border: `1px solid ${form.sellMode === m ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border)'}`,
+                      }}>
+                      <div className="font-semibold text-[11px]" style={{ color: form.sellMode === m ? 'var(--accent)' : 'var(--text)' }}>{m}</div>
+                      <div className="text-[10px]" style={{ color: 'var(--text-3)', marginTop: 1 }}>
                         {m === 'TRIGGER' ? 'Instant on trigger' : 'AI reviews first'}
-                      </span>
+                      </div>
                     </button>
                   ))}
                 </div>
+
+                {/* Quick strategies */}
                 <div>
-                  <label className="label">Quick strategy</label>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>Quick preset</div>
+                  <div className="flex flex-wrap gap-1">
                     {SELL_STRATEGIES.map((s) => (
-                      <button key={s.label} className="btn btn-ghost btn-sm" onClick={() => applyStrategy(s)} style={{ fontSize: 11 }}>
+                      <button key={s.label}
+                        onClick={() => applyStrategy(s)}
+                        className="btn btn-ghost btn-sm"
+                        style={{ fontSize: 10, height: 22, padding: '0 8px' }}>
                         {s.label}
                       </button>
                     ))}
                   </div>
                 </div>
-                <div className="space-y-0">
+
+                {/* Triggers */}
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
                   <TriggerRow label="Take profit" unit="%" value={form.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} min={1} max={10000} />
-                  <TriggerRow label="Stop loss" unit="%" value={form.stopLossPct} onChange={(v) => set('stopLossPct', v)} min={-99} max={-1} />
-                  <TriggerRow label="Trailing stop" unit="%" value={form.trailingStopPct} onChange={(v) => set('trailingStopPct', v)} min={1} max={99} />
-                  <TriggerRow label="Time exit" unit="min"
-                    value={form.exitAfterMs !== null && form.exitAfterMs !== undefined ? form.exitAfterMs / 60_000 : null}
-                    onChange={(v) => set('exitAfterMs', v !== null ? Math.round(v * 60_000) : null)}
+                  <TriggerRow label="Stop loss"   unit="%" value={form.stopLossPct}   onChange={(v) => set('stopLossPct', v)}   min={-99} max={-1} />
+                  <TriggerRow label="Trail stop"  unit="%" value={form.trailingStopPct} onChange={(v) => set('trailingStopPct', v)} min={1} max={99} />
+                  <TriggerRow label="Time exit"   unit="min"
+                    value={form.exitAfterMs != null ? form.exitAfterMs / 60_000 : null}
+                    onChange={(v) => set('exitAfterMs', v != null ? Math.round(v * 60_000) : null)}
                     min={1} max={1440} />
                 </div>
               </>
             )}
           </div>
         )}
-        {msg && <p className="text-[12px] mt-3" style={{ color: msg.ok ? 'var(--ok)' : 'var(--bad)' }}>{msg.text}</p>}
+        {saveState === 'error' && <p className="text-[11px] mt-2" style={{ color: 'var(--bad)' }}>Save failed — check connection</p>}
       </div>
     </div>
   );
@@ -1013,7 +1290,7 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
   const isWatching    = (id: string) => localGroupIds.includes(id);
 
   return (
-    <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+    <div className="panel" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       {/* Panel header */}
       <div className="flex items-center justify-between" style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
         <div className="flex items-center gap-2">
@@ -1042,7 +1319,7 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
       )}
 
       {!tgConnected ? (
-        <div style={{ minHeight: 200, height: INBOX_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center', padding: 24 }}>
             <IcoTelegram size={32} />
             <p className="text-[13px] font-medium mt-3">Connect Telegram to see your groups</p>
@@ -1050,7 +1327,7 @@ function TgInboxPanel({ config, tgConnected, session }: { config: SnipeConfig | 
           </div>
         </div>
       ) : (
-        <div className="tg-inbox-panes" style={{ display: 'flex', height: INBOX_HEIGHT }}>
+        <div className="tg-inbox-panes" style={{ display: 'flex', flex: 1, minHeight: 0 }}>
           {/* ── Left: group list ── */}
           <div className="tg-inbox-groups-col" style={{ width: 224, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
             {/* Search */}
@@ -1435,17 +1712,20 @@ function TriggerRow({ label, unit, value, onChange, min, max }: {
 }) {
   const enabled = value !== null;
   return (
-    <div className="flex items-center gap-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid var(--border)' }}>
       <input type="checkbox" checked={enabled} className="accent-[color:var(--accent)]"
+        style={{ width: 12, height: 12, flexShrink: 0 }}
         onChange={(e) => onChange(e.target.checked ? (min > 0 ? min : Math.abs(min)) : null)} />
-      <div className="flex-1 text-[13px]">{label}</div>
-      {enabled && (
-        <div className="flex items-center gap-1 shrink-0">
+      <span className="text-[11px] flex-1">{label}</span>
+      {enabled ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <input className="input font-mono" type="number" inputMode="decimal" min={min} max={max}
             value={value ?? ''} onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-            style={{ width: 72 }} />
-          <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{unit}</span>
+            style={{ width: 60, height: 26, fontSize: 11 }} />
+          <span className="text-[10px]" style={{ color: 'var(--text-3)', minWidth: 18 }}>{unit}</span>
         </div>
+      ) : (
+        <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>—</span>
       )}
     </div>
   );
@@ -1492,6 +1772,7 @@ function formatSnipeTime(iso: string): string {
 function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: boolean }) {
   const [sellingId, setSellingId] = useState<string | null>(null);
   const [selected, setSelected]  = useState<SnipeTrade | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const manualSell = async (id: string) => {
     setSellingId(id);
@@ -1499,89 +1780,205 @@ function HistoryPanel({ trades, loading }: { trades: SnipeTrade[]; loading: bool
     catch {} finally { setSellingId(null); }
   };
 
-  // Keep selected in sync when history refreshes
   useEffect(() => {
     if (!selected) return;
     const fresh = trades.find((t) => t.id === selected.id);
     if (fresh) setSelected(fresh);
   }, [trades]);
 
+  // Group trades by intel source (groupId), preserve insertion order
+  const groups: { groupId: string; trades: SnipeTrade[] }[] = [];
+  const seen = new Map<string, SnipeTrade[]>();
+  for (const t of trades) {
+    if (!seen.has(t.groupId)) {
+      seen.set(t.groupId, []);
+      groups.push({ groupId: t.groupId, trades: seen.get(t.groupId)! });
+    }
+    seen.get(t.groupId)!.push(t);
+  }
+
+  const toggleCollapse = (gid: string) =>
+    setCollapsed((prev) => { const s = new Set(prev); s.has(gid) ? s.delete(gid) : s.add(gid); return s; });
+
+  const confirmedTotal = trades.filter((t) => t.status === 'confirmed').length;
+  const failedTotal   = trades.filter((t) => t.status === 'failed').length;
+
   return (
-    <div className="panel" style={{ padding: 0 }}>
-      <div className="flex items-center justify-between" style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-        <span className="section-title">Snipe history</span>
-        <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Last 50</span>
+    <div className="panel" style={{ padding: 0, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      {/* Header with live stats */}
+      <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="section-title" style={{ flex: 1 }}>Trades</span>
+        {trades.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {confirmedTotal > 0 && (
+              <span className="font-mono text-[10px] font-bold" style={{ color: 'var(--ok)' }}>
+                {confirmedTotal}✓
+              </span>
+            )}
+            {failedTotal > 0 && (
+              <span className="font-mono text-[10px] font-bold" style={{ color: 'var(--bad)' }}>
+                {failedTotal}✗
+              </span>
+            )}
+            <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
+              {trades.length} total · {groups.length} src
+            </span>
+          </div>
+        )}
       </div>
 
-      <div className="history-panel-inner" style={{ display: 'flex' }}>
-        {/* Trade list */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
           {loading ? (
-            <div className="space-y-2 p-4">{[...Array(3)].map((_, i) => <Skeleton key={i} h={32} rounded="md" />)}</div>
+            <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {[...Array(4)].map((_, i) => <Skeleton key={i} h={28} rounded="md" />)}
+            </div>
           ) : trades.length === 0 ? (
-            <div style={{ padding: '24px 20px', textAlign: 'center' }}>
-              <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>No snipe history yet.</p>
+            <div style={{ padding: '32px 16px', textAlign: 'center' }}>
+              <div style={{ fontSize: 28, opacity: 0.2, marginBottom: 8 }}>⚡</div>
+              <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>No trades yet</p>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)', opacity: 0.7 }}>Snipes will appear here in real-time</p>
             </div>
           ) : (
-            <div className="table-scroll">
-              <table className="table">
-                <thead><tr><th>Token</th><th>Tx</th><th>Status</th><th>Sell</th><th className="num">Time</th><th /></tr></thead>
-                <tbody>
-                  {trades.map((t) => {
-                    const ok = t.status !== 'failed';
-                    const sol = (Number(t.amountRaw) / 1e9).toFixed(4);
-                    const canSell = !t.sellStatus && (t.status === 'broadcast' || t.status === 'confirmed');
-                    const isActive = selected?.id === t.id;
-                    return (
-                      <tr
-                        key={t.id}
-                        onClick={() => setSelected(isActive ? null : t)}
-                        style={{
-                          cursor: 'pointer',
-                          background: isActive ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : undefined,
-                          borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-                        }}
-                      >
-                        <td className="font-mono text-[12px]">{t.mint.slice(0, 8)}…{t.mint.slice(-4)}</td>
-                        <td>
-                          <div className="flex items-center gap-1.5">
-                            {t.txHash
-                              ? <a href={`https://solscan.io/tx/${t.txHash}`} target="_blank" rel="noopener"
-                                  className="font-mono text-[11px]" style={{ color: 'var(--accent)' }}
-                                  onClick={(e) => e.stopPropagation()}>
-                                  {t.txHash.slice(0, 6)}…{t.txHash.slice(-4)}
-                                </a>
-                              : <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>—</span>}
+            <>
+              {groups.map(({ groupId, trades: groupTrades }) => {
+                const isCollapsed = collapsed.has(groupId);
+                const confirmedCount = groupTrades.filter((t) => t.status === 'confirmed').length;
+                const failedCount = groupTrades.filter((t) => t.status === 'failed').length;
+                const color = groupInitialColor(groupId);
+                const label = groupId.length > 14 ? `${groupId.slice(0, 7)}…${groupId.slice(-4)}` : groupId;
+
+                return (
+                  <div key={groupId}>
+                    {/* Group header — sticky */}
+                    <button
+                      onClick={() => toggleCollapse(groupId)}
+                      style={{
+                        width: '100%', display: 'flex', alignItems: 'center', gap: 6,
+                        padding: '5px 12px',
+                        background: `color-mix(in srgb, ${color} 5%, var(--surface-2))`,
+                        borderTop: '1px solid var(--border)',
+                        borderBottom: '1px solid var(--border)',
+                        cursor: 'pointer', textAlign: 'left',
+                        position: 'sticky', top: 0, zIndex: 2,
+                      }}
+                    >
+                      <span style={{
+                        width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                        background: `color-mix(in srgb, ${color} 25%, var(--surface))`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 8, fontWeight: 800, color,
+                      }}>{label.slice(0, 1).toUpperCase()}</span>
+                      <span className="font-mono text-[10px] flex-1 truncate" style={{ color: 'var(--text-2)' }}>
+                        {label}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                        {confirmedCount > 0 && <span className="font-mono text-[9px] font-bold" style={{ color: 'var(--ok)' }}>{confirmedCount}✓</span>}
+                        {failedCount > 0   && <span className="font-mono text-[9px] font-bold" style={{ color: 'var(--bad)' }}>{failedCount}✗</span>}
+                        <span className="font-mono text-[9px]" style={{ color: 'var(--text-3)' }}>{groupTrades.length}tx</span>
+                        <span style={{ color: 'var(--text-3)', fontSize: 9 }}>{isCollapsed ? '▸' : '▾'}</span>
+                      </div>
+                    </button>
+
+                    {/* Trade rows */}
+                    {!isCollapsed && groupTrades.map((t) => {
+                      const ok = t.status === 'confirmed';
+                      const broadcasting = t.status === 'broadcast';
+                      const sol = (Number(t.amountRaw) / 1e9).toFixed(3);
+                      const canSell = !t.sellStatus && (t.status === 'broadcast' || t.status === 'confirmed');
+                      const isActive = selected?.id === t.id;
+                      const attempts = t.attempts ?? 1;
+
+                      const statusColor = ok ? 'var(--ok)'
+                        : t.status === 'failed' ? 'var(--bad)'
+                        : broadcasting ? 'var(--warn)'
+                        : 'var(--text-3)';
+
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => setSelected(isActive ? null : t)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '6px 12px',
+                            borderBottom: '1px solid var(--border)',
+                            cursor: 'pointer',
+                            background: isActive
+                              ? 'color-mix(in srgb, var(--accent) 8%, transparent)'
+                              : 'transparent',
+                            borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                            transition: 'background 80ms',
+                          }}
+                        >
+                          {/* Status indicator dot */}
+                          <span style={{
+                            width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                            background: statusColor,
+                            boxShadow: ok ? `0 0 4px ${statusColor}` : undefined,
+                          }} />
+
+                          {/* Token CA */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div className="font-mono text-[11px]" style={{ color: 'var(--text)' }}>
+                              {t.mint.slice(0, 6)}…{t.mint.slice(-4)}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 1 }}>
+                              <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>{sol} SOL</span>
+                              {attempts > 1 && (
+                                <span className="font-mono text-[9px]" style={{ color: 'var(--warn)' }} title={`${attempts} retries`}>
+                                  ×{attempts}
+                                </span>
+                              )}
+                              {t.sellStatus && (
+                                <span className="font-mono text-[9px]" style={{ color: 'var(--text-3)' }}>· sold</span>
+                              )}
+                            </div>
                           </div>
-                          <div className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>{sol} SOL</div>
-                        </td>
-                        <td><span className={`chip ${ok ? 'chip-ok' : 'chip-bad'}`} style={{ fontSize: 10 }}>{t.status}</span></td>
-                        <td>
-                          {t.sellStatus
-                            ? <span className="chip" style={{ fontSize: 10 }}>{t.sellStatus}</span>
-                            : <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>—</span>}
-                        </td>
-                        <td className="num text-[11px]" style={{ color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                          {formatSnipeTime(t.createdAt)}
-                        </td>
-                        <td onClick={(e) => e.stopPropagation()}>
+
+                          {/* Status + Tx */}
+                          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: statusColor }}>
+                              {t.status === 'confirmed' ? 'FILLED' : t.status === 'broadcast' ? 'PENDING' : t.status === 'failed' ? 'FAILED' : t.status.toUpperCase()}
+                            </div>
+                            {t.txHash && (
+                              <a
+                                href={`https://solscan.io/tx/${t.txHash}`} target="_blank" rel="noopener"
+                                onClick={(e) => e.stopPropagation()}
+                                className="font-mono text-[9px]" style={{ color: 'var(--accent)' }}>
+                                {t.txHash.slice(0, 4)}…↗
+                              </a>
+                            )}
+                          </div>
+
+                          {/* Time */}
+                          <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 38 }}>
+                            <div className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
+                              {new Date(t.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                          </div>
+
+                          {/* Sell button */}
                           {canSell && (
-                            <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, height: 24 }}
-                              onClick={() => manualSell(t.id)} disabled={sellingId === t.id}>
-                              {sellingId === t.id ? <Spinner size={10} /> : 'Sell'}
-                            </button>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                style={{ fontSize: 10, height: 22, padding: '0 7px' }}
+                                onClick={() => manualSell(t.id)}
+                                disabled={sellingId === t.id}>
+                                {sellingId === t.id ? <Spinner size={9} /> : 'sell'}
+                              </button>
+                            </div>
                           )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </>
           )}
         </div>
 
-        {/* Trade detail panel */}
         {selected && (
           <TradeDetail trade={selected} onClose={() => setSelected(null)} />
         )}
@@ -1695,16 +2092,22 @@ function TradeDetail({ trade, onClose }: { trade: SnipeTrade; onClose: () => voi
 ───────────────────────────────────────────────────────────── */
 function PageSkeleton() {
   return (
-    <div className="page page-wide space-y-4">
-      <div className="page-header"><Skeleton w={180} h={28} /><Skeleton w={200} h={22} rounded="md" /></div>
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
-        <div className="xl:col-span-2 space-y-4">
+    <div className="page page-wide" style={{ paddingTop: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <Skeleton w={120} h={20} />
+        <div style={{ flex: 1 }} />
+        <Skeleton w={180} h={22} rounded="md" />
+      </div>
+      <div className="snipe-3col">
+        <div className="snipe-col-setup space-y-3">
           <div className="panel space-y-3">{[...Array(3)].map((_, i) => <Skeleton key={i} h={36} rounded="md" />)}</div>
           <div className="panel space-y-3">{[...Array(4)].map((_, i) => <Skeleton key={i} h={32} rounded="md" />)}</div>
         </div>
-        <div className="xl:col-span-3 space-y-4">
-          <div className="panel" style={{ height: INBOX_HEIGHT, padding: 0 }}><Skeleton h="100%" /></div>
-          <div className="panel space-y-2">{[...Array(4)].map((_, i) => <Skeleton key={i} h={32} rounded="md" />)}</div>
+        <div className="snipe-col-inbox">
+          <div className="panel" style={{ flex: 1, minHeight: 500, padding: 0 }}><Skeleton h="100%" /></div>
+        </div>
+        <div className="snipe-col-history">
+          <div className="panel" style={{ flex: 1, minHeight: 500, padding: 0 }}><Skeleton h="100%" /></div>
         </div>
       </div>
     </div>

@@ -1096,6 +1096,100 @@ body { position: relative; overflow-x: hidden; }
   }
 }
 
+/* ── Snipe fire burst animation ─────────────────────────────────── */
+@keyframes snipe-tint {
+  0%   { opacity: 0; }
+  8%   { opacity: 1; }
+  60%  { opacity: 0.6; }
+  100% { opacity: 0; }
+}
+@keyframes snipe-ring {
+  0%   { transform: scale(0);   opacity: 0.9; }
+  100% { transform: scale(6);   opacity: 0; }
+}
+@keyframes snipe-bolt {
+  0%   { transform: scale(0.2) rotate(-20deg); opacity: 0; }
+  15%  { transform: scale(1.4) rotate(6deg);  opacity: 1; }
+  55%  { transform: scale(1)   rotate(0deg);  opacity: 1; }
+  100% { transform: scale(2.4) rotate(8deg);  opacity: 0; }
+}
+@keyframes snipe-ray {
+  0%   { transform: var(--ray-rotate) scaleX(0); opacity: 1; }
+  100% { transform: var(--ray-rotate) scaleX(1); opacity: 0; }
+}
+
+/* ── Kill-button pulse ──────────────────────────────────────────── */
+@keyframes kill-pulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.55), inset 0 1px 0 rgba(255,255,255,0.12); }
+  50%      { box-shadow: 0 0 0 10px rgba(239,68,68,0),  inset 0 1px 0 rgba(255,255,255,0.12); }
+}
+@keyframes kill-bar-appear {
+  from { opacity:0; transform:translateY(-6px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+
+/* ── Session auto-starting spinner ─────────────────────────────── */
+@keyframes snipe-dot-pulse {
+  0%,80%,100% { opacity:0.3; transform:scale(0.85); }
+  40%          { opacity:1;   transform:scale(1); }
+}
+
+/* ── Snipe toast notification ────────────────────────────────────── */
+@keyframes snipe-toast-enter {
+  from { opacity:0; transform: translateX(24px) translateY(8px) scale(0.96); }
+  to   { opacity:1; transform: translateX(0)    translateY(0)   scale(1); }
+}
+@keyframes snipe-toast-progress {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+@keyframes snipe-toast-scan {
+  0%   { transform: translateY(-100%); opacity: 0.6; }
+  100% { transform: translateY(400%);  opacity: 0; }
+}
+
+/* ── Snipe 3-col layout ──────────────────────────────────────────── */
+.snipe-3col {
+  display: grid;
+  grid-template-columns: 270px 1fr 390px;
+  grid-template-areas: "setup inbox history";
+  gap: 16px;
+  align-items: stretch;
+  min-height: 600px;
+}
+.snipe-col-setup   { grid-area: setup;   display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
+.snipe-col-inbox   { grid-area: inbox;   min-height: 0; display: flex; flex-direction: column; }
+.snipe-col-history { grid-area: history; min-height: 0; display: flex; flex-direction: column; }
+
+/* Tablet: 2-col — setup sidebar + inbox/history stacked on right */
+@media (min-width: 768px) and (max-width: 1279px) {
+  .snipe-3col {
+    grid-template-columns: 260px 1fr;
+    grid-template-rows: 1fr 1fr;
+    grid-template-areas:
+      "setup inbox"
+      "setup history";
+    min-height: 700px;
+  }
+  .snipe-col-inbox   { min-height: 280px; }
+  .snipe-col-history { min-height: 280px; }
+}
+
+/* Mobile: single column stack */
+@media (max-width: 767px) {
+  .snipe-3col {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "setup"
+      "inbox"
+      "history";
+    min-height: unset;
+  }
+  .snipe-col-setup, .snipe-col-inbox, .snipe-col-history { min-height: auto; }
+  .snipe-col-inbox   { min-height: 360px; }
+  .snipe-col-history { min-height: 320px; }
+}
+
 /* Honor reduced motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
