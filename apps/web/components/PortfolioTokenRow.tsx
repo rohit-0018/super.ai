@@ -1,6 +1,6 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import { useApi } from '../lib/useApi';
+import { useState } from 'react';
+import { useInView, useTokenDetail, type TokenDetail } from '../lib/useTokenDetail';
 import SellTokenModal from './SellTokenModal';
 
 export interface HoldingRow {
@@ -16,24 +16,6 @@ export interface HoldingRow {
   pnlPct: number | null;
   firstBoughtAt: string | null;
   txHash: string | null;
-}
-
-interface TokenDetail {
-  mint: string;
-  name: string | null;
-  symbol: string | null;
-  logoURI: string | null;
-  decimals: number | null;
-  priceUsd: number | null;
-  priceChange24hPct: number | null;
-  marketCap: number | null;
-  fdv: number | null;
-  liquidity: number | null;
-  volume24hUsd: number | null;
-  supply: number | null;
-  holders: number | null;
-  source: 'birdeye' | 'unknown';
-  fetchedAt: string;
 }
 
 /* ── Formatters ─────────────────────────────────────────────────── */
@@ -110,34 +92,6 @@ function TokenLogo({ logoURI, symbol }: { logoURI: string | null; symbol: string
   );
 }
 
-/* ── IntersectionObserver hook (per-row lazy gate) ─────────────── */
-function useInView<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
-  const [inView, setInView] = useState(false);
-
-  useEffect(() => {
-    if (inView) return; // sticky: once visible, never un-fetch
-    const el = ref.current;
-    if (!el || typeof IntersectionObserver === 'undefined') {
-      setInView(true);
-      return;
-    }
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setInView(true);
-          obs.disconnect();
-        }
-      },
-      { rootMargin: '120px 0px' }, // start fetching just before it enters the viewport
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [inView]);
-
-  return { ref, inView };
-}
-
 /* ── Row ────────────────────────────────────────────────────────── */
 export function PortfolioTokenRow({
   h,
@@ -151,10 +105,7 @@ export function PortfolioTokenRow({
   const [expanded, setExpanded] = useState(false);
   const [sellOpen, setSellOpen] = useState(false);
   const { ref, inView } = useInView<HTMLDivElement>();
-  const { data: detail, loading: detailLoading } = useApi<TokenDetail>(
-    `/market/tokens/${h.mint}`,
-    { enabled: inView, ttlMs: 60_000 },
-  );
+  const { data: detail, loading: detailLoading } = useTokenDetail(h.mint, inView);
 
   // Prefer live Birdeye price (more recent than the bulk fetch in the list).
   const livePrice = detail?.priceUsd ?? h.priceUsd;

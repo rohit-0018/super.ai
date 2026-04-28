@@ -676,6 +676,19 @@ model SnipeTrade {
   peakPriceMul  Float?                          // highest price multiple seen (for trailing stop)
   sellCheckedAt DateTime?                       // last time sell conditions were evaluated
 
+  // Snapshot at fill time — frozen historical context for accurate P&L and
+  // "mcap at buy" rendering. All optional: best-effort, never blocks the buy.
+  priceAtBuyUsd     Float?                      // per-token USD price at fill
+  mcapAtBuyUsd      Float?                      // token market cap at fill (USD)
+  liquidityAtBuyUsd Float?                      // pool liquidity at fill (USD)
+  solPriceAtBuyUsd  Float?                      // SOL/USD at fill (for cost-basis math)
+
+  // Realized exit snapshot — set when sell is confirmed.
+  proceedsSolAtSell Float?                      // SOL received at sell
+  proceedsUsdAtSell Float?                      // SOL × SOL/USD at sell time
+  pnlUsdRealized    Float?                      // proceeds − cost basis (USD)
+  pnlPctRealized    Float?                      // realized P&L %
+
   createdAt DateTime @default(now())
 
   @@index([userId, createdAt])

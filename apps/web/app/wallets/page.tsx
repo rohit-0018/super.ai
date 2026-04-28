@@ -23,7 +23,7 @@ interface Wallet {
   backedUpAt?: string | null;
   label?: string;
   paperBalance?: number | null;
-  recentTrades?: { tokenIn: string; tokenOut: string; amountIn: string; amountOut: string; priceUsd: number | null; mode: string; createdAt: string }[];
+  recentTrades?: { side?: string; tokenIn: string; tokenOut: string; amountIn: string; amountOut: string; priceUsd: number | null; mode: string; createdAt: string }[];
 }
 
 export default function Wallets() {
@@ -277,24 +277,55 @@ export default function Wallets() {
                   <div className="mt-3 pt-3 border-t border-[color:var(--border)]">
                     <div className="text-[10px] uppercase tracking-wider text-[color:var(--text-3)] mb-2 font-medium">Recent activity</div>
                     <div className="space-y-1">
-                      {w.recentTrades.map((t, i) => (
-                        <div key={i} className="flex items-start justify-between gap-2 text-[11px] flex-wrap">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="chip shrink-0" style={{ fontSize: 9, height: 18 }}>{t.mode}</span>
-                            <span className="font-mono text-[color:var(--text-2)] truncate">
-                              {t.amountIn} {t.tokenIn.slice(0, 6)} → {t.amountOut} {t.tokenOut.slice(0, 6)}
-                            </span>
+                      {w.recentTrades.map((t, i) => {
+                        const side = (t.side ?? 'buy').toLowerCase();
+                        const isSell = side === 'sell';
+                        const sideColor = isSell ? 'var(--bad)' : 'var(--ok)';
+                        return (
+                          <div
+                            key={i}
+                            className="flex items-start justify-between gap-2 text-[11px] flex-wrap"
+                            style={{
+                              borderLeft: `2px solid ${sideColor}`,
+                              paddingLeft: 8,
+                              background: `color-mix(in srgb, ${sideColor} 4%, transparent)`,
+                              borderRadius: 4,
+                              padding: '4px 6px 4px 8px',
+                            }}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span
+                                className="shrink-0"
+                                style={{
+                                  fontSize: 9,
+                                  fontWeight: 800,
+                                  letterSpacing: '0.05em',
+                                  padding: '1px 6px',
+                                  borderRadius: 4,
+                                  background: `color-mix(in srgb, ${sideColor} 18%, transparent)`,
+                                  color: sideColor,
+                                  minWidth: 30,
+                                  textAlign: 'center',
+                                }}
+                              >
+                                {isSell ? 'SELL' : 'BUY'}
+                              </span>
+                              <span className="chip shrink-0" style={{ fontSize: 9, height: 18 }}>{t.mode}</span>
+                              <span className="font-mono text-[color:var(--text-2)] truncate">
+                                {t.amountIn} {t.tokenIn.slice(0, 6)} → {t.amountOut} {t.tokenOut.slice(0, 6)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {t.priceUsd != null && (
+                                <span className="font-mono text-[color:var(--text-3)]">${Number(t.priceUsd).toFixed(2)}</span>
+                              )}
+                              <span className="text-[color:var(--text-3)]">
+                                {new Date(t.createdAt).toLocaleDateString()}
+                              </span>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {t.priceUsd != null && (
-                              <span className="font-mono text-[color:var(--text-3)]">${Number(t.priceUsd).toFixed(2)}</span>
-                            )}
-                            <span className="text-[color:var(--text-3)]">
-                              {new Date(t.createdAt).toLocaleDateString()}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

@@ -102,6 +102,163 @@ export class SnipeController {
     });
   }
 
+  /**
+   * GET /api/snipe/activity — unified buy/sell feed for the snipe history panel.
+   *
+   * Merges:
+   *   - SnipeTrade rows (buys) — including their auto-sell rows when sellStatus is set.
+   *   - Trade rows where the user manually sold a sniped mint (tokenIn matches a SnipeTrade.mint).
+   *
+   * Sorted desc by timestamp. Designed to power a DexScreener-style buy/sell list.
+   */
+  @Get('activity')
+  async getActivity(@Req() req: any, @Query('limit') limit?: string) {
+    const userId: string = req.user.userId;
+    const take = Math.min(Number(limit ?? 100), 300);
+
+    const snipeTrades = await this.prisma.snipeTrade.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
+
+    type ActivityItem = {
+      kind: 'buy' | 'sell';
+      source: 'snipe' | 'snipe_auto_sell' | 'manual_sell';
+      id: string;
+      mint: string;
+      amountRaw: string | null;
+      outAmount: string | null;
+      txHash: string | null;
+      status: string;
+      errorMsg: string | null;
+      sourceMsg: string | null;
+      groupId: string | null;
+      chain: string;
+      attempts: number;
+      createdAt: string;
+      // sell-specific
+      sellReason?: string | null;
+      // for buys: keep auto-sell context so the UI can show it on the same row
+      sellStatus?: string | null;
+      sellTxHash?: string | null;
+      // link sells back to the buy when known
+      relatedBuyId?: string | null;
+      // Buy-time snapshot (frozen at fill — survives token-price drift)
+      priceAtBuyUsd?: number | null;
+      mcapAtBuyUsd?: number | null;
+      liquidityAtBuyUsd?: number | null;
+      solPriceAtBuyUsd?: number | null;
+      // Realized exit snapshot (set when sell confirms)
+      proceedsSolAtSell?: number | null;
+      proceedsUsdAtSell?: number | null;
+      pnlUsdRealized?: number | null;
+      pnlPctRealized?: number | null;
+    };
+
+    const items: ActivityItem[] = [];
+    const mints = new Set<string>();
+
+    for (const t of snipeTrades) {
+      mints.add(t.mint);
+      items.push({
+        kind: 'buy',
+        source: 'snipe',
+        id: t.id,
+        mint: t.mint,
+        amountRaw: t.amountRaw,
+        outAmount: t.outAmount,
+        txHash: t.txHash,
+        status: t.status,
+        errorMsg: t.errorMsg,
+        sourceMsg: t.sourceMsg,
+        groupId: t.groupId,
+        chain: t.chain,
+        attempts: t.attempts ?? 1,
+        createdAt: t.createdAt.toISOString(),
+        sellStatus: t.sellStatus ?? null,
+        sellTxHash: t.sellTxHash ?? null,
+        sellReason: t.sellReason ?? null,
+        priceAtBuyUsd: (t as any).priceAtBuyUsd ?? null,
+        mcapAtBuyUsd: (t as any).mcapAtBuyUsd ?? null,
+        liquidityAtBuyUsd: (t as any).liquidityAtBuyUsd ?? null,
+        solPriceAtBuyUsd: (t as any).solPriceAtBuyUsd ?? null,
+        proceedsSolAtSell: (t as any).proceedsSolAtSell ?? null,
+        proceedsUsdAtSell: (t as any).proceedsUsdAtSell ?? null,
+        pnlUsdRealized: (t as any).pnlUsdRealized ?? null,
+        pnlPctRealized: (t as any).pnlPctRealized ?? null,
+      });
+
+      // Surface auto-sell as its own row when present, so it shows up red in the feed.
+      if (t.sellStatus && t.sellStatus !== 'pending') {
+        items.push({
+          kind: 'sell',
+          source: 'snipe_auto_sell',
+          id: `${t.id}:sell`,
+          mint: t.mint,
+          amountRaw: t.outAmount,
+          outAmount: (t as any).proceedsSolAtSell != null
+            ? String(Math.round(((t as any).proceedsSolAtSell as number) * 1_000_000_000))
+            : null,
+          txHash: t.sellTxHash ?? null,
+          status: t.sellStatus,
+          errorMsg: null,
+          sourceMsg: null,
+          groupId: t.groupId,
+          chain: t.chain,
+          attempts: 1,
+          createdAt: (t.sellCheckedAt ?? t.createdAt).toISOString(),
+          sellReason: t.sellReason ?? null,
+          relatedBuyId: t.id,
+          priceAtBuyUsd: (t as any).priceAtBuyUsd ?? null,
+          mcapAtBuyUsd: (t as any).mcapAtBuyUsd ?? null,
+          solPriceAtBuyUsd: (t as any).solPriceAtBuyUsd ?? null,
+          proceedsSolAtSell: (t as any).proceedsSolAtSell ?? null,
+          proceedsUsdAtSell: (t as any).proceedsUsdAtSell ?? null,
+          pnlUsdRealized: (t as any).pnlUsdRealized ?? null,
+          pnlPctRealized: (t as any).pnlPctRealized ?? null,
+        });
+      }
+    }
+
+    // Manual sells (via /swap) where tokenIn was one of these mints.
+    if (mints.size > 0) {
+      const manualSells = await this.prisma.trade.findMany({
+        where: {
+          userId,
+          tokenIn: { in: Array.from(mints) },
+          side: 'sell',
+        },
+        orderBy: { createdAt: 'desc' },
+        take,
+      });
+
+      for (const s of manualSells) {
+        items.push({
+          kind: 'sell',
+          source: 'manual_sell',
+          id: s.id,
+          mint: s.tokenIn,
+          amountRaw: s.amountIn,
+          outAmount: s.amountOut,
+          txHash: s.txHash ?? null,
+          status: s.txHash ? 'confirmed' : 'submitted',
+          errorMsg: null,
+          sourceMsg: null,
+          groupId: null,
+          chain: s.chain,
+          attempts: 1,
+          createdAt: s.createdAt.toISOString(),
+          sellReason: 'manual',
+          relatedBuyId: null,
+        });
+      }
+    }
+
+    items.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    return items.slice(0, take);
+  }
+
   /** POST /api/snipe/history/:id/sell — manually trigger sell for a trade */
   @Post('history/:id/sell')
   async manualSell(@Req() req: any, @Param('id') tradeId: string) {

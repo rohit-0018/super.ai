@@ -74,10 +74,13 @@ export default function SellTokenModal({ walletId, walletChain, token, onClose }
         slippageBps,
       });
       setResult(data);
-      // Refresh portfolio + trades so the UI reflects the sell.
+      // Refresh portfolio, trades, snipe activity, and wallets list so every
+      // surface that shows a buy/sell row reflects this sell.
       invalidate(`/wallets/${walletId}/holdings`);
       invalidate('/wallets/balances');
+      invalidate('/wallets');
       invalidate('/trades');
+      invalidate('/snipe/activity?limit=100');
     } catch (e: any) {
       setErr(
         e?.response?.data?.message?.guardrail ??

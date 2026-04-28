@@ -198,9 +198,38 @@ export class SnipeSellService implements OnModuleInit, OnModuleDestroy {
       tx.sign([session.keypair]);
       const sig = await session.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
 
+      // Realized P&L snapshot — proceeds in SOL come from the quote's outAmount.
+      // SOL/USD is approximate (no historical lookup), but it's the right number
+      // at sell time, which is what matters for "what did this trade make".
+      const proceedsSol = quote?.outAmount
+        ? Number(quote.outAmount) / 1_000_000_000
+        : null;
+      const solPriceUsd = (trade as any).solPriceAtBuyUsd ?? null;
+      const proceedsUsd =
+        proceedsSol !== null && solPriceUsd !== null ? proceedsSol * solPriceUsd : null;
+
+      const buySolSpent = trade.amountRaw ? Number(trade.amountRaw) / 1_000_000_000 : null;
+      const costBasisUsd =
+        buySolSpent !== null && solPriceUsd !== null ? buySolSpent * solPriceUsd : null;
+
+      const pnlUsd =
+        proceedsUsd !== null && costBasisUsd !== null ? proceedsUsd - costBasisUsd : null;
+      const pnlPct =
+        pnlUsd !== null && costBasisUsd && costBasisUsd > 0
+          ? (pnlUsd / costBasisUsd) * 100
+          : null;
+
       await this.prisma.snipeTrade.update({
         where: { id: trade.id },
-        data: { sellTxHash: sig, sellStatus: 'broadcast', sellReason: reason },
+        data: {
+          sellTxHash: sig,
+          sellStatus: 'broadcast',
+          sellReason: reason,
+          ...(proceedsSol !== null ? { proceedsSolAtSell: proceedsSol } : {}),
+          ...(proceedsUsd !== null ? { proceedsUsdAtSell: proceedsUsd } : {}),
+          ...(pnlUsd !== null ? { pnlUsdRealized: pnlUsd } : {}),
+          ...(pnlPct !== null ? { pnlPctRealized: pnlPct } : {}),
+        },
       });
 
       this.logger.log(`Sell broadcast trade=${trade.id} mint=${trade.mint} reason=${reason} sig=${sig}`);

@@ -43,7 +43,7 @@ export class WalletsService {
     const paperBalances = await this.prisma.paperBalance.findMany({ where: { userId } });
     const trades = await this.prisma.trade.findMany({
       where: { userId },
-      select: { tokenIn: true, tokenOut: true, amountIn: true, amountOut: true, priceUsd: true, mode: true, createdAt: true },
+      select: { side: true, tokenIn: true, tokenOut: true, amountIn: true, amountOut: true, priceUsd: true, mode: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
@@ -58,6 +58,7 @@ export class WalletsService {
         ...w,
         paperBalance: pb?.amount ?? null,
         recentTrades: walletTrades.slice(0, 5).map((t) => ({
+          side: t.side,
           tokenIn: t.tokenIn,
           tokenOut: t.tokenOut,
           amountIn: t.amountIn,

@@ -218,12 +218,13 @@ export class ExecutionService {
     }
 
     if (mode === 'LIVE') this.liveGuard.invalidate(input.userId);
+    const inferredSide = inferSwapSide(input.tokenIn, input.tokenOut);
     const trade = await this.prisma.trade.create({
       data: {
         userId: input.userId,
         orderId: input.orderId,
         chain: input.chain,
-        side: 'buy',
+        side: inferredSide,
         tokenIn: input.tokenIn,
         tokenOut: input.tokenOut,
         amountIn: input.amountIn,
@@ -487,4 +488,28 @@ export class ExecutionService {
       create: { userId, token, amount: next },
     });
   }
+}
+
+/**
+ * Quote tokens — when the swap *outputs* one of these we treat it as a sell.
+ * SOL/USDC/USDT (Solana) and WETH/USDC/USDT (EVM).
+ */
+const QUOTE_TOKENS = new Set<string>([
+  // Solana
+  'So11111111111111111111111111111111111111112',                // wSOL
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',                // USDC (Solana)
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',                // USDT (Solana)
+  // EVM (lower-cased for case-insensitive compare)
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',                  // WETH (Ethereum)
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',                  // USDC (Ethereum)
+  '0xdac17f958d2ee523a2206206994597c13d831ec7',                  // USDT (Ethereum)
+]);
+
+function inferSwapSide(tokenIn: string, tokenOut: string): 'buy' | 'sell' {
+  const inLc = tokenIn?.toLowerCase?.() ?? tokenIn;
+  const outLc = tokenOut?.toLowerCase?.() ?? tokenOut;
+  const outIsQuote = QUOTE_TOKENS.has(tokenOut) || QUOTE_TOKENS.has(outLc);
+  const inIsQuote = QUOTE_TOKENS.has(tokenIn) || QUOTE_TOKENS.has(inLc);
+  if (outIsQuote && !inIsQuote) return 'sell';
+  return 'buy';
 }

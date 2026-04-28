@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
 import { WalletsModule } from '../wallets/wallets.module';
 import { WsModule } from '../ws/ws.module';
+import { MarketDataModule } from '../market-data/market-data.module';
 import { SnipeSessionService } from './snipe-session.service';
 import { SnipeFastService } from './snipe-fast.service';
 import { SnipeGroupService } from './snipe-group.service';
@@ -12,7 +13,7 @@ import { TgAuthService } from './tg-auth.service';
 import { TgAuthController } from './tg-auth.controller';
 
 @Module({
-  imports: [PrismaModule, WalletsModule, WsModule],
+  imports: [PrismaModule, WalletsModule, WsModule, MarketDataModule],
   providers: [
     SnipeSessionService,
     SnipeFastService,

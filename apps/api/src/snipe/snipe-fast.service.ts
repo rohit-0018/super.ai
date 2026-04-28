@@ -5,6 +5,8 @@ import { RealtimeGateway } from '../ws/realtime.gateway';
 import { getJupiterApiBase } from '../common/network-config';
 import { SnipeSessionService, CachedSnipeConfig } from './snipe-session.service';
 import { newTraceId } from '../common/trace-context';
+import { TokenMetadataService } from '../market-data/token-metadata.service';
+import { CoinGeckoProvider } from '../market-data/providers/coingecko.provider';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -57,6 +59,8 @@ export class SnipeFastService {
     private prisma: PrismaService,
     private snipeSession: SnipeSessionService,
     @Optional() private ws: RealtimeGateway,
+    @Optional() private tokenMeta?: TokenMetadataService,
+    @Optional() private coingecko?: CoinGeckoProvider,
   ) {}
 
   async execute(
@@ -136,6 +140,13 @@ export class SnipeFastService {
 
       // Record the initial broadcast
       await this.recordTrade(config, mint, primary.outAmount, sig0, groupId, sourceMsg, 'broadcast');
+
+      // Snapshot mcap / price / SOL-USD at fill time so the row carries accurate
+      // historical context even after token prices drift. Best-effort, never blocks.
+      this.attachBuySnapshot(config.userId, mint, sig0, traceId).catch((e) => {
+        this.logger.debug(`[trc=${traceId}] snapshot failed for ${mint}: ${e?.message}`);
+      });
+
       this.ws?.emitToUser(config.userId, 'snipe_triggered', {
         mint, txHash: sig0, durationMs,
         amountRaw: config.buyAmountRaw, outAmount: primary.outAmount,
@@ -473,6 +484,41 @@ export class SnipeFastService {
         attempts: 1,
         errorMsg: errorMsg ? errorMsg.slice(0, 1000) : null,
       },
+    });
+  }
+
+  /**
+   * Captures price / mcap / liquidity / SOL-USD at fill time and writes them
+   * onto the just-recorded SnipeTrade row. Runs in the background — failures
+   * here never affect the snipe path. Targets the row by txHash (unique enough
+   * for the broadcast we just sent).
+   */
+  private async attachBuySnapshot(userId: string, mint: string, txHash: string, traceId: string) {
+    if (!this.tokenMeta) return;
+
+    // Birdeye token overview + SOL/USD in parallel.
+    const [detail, solPrice] = await Promise.all([
+      this.tokenMeta.get(mint).catch(() => null),
+      this.coingecko
+        ? this.coingecko.price(['solana']).then((r) => r?.solana?.usd ?? null).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    if (!detail && solPrice === null) return;
+
+    const data: Record<string, number | null> = {};
+    if (detail?.priceUsd !== null && detail?.priceUsd !== undefined) data.priceAtBuyUsd = detail.priceUsd;
+    if (detail?.marketCap !== null && detail?.marketCap !== undefined) data.mcapAtBuyUsd = detail.marketCap;
+    if (detail?.liquidity !== null && detail?.liquidity !== undefined) data.liquidityAtBuyUsd = detail.liquidity;
+    if (solPrice !== null) data.solPriceAtBuyUsd = solPrice;
+
+    if (Object.keys(data).length === 0) return;
+
+    await this.prisma.snipeTrade.updateMany({
+      where: { userId, mint, txHash, status: 'broadcast' },
+      data,
+    }).catch((e: any) => {
+      this.logger.debug(`[trc=${traceId}] snapshot write failed: ${e?.message}`);
     });
   }
 }
