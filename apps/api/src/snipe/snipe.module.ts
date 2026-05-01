@@ -11,10 +11,12 @@ import { SnipeController } from './snipe.controller';
 import { TgUserbotService } from './tg-userbot.service';
 import { TgAuthService } from './tg-auth.service';
 import { TgAuthController } from './tg-auth.controller';
+import { HeliusService } from './helius.service';
 
 @Module({
   imports: [PrismaModule, WalletsModule, WsModule, MarketDataModule],
   providers: [
+    HeliusService,
     SnipeSessionService,
     SnipeFastService,
     SnipeGroupService,
@@ -23,6 +25,6 @@ import { TgAuthController } from './tg-auth.controller';
     TgAuthService,
   ],
   controllers: [SnipeController, TgAuthController],
-  exports: [SnipeSessionService, SnipeFastService, SnipeGroupService, SnipeSellService, TgUserbotService],
+  exports: [HeliusService, SnipeSessionService, SnipeFastService, SnipeGroupService, SnipeSellService, TgUserbotService],
 })
 export class SnipeModule {}

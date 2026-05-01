@@ -3,10 +3,19 @@ import { Keypair, Connection } from '@solana/web3.js';
 import { getSolanaRpcUrl } from '../common/network-config';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
+import { HeliusService } from './helius.service';
 
 export interface HotSession {
   keypair: Keypair;
+  /** Confirmed commitment — use for getSignatureStatuses, getBalance. */
   connection: Connection;
+  /**
+   * Processed commitment, staked endpoint — use for sendRawTransaction only.
+   * "processed" lets Helius accept the tx immediately without waiting for
+   * validator agreement; combined with the staked endpoint this maximises
+   * landing rate.
+   */
+  sendConnection: Connection;
   walletId: string;
   address: string;
   expiresAt: number;
@@ -53,6 +62,7 @@ export class SnipeSessionService implements OnModuleDestroy {
   constructor(
     private prisma: PrismaService,
     private wallets: WalletsService,
+    private helius: HeliusService,
   ) {
     // Clean expired sessions + old dedupe entries every minute
     this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
@@ -75,13 +85,15 @@ export class SnipeSessionService implements OnModuleDestroy {
       return Keypair.fromSecretKey(bytes);
     });
 
-    const connection = new Connection(getSolanaRpcUrl(), {
-      commitment: 'confirmed',
-      disableRetryOnRateLimit: true, // fail fast for speed
-    });
+    // Dual connections: reads on confirmed, sends on processed/staked
+    const connection     = this.helius.makeReadConnection();
+    const sendConnection = this.helius.makeSendConnection();
 
     const expiresAt = Date.now() + 3_600_000; // 1 h
-    this.sessions.set(userId, { keypair, connection, walletId, address: wallet.address, expiresAt });
+    this.sessions.set(userId, {
+      keypair, connection, sendConnection,
+      walletId, address: wallet.address, expiresAt,
+    });
 
     // Persist session expiry so restart can detect stale state
     await this.prisma.snipeConfig.upsert({

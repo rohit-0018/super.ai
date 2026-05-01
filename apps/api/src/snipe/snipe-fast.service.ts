@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { getJupiterApiBase } from '../common/network-config';
 import { SnipeSessionService, CachedSnipeConfig } from './snipe-session.service';
+import { HeliusService } from './helius.service';
 import { newTraceId } from '../common/trace-context';
 import { TokenMetadataService } from '../market-data/token-metadata.service';
 import { CoinGeckoProvider } from '../market-data/providers/coingecko.provider';
@@ -58,6 +59,7 @@ export class SnipeFastService {
   constructor(
     private prisma: PrismaService,
     private snipeSession: SnipeSessionService,
+    private helius: HeliusService,
     @Optional() private ws: RealtimeGateway,
     @Optional() private tokenMeta?: TokenMetadataService,
     @Optional() private coingecko?: CoinGeckoProvider,
@@ -115,10 +117,15 @@ export class SnipeFastService {
     }
 
     try {
+      // ── Get Helius priority fee (cached 2 s, nearly free on warm path) ──────
+      const feeEstimate = await this.helius.getPriorityFeeEstimate();
+      const maxPriorityLamports = this.helius.computeMaxLamports(feeEstimate);
+
       // ── Build all slippage levels in parallel ──────────────────────────────
       const levels = this.buildSlippageLevels(config.maxSlippageBps);
       const bundles = await this.buildBundlesParallel(
-        jupBase, mint, config.buyAmountRaw, session.address, session.keypair, levels, traceId,
+        jupBase, mint, config.buyAmountRaw, session.address, session.keypair,
+        levels, traceId, maxPriorityLamports,
       );
 
       if (bundles.length === 0) throw new Error('All parallel quote attempts failed');
@@ -126,13 +133,14 @@ export class SnipeFastService {
       const primary = bundles[0];
       const durationPrep = Date.now() - t0;
       this.logger.log(
-        `[trc=${traceId}] ⚡ ${bundles.length} tx bundles ready (${durationPrep}ms) — broadcasting level 0 (slippage=${primary.slippageBps})`,
+        `[trc=${traceId}] ⚡ ${bundles.length} tx bundles ready (${durationPrep}ms) — ` +
+        `broadcasting level 0 slippage=${primary.slippageBps} maxFee=${maxPriorityLamports}lamports`,
       );
 
-      // ── Broadcast level 0 immediately ─────────────────────────────────────
-      const sig0 = await session.connection.sendRawTransaction(primary.rawTx, {
+      // ── Broadcast via staked Helius sendConnection (processed commitment) ───
+      const sig0 = await session.sendConnection.sendRawTransaction(primary.rawTx, {
         skipPreflight: true,
-        maxRetries: 2,
+        maxRetries: 0, // we retry ourselves in monitorWithRetry
       });
 
       const durationMs = Date.now() - t0;
@@ -154,8 +162,9 @@ export class SnipeFastService {
       });
 
       // ── Background: confirm + retry on slippage failure ───────────────────
+      // readConn (confirmed) for status polling; sendConn (staked/processed) for retries
       this.monitorWithRetry(
-        session.connection, config, mint, groupId, sourceMsg,
+        session.connection, session.sendConnection, config, mint, groupId, sourceMsg,
         bundles, sig0, jupBase, traceId, t0,
       );
 
@@ -205,9 +214,10 @@ export class SnipeFastService {
     keypair: Keypair,
     levels: Array<number | 'dynamic'>,
     traceId: string,
+    maxPriorityLamports = 1_000_000,
   ): Promise<SwapBundle[]> {
     const results = await Promise.allSettled(
-      levels.map((level) => this.buildBundle(jupBase, mint, amountRaw, walletAddress, keypair, level)),
+      levels.map((level) => this.buildBundle(jupBase, mint, amountRaw, walletAddress, keypair, level, maxPriorityLamports)),
     );
 
     const bundles: SwapBundle[] = [];
@@ -236,6 +246,7 @@ export class SnipeFastService {
     walletAddress: string,
     keypair: Keypair,
     slippage: number | 'dynamic',
+    maxPriorityLamports = 1_000_000,
   ): Promise<SwapBundle> {
     // Quote
     const quoteUrl = new URL(`${jupBase}/quote`);
@@ -261,7 +272,7 @@ export class SnipeFastService {
       dynamicComputeUnitLimit: true,
       prioritizationFeeLamports: {
         priorityLevelWithMaxLamports: {
-          maxLamports: 1_000_000, // ~0.001 SOL cap
+          maxLamports: maxPriorityLamports, // Dynamic cap from Helius estimate
           priorityLevel: 'veryHigh',
         },
       },
@@ -289,7 +300,8 @@ export class SnipeFastService {
   // ── Background confirmation + retry loop ────────────────────────────────────
 
   private monitorWithRetry(
-    conn: Connection,
+    conn: Connection,       // confirmed — status polling
+    sendConn: Connection,   // processed/staked — retry sends
     config: CachedSnipeConfig,
     mint: string,
     groupId: string,
@@ -350,7 +362,7 @@ export class SnipeFastService {
               `[trc=${traceId}] ↑ slippage retry attempt=${nextAttempt} ` +
               `slippage=${prebuilt.slippageBps} (pre-signed, ${elapsedMs}ms elapsed)`,
             );
-            retrySig = await conn.sendRawTransaction(prebuilt.rawTx, { skipPreflight: true, maxRetries: 2 });
+            retrySig = await sendConn.sendRawTransaction(prebuilt.rawTx, { skipPreflight: true, maxRetries: 0 });
             retryOut = prebuilt.outAmount;
           } else if (nextAttempt < bundles.length || prebuilt) {
             // Blockhash might be stale — re-quote with the target slippage level
@@ -369,7 +381,7 @@ export class SnipeFastService {
                 (this.snipeSession.getSession(config.userId))!.keypair,
                 typeof targetBps === 'number' ? targetBps : config.maxSlippageBps,
               );
-              retrySig = await conn.sendRawTransaction(fresh.rawTx, { skipPreflight: true, maxRetries: 2 });
+              retrySig = await sendConn.sendRawTransaction(fresh.rawTx, { skipPreflight: true, maxRetries: 0 });
               retryOut = fresh.outAmount;
             } catch (buildErr: any) {
               this.logger.error(`[trc=${traceId}] re-quote for retry failed: ${buildErr.message}`);

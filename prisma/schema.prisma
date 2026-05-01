@@ -673,6 +673,7 @@ model SnipeTrade {
   sellTxHash    String?
   sellStatus    String?                         // pending | broadcast | confirmed | failed | skip
   sellReason    String?                         // take_profit | stop_loss | trailing_stop | time_exit | manual | intelligent
+  sellAttempts  Int      @default(0)            // total sell broadcast attempts (for retry limiting)
   peakPriceMul  Float?                          // highest price multiple seen (for trailing stop)
   sellCheckedAt DateTime?                       // last time sell conditions were evaluated
 

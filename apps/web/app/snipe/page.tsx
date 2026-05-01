@@ -32,7 +32,6 @@ import { useApi, invalidate, mutate } from '../../lib/useApi';
 import { useRealtime } from '../../lib/useRealtime';
 import { api } from '../../lib/api';
 import { Skeleton, Spinner } from '../../components/ui/Skeleton';
-import SnipeActivityRow from '../../components/SnipeActivityRow';
 
 type ColKey = 'setup' | 'inbox' | 'history';
 
@@ -99,23 +98,19 @@ interface TgMessage {
 interface SnipeTrade {
   id: string;
   mint: string;
-  amountRaw: string | null;
+  amountRaw: string;
   txHash: string | null;
   outAmount: string | null;
   status: string;
   errorMsg: string | null;
   sourceMsg: string | null;
-  groupId: string | null;
+  groupId: string;
   chain: string;
   sellStatus: string | null;
   sellTxHash: string | null;
   sellReason: string | null;
   attempts: number;
   createdAt: string;
-  // Activity-feed fields (returned by /snipe/activity).
-  kind?: 'buy' | 'sell';
-  source?: 'snipe' | 'snipe_auto_sell' | 'manual_sell';
-  relatedBuyId?: string | null;
 }
 
 interface Wallet { id: string; chain: string; address: string; label: string | null }
@@ -135,7 +130,7 @@ interface SnipeBannerData {
 export default function SnipePage() {
   const { data: configData, loading: configLoading } = useApi<{ config: SnipeConfig | null; session: { active: boolean; address?: string; balanceLamports?: number } }>('/snipe/config');
   const { data: tgRaw,    loading: tgLoading }        = useApi<TgStatus>('/snipe/tg/status');
-  const { data: history, loading: histLoading }       = useApi<SnipeTrade[]>('/snipe/activity?limit=100');
+  const { data: history, loading: histLoading }       = useApi<SnipeTrade[]>('/snipe/history?limit=50');
   const { data: wallets }                             = useApi<Wallet[]>('/wallets');
 
   const [tgStatus, setTgStatus] = useState<TgStatus | null>(null);
@@ -145,10 +140,14 @@ export default function SnipePage() {
     invalidate('/snipe/tg/status');
   }, []));
 
-  const [banner, setBanner]       = useState<SnipeBannerData | null>(null);
-  const [startAnim, setStartAnim]       = useState(0); // yellow — shot fired
-  const [completeAnim, setCompleteAnim] = useState(0); // green  — tx confirmed
+  const [banner, setBanner]         = useState<SnipeBannerData | null>(null);
+  const [sellBanner, setSellBanner] = useState<SnipeBannerData | null>(null);
+  const [startAnim, setStartAnim]       = useState(0); // yellow — buy broadcast
+  const [completeAnim, setCompleteAnim] = useState(0); // green  — buy confirmed
+  const [sellAnim, setSellAnim]         = useState(0); // orange — sell broadcast
+  const [soldAnim, setSoldAnim]         = useState(0); // purple — sell confirmed
   const [killing, setKilling]     = useState(false);
+  const sellBannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mobilePanel, setMobilePanel] = useState<'setup' | 'inbox' | 'trades'>('inbox');
   const [expandedCol, setExpandedCol] = useState<ColKey | null>(null);
   const bannerKeyRef  = useRef(0);
@@ -170,7 +169,7 @@ export default function SnipePage() {
   }, [configData]);
 
   useRealtime('snipe_triggered', useCallback((evt: any) => {
-    invalidate('/snipe/activity?limit=100');
+    invalidate('/snipe/history?limit=50');
     if (bannerTimer.current) clearTimeout(bannerTimer.current);
     bannerKeyRef.current += 1;
     setBanner({ status: evt.status, mint: evt.mint, durationMs: evt.durationMs, txHash: evt.txHash, error: evt.error, key: bannerKeyRef.current });
@@ -180,17 +179,60 @@ export default function SnipePage() {
   }, []));
 
   useRealtime('snipe_update', useCallback((evt: any) => {
-    invalidate('/snipe/activity?limit=100');
+    invalidate('/snipe/history?limit=50');
     // Green burst when tx lands on-chain
     if (evt.status === 'confirmed') setCompleteAnim((n) => n + 1);
   }, []));
 
-  useRealtime('snipe_sold', useCallback(() => {
-    invalidate('/snipe/activity?limit=100');
+  useRealtime('snipe_sold', useCallback((evt: any) => {
+    invalidate('/snipe/history?limit=50');
+    setSellAnim((n) => n + 1);
+    if (sellBannerTimer.current) clearTimeout(sellBannerTimer.current);
+    bannerKeyRef.current += 1;
+    setSellBanner({
+      status: evt.sellStatus ?? 'broadcast',
+      mint: evt.mint ?? '',
+      durationMs: evt.durationMs ?? 0,
+      txHash: evt.txHash ?? null,
+      key: bannerKeyRef.current,
+    });
+    sellBannerTimer.current = setTimeout(() => setSellBanner(null), 3300);
+  }, []));
+
+  useRealtime('snipe_sold_confirmed', useCallback((evt: any) => {
+    invalidate('/snipe/history?limit=50');
+    setSoldAnim((n) => n + 1);
+    if (sellBannerTimer.current) clearTimeout(sellBannerTimer.current);
+    bannerKeyRef.current += 1;
+    setSellBanner({
+      status: 'confirmed',
+      mint: evt.mint ?? '',
+      durationMs: evt.durationMs ?? 0,
+      txHash: evt.txHash ?? null,
+      key: bannerKeyRef.current,
+    });
+    sellBannerTimer.current = setTimeout(() => setSellBanner(null), 3300);
+  }, []));
+
+  useRealtime('snipe_sell_update', useCallback((evt: any) => {
+    invalidate('/snipe/history?limit=50');
+    if (evt.sellStatus === 'failed') {
+      if (sellBannerTimer.current) clearTimeout(sellBannerTimer.current);
+      bannerKeyRef.current += 1;
+      setSellBanner({
+        status: 'failed',
+        mint: evt.mint ?? '',
+        durationMs: 0,
+        txHash: evt.txHash ?? null,
+        error: evt.error,
+        key: bannerKeyRef.current,
+      });
+      sellBannerTimer.current = setTimeout(() => setSellBanner(null), 4000);
+    }
   }, []));
 
   useRealtime('snipe_update', useCallback(() => {
-    invalidate('/snipe/activity?limit=100');
+    invalidate('/snipe/history?limit=50');
   }, []));
 
   const killSession = useCallback(async () => {
@@ -234,7 +276,10 @@ export default function SnipePage() {
     <div className="page page-wide snipe-terminal" style={{ paddingTop: 10 }}>
       {startAnim > 0    && <SnipeFireAnimation key={`s${startAnim}`}    variant="start" />}
       {completeAnim > 0 && <SnipeFireAnimation key={`c${completeAnim}`} variant="complete" />}
-      {banner && <SnipeBanner key={banner.key} banner={banner} onDismiss={() => setBanner(null)} />}
+      {sellAnim > 0     && <SnipeFireAnimation key={`sv${sellAnim}`}    variant="sell" />}
+      {soldAnim > 0     && <SnipeFireAnimation key={`sd${soldAnim}`}    variant="sold" />}
+      {banner     && <SnipeBanner key={banner.key}     banner={banner}     onDismiss={() => setBanner(null)} />}
+      {sellBanner && <SellBanner  key={sellBanner.key} banner={sellBanner} onDismiss={() => setSellBanner(null)} />}
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -421,17 +466,114 @@ function SnipeBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss
 }
 
 /* ─────────────────────────────────────────────────────────────
+   Sell banner — bottom-left to avoid clashing with buy banner
+───────────────────────────────────────────────────────────── */
+function SellBanner({ banner, onDismiss }: { banner: SnipeBannerData; onDismiss: () => void }) {
+  const isConfirmed = banner.status === 'confirmed';
+  const isFailed    = banner.status === 'failed';
+  const accent      = isConfirmed ? '#a855f7' : isFailed ? '#ef4444' : '#f97316';
+  const DURATION    = 3800;
+
+  const label    = isConfirmed ? 'SOLD' : isFailed ? 'SELL FAILED' : 'SELLING';
+  const sublabel = isConfirmed ? 'exit confirmed' : isFailed ? 'tx rejected' : 'sell broadcast';
+  const icon     = isConfirmed ? '✓' : isFailed ? '✗' : '↓';
+
+  return (
+    <div
+      onClick={onDismiss}
+      style={{
+        position: 'fixed', bottom: 28, left: 28, zIndex: 1500,
+        width: 300, cursor: 'pointer', borderRadius: 14, overflow: 'hidden',
+        background: 'color-mix(in srgb, var(--surface-2) 96%, transparent)',
+        border: `1px solid color-mix(in srgb, ${accent} 45%, transparent)`,
+        boxShadow: `0 0 0 1px color-mix(in srgb, ${accent} 15%, transparent), 0 8px 40px rgba(0,0,0,0.55), 0 0 60px color-mix(in srgb, ${accent} 8%, transparent)`,
+        animation: 'snipe-toast-enter 280ms cubic-bezier(0.22,1,0.36,1) forwards',
+      }}
+    >
+      <div style={{
+        position: 'absolute', left: 0, right: 0, height: 60, pointerEvents: 'none', zIndex: 0,
+        background: `linear-gradient(180deg, transparent 0%, color-mix(in srgb, ${accent} 12%, transparent) 50%, transparent 100%)`,
+        animation: 'snipe-toast-scan 1.4s ease-in-out infinite',
+      }} />
+      <div style={{ position: 'relative', zIndex: 1, padding: '14px 16px 12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <span style={{ fontSize: 22, lineHeight: 1, filter: `drop-shadow(0 0 10px ${accent})`, color: accent }}>
+            {icon}
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: '0.07em', color: accent, lineHeight: 1 }}>
+              {label}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.1em', marginTop: 3 }}>
+              {sublabel}
+            </div>
+          </div>
+        </div>
+        {banner.mint && (
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-2)',
+            background: 'color-mix(in srgb, var(--surface) 70%, transparent)',
+            borderRadius: 6, padding: '4px 8px', border: '1px solid var(--border)',
+            marginBottom: banner.txHash ? 7 : 0,
+          }}>
+            {banner.mint.slice(0, 12)}…{banner.mint.slice(-8)}
+          </div>
+        )}
+        {banner.error && (
+          <div style={{ fontSize: 10, color: accent, marginTop: 6, lineHeight: 1.4, opacity: 0.85 }}>
+            {banner.error.slice(0, 80)}
+          </div>
+        )}
+        {banner.txHash && (
+          <a
+            href={`https://solscan.io/tx/${banner.txHash}`}
+            target="_blank" rel="noopener"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 5,
+              fontSize: 10, fontFamily: 'var(--font-mono)', color: accent,
+              textDecoration: 'none',
+            }}
+          >
+            {banner.txHash.slice(0, 8)}…{banner.txHash.slice(-6)} ↗
+          </a>
+        )}
+      </div>
+      {!isFailed && (
+        <div style={{ height: 2, background: `color-mix(in srgb, ${accent} 18%, transparent)` }}>
+          <div style={{
+            height: '100%', background: accent, transformOrigin: 'left',
+            animation: `snipe-toast-progress ${DURATION}ms linear forwards`,
+          }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
    Snipe fire animations
-   variant="start"    → yellow burst (shot fired / broadcast)
-   variant="complete" → green burst  (tx confirmed on-chain)
+   variant="start"    → yellow burst  (buy broadcast)
+   variant="complete" → green burst   (buy confirmed on-chain)
+   variant="sell"     → orange burst  (sell broadcast)
+   variant="sold"     → purple burst  (sell confirmed on-chain)
    Mounts fresh on each event — key prop forces remount.
 ───────────────────────────────────────────────────────────── */
-function SnipeFireAnimation({ variant }: { variant: 'start' | 'complete' }) {
+function SnipeFireAnimation({ variant }: { variant: 'start' | 'complete' | 'sell' | 'sold' }) {
   const isComplete = variant === 'complete';
-  const color      = isComplete ? '#22c55e' : '#fbbf24';
-  const rgba       = isComplete ? 'rgba(34,197,94,' : 'rgba(251,191,36,';
-  const RAYS       = isComplete ? 12 : 8;
-  const RAY_LEN    = isComplete ? 200 : 160;
+  const isSell     = variant === 'sell';
+  const isSold     = variant === 'sold';
+
+  const color = isComplete ? '#22c55e'
+    : isSell   ? '#f97316'
+    : isSold   ? '#a855f7'
+    : '#fbbf24';
+  const rgba = isComplete ? 'rgba(34,197,94,'
+    : isSell   ? 'rgba(249,115,22,'
+    : isSold   ? 'rgba(168,85,247,'
+    : 'rgba(251,191,36,';
+  const RAYS    = (isComplete || isSold) ? 12 : 8;
+  const RAY_LEN = (isComplete || isSold) ? 200 : 160;
 
   return (
     <div
@@ -457,8 +599,8 @@ function SnipeFireAnimation({ variant }: { variant: 'start' | 'complete' }) {
         animation: 'snipe-ring 700ms ease-out forwards',
       }} />
 
-      {/* Second ring (complete only — staggered for impact) */}
-      {isComplete && (
+      {/* Second ring (complete/sold only — staggered for impact) */}
+      {(isComplete || isSold) && (
         <div style={{
           position: 'absolute',
           width: 80, height: 80, borderRadius: '50%',
@@ -486,12 +628,12 @@ function SnipeFireAnimation({ variant }: { variant: 'start' | 'complete' }) {
       {/* Central icon */}
       <div style={{
         position: 'relative', zIndex: 1,
-        fontSize: isComplete ? 48 : 42, lineHeight: 1,
+        fontSize: (isComplete || isSold) ? 48 : 42, lineHeight: 1,
         color: color,
-        filter: `drop-shadow(0 0 ${isComplete ? 16 : 12}px ${rgba}0.95))`,
-        animation: `${isComplete ? 'snipe-check' : 'snipe-bolt'} 750ms ease-out forwards`,
+        filter: `drop-shadow(0 0 ${(isComplete || isSold) ? 16 : 12}px ${rgba}0.95))`,
+        animation: `${(isComplete || isSold) ? 'snipe-check' : 'snipe-bolt'} 750ms ease-out forwards`,
       }}>
-        {isComplete ? '✓' : '⚡'}
+        {isSold ? '✓' : isComplete ? '✓' : isSell ? '↓' : '⚡'}
       </div>
     </div>
   );
@@ -1958,10 +2100,13 @@ function HistoryPanel({ trades, loading, headerRight }: { trades: SnipeTrade[]; 
   const [selected, setSelected]  = useState<SnipeTrade | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  const manualSell = async (id: string) => {
+  const manualSell = async (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setSellingId(id);
-    try { await api.post(`/snipe/history/${id}/sell`, {}); invalidate('/snipe/activity?limit=100'); }
-    catch {} finally { setSellingId(null); }
+    try {
+      await api.post(`/snipe/history/${id}/sell`, {});
+      invalidate('/snipe/history?limit=50');
+    } catch { /* WS events handle status updates */ } finally { setSellingId(null); }
   };
 
   useEffect(() => {
@@ -1970,26 +2115,20 @@ function HistoryPanel({ trades, loading, headerRight }: { trades: SnipeTrade[]; 
     if (fresh) setSelected(fresh);
   }, [trades]);
 
-  // Group trades by intel source (groupId), preserve insertion order. Manual sells
-  // (groupId === null) are bucketed under a synthetic "manual" group so they render
-  // as their own section in the feed.
-  const MANUAL_GROUP = '__manual__';
+  // Group trades by intel source (groupId), preserve insertion order
   const groups: { groupId: string; trades: SnipeTrade[] }[] = [];
   const seen = new Map<string, SnipeTrade[]>();
   for (const t of trades) {
-    const key = t.groupId ?? MANUAL_GROUP;
-    if (!seen.has(key)) {
-      seen.set(key, []);
-      groups.push({ groupId: key, trades: seen.get(key)! });
+    if (!seen.has(t.groupId)) {
+      seen.set(t.groupId, []);
+      groups.push({ groupId: t.groupId, trades: seen.get(t.groupId)! });
     }
-    seen.get(key)!.push(t);
+    seen.get(t.groupId)!.push(t);
   }
 
   const toggleCollapse = (gid: string) =>
     setCollapsed((prev) => { const s = new Set(prev); s.has(gid) ? s.delete(gid) : s.add(gid); return s; });
 
-  const buyTotal       = trades.filter((t) => (t.kind ?? 'buy') === 'buy').length;
-  const sellTotal      = trades.filter((t) => t.kind === 'sell').length;
   const confirmedTotal = trades.filter((t) => t.status === 'confirmed').length;
   const failedTotal   = trades.filter((t) => t.status === 'failed').length;
 
@@ -2000,8 +2139,6 @@ function HistoryPanel({ trades, loading, headerRight }: { trades: SnipeTrade[]; 
         <span style={{ fontSize: 11, fontWeight: 600, flex: 1, color: 'var(--text)' }}>Trades</span>
         {trades.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            {buyTotal > 0 && <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--ok)' }}>{buyTotal}B</span>}
-            {sellTotal > 0 && <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--bad)' }}>{sellTotal}S</span>}
             {confirmedTotal > 0 && <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--ok)' }}>{confirmedTotal}✓</span>}
             {failedTotal   > 0 && <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--bad)' }}>{failedTotal}✗</span>}
             <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>{trades.length}tx</span>
@@ -2028,11 +2165,8 @@ function HistoryPanel({ trades, loading, headerRight }: { trades: SnipeTrade[]; 
                 const isCollapsed = collapsed.has(groupId);
                 const confirmedCount = groupTrades.filter((t) => t.status === 'confirmed').length;
                 const failedCount = groupTrades.filter((t) => t.status === 'failed').length;
-                const isManual = groupId === MANUAL_GROUP;
-                const color = isManual ? 'var(--accent-2)' : groupInitialColor(groupId);
-                const label = isManual
-                  ? 'Manual sells'
-                  : groupId.length > 14 ? `${groupId.slice(0, 7)}…${groupId.slice(-4)}` : groupId;
+                const color = groupInitialColor(groupId);
+                const label = groupId.length > 14 ? `${groupId.slice(0, 7)}…${groupId.slice(-4)}` : groupId;
 
                 return (
                   <div key={groupId}>
@@ -2066,17 +2200,128 @@ function HistoryPanel({ trades, loading, headerRight }: { trades: SnipeTrade[]; 
                       </div>
                     </button>
 
-                    {/* Trade rows — rich DexScreener-style: logo, name, price, mcap, P&L */}
-                    {!isCollapsed && groupTrades.map((t) => (
-                      <SnipeActivityRow
-                        key={t.id}
-                        trade={t as any}
-                        isActive={selected?.id === t.id}
-                        onSelect={(item) => setSelected(item as any)}
-                        onManualSell={manualSell}
-                        selling={sellingId === t.id}
-                      />
-                    ))}
+                    {/* Trade rows */}
+                    {!isCollapsed && groupTrades.map((t) => {
+                      const ok = t.status === 'confirmed';
+                      const broadcasting = t.status === 'broadcast';
+                      const sol = (Number(t.amountRaw) / 1e9).toFixed(3);
+                      // Allow sell if no sell yet, or if previous sell failed (retry)
+                      const canSell = (t.status === 'broadcast' || t.status === 'confirmed')
+                        && (!t.sellStatus || t.sellStatus === 'failed');
+                      const isActive = selected?.id === t.id;
+                      const attempts = t.attempts ?? 1;
+
+                      const statusColor = ok ? 'var(--ok)'
+                        : t.status === 'failed' ? 'var(--bad)'
+                        : broadcasting ? 'var(--warn)'
+                        : 'var(--text-3)';
+
+                      const sellStatusColor = t.sellStatus === 'confirmed' ? '#a855f7'
+                        : t.sellStatus === 'broadcast' || t.sellStatus === 'pending' ? '#f97316'
+                        : t.sellStatus === 'failed' ? 'var(--bad)'
+                        : 'var(--text-3)';
+                      const sellStatusLabel = t.sellStatus === 'confirmed' ? 'SOLD'
+                        : t.sellStatus === 'broadcast' ? 'SELLING'
+                        : t.sellStatus === 'pending' ? 'SELLING'
+                        : t.sellStatus === 'failed' ? 'SELL FAIL'
+                        : t.sellStatus === 'skip' ? 'SKIPPED'
+                        : null;
+
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => setSelected(isActive ? null : t)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '6px 12px',
+                            borderBottom: '1px solid var(--border)',
+                            cursor: 'pointer',
+                            background: isActive
+                              ? 'color-mix(in srgb, var(--accent) 8%, transparent)'
+                              : 'transparent',
+                            borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                            transition: 'background 80ms',
+                          }}
+                        >
+                          {/* Status indicator dot */}
+                          <span style={{
+                            width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                            background: statusColor,
+                            boxShadow: ok ? `0 0 4px ${statusColor}` : undefined,
+                          }} />
+
+                          {/* Token CA */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div className="font-mono text-[11px]" style={{ color: 'var(--text)' }}>
+                              {t.mint.slice(0, 6)}…{t.mint.slice(-4)}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 1, flexWrap: 'wrap' }}>
+                              <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>{sol} SOL</span>
+                              {attempts > 1 && (
+                                <span className="font-mono text-[9px]" style={{ color: 'var(--warn)' }} title={`${attempts} retries`}>
+                                  ×{attempts}
+                                </span>
+                              )}
+                              {sellStatusLabel && (
+                                <span className="font-mono text-[9px] font-bold" style={{ color: sellStatusColor }}>
+                                  {sellStatusLabel}
+                                </span>
+                              )}
+                              {t.sellTxHash && t.sellStatus !== 'failed' && (
+                                <a
+                                  href={`https://solscan.io/tx/${t.sellTxHash}`}
+                                  target="_blank" rel="noopener"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="font-mono text-[9px]"
+                                  style={{ color: sellStatusColor, textDecoration: 'none' }}
+                                >
+                                  {t.sellTxHash.slice(0, 4)}…↗
+                                </a>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Buy status + Tx */}
+                          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: statusColor }}>
+                              {t.status === 'confirmed' ? 'FILLED' : t.status === 'broadcast' ? 'PENDING' : t.status === 'failed' ? 'FAILED' : t.status.toUpperCase()}
+                            </div>
+                            {t.txHash && (
+                              <a
+                                href={`https://solscan.io/tx/${t.txHash}`} target="_blank" rel="noopener"
+                                onClick={(e) => e.stopPropagation()}
+                                className="font-mono text-[9px]" style={{ color: 'var(--accent)' }}>
+                                {t.txHash.slice(0, 4)}…↗
+                              </a>
+                            )}
+                          </div>
+
+                          {/* Time */}
+                          <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 38 }}>
+                            <div className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
+                              {new Date(t.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                          </div>
+
+                          {/* Sell button — shows for unsold or failed-sell trades */}
+                          {canSell && (
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                style={{
+                                  fontSize: 10, height: 22, padding: '0 7px',
+                                  color: t.sellStatus === 'failed' ? 'var(--bad)' : undefined,
+                                  borderColor: t.sellStatus === 'failed' ? 'color-mix(in srgb, var(--bad) 35%, transparent)' : undefined,
+                                }}
+                                onClick={(e) => manualSell(t.id, e)}
+                                disabled={sellingId === t.id || t.sellStatus === 'broadcast' || t.sellStatus === 'pending'}>
+                                {sellingId === t.id ? <Spinner size={9} /> : t.sellStatus === 'failed' ? 'retry' : 'sell'}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -2200,16 +2445,7 @@ function TradeModal({ trade, onClose }: { trade: SnipeTrade; onClose: () => void
               : <StatCell label="Chain" value={trade.chain} />
             }
             <StatCell label="Retries" value={`×${attempts}`} color={attempts > 1 ? 'var(--warn)' : undefined} />
-            <StatCell
-              label="Source"
-              value={
-                trade.groupId
-                  ? trade.groupId.length > 14
-                    ? `${trade.groupId.slice(0, 10)}…`
-                    : trade.groupId
-                  : 'Manual'
-              }
-            />
+            <StatCell label="Source" value={trade.groupId.length > 14 ? `${trade.groupId.slice(0, 10)}…` : trade.groupId} />
           </div>
 
           {/* TX hash */}
@@ -2260,17 +2496,49 @@ function TradeModal({ trade, onClose }: { trade: SnipeTrade; onClose: () => void
           {/* Sell info */}
           {trade.sellStatus && (
             <div>
-              <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5 }}>Exit</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span className="chip" style={{ fontSize: 10 }}>{trade.sellStatus}</span>
-                {trade.sellReason && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{trade.sellReason}</span>}
+              <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Exit</div>
+
+              {/* Status + reason row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, fontFamily: 'var(--font-mono)',
+                  padding: '3px 7px', borderRadius: 5,
+                  color: trade.sellStatus === 'confirmed' ? '#a855f7'
+                    : trade.sellStatus === 'failed' ? 'var(--bad)'
+                    : '#f97316',
+                  background: trade.sellStatus === 'confirmed' ? 'color-mix(in srgb, #a855f7 14%, transparent)'
+                    : trade.sellStatus === 'failed' ? 'color-mix(in srgb, var(--bad) 12%, transparent)'
+                    : 'color-mix(in srgb, #f97316 14%, transparent)',
+                  border: `1px solid ${trade.sellStatus === 'confirmed' ? 'color-mix(in srgb, #a855f7 35%, transparent)'
+                    : trade.sellStatus === 'failed' ? 'color-mix(in srgb, var(--bad) 25%, transparent)'
+                    : 'color-mix(in srgb, #f97316 35%, transparent)'}`,
+                }}>
+                  {trade.sellStatus === 'confirmed' ? 'SOLD' : trade.sellStatus === 'broadcast' ? 'SELLING' : trade.sellStatus === 'failed' ? 'FAILED' : trade.sellStatus.toUpperCase()}
+                </span>
+                {trade.sellReason && (
+                  <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'capitalize' }}>
+                    {trade.sellReason.replace(/_/g, ' ')}
+                  </span>
+                )}
               </div>
+
+              {/* Sell tx hash — full, clickable */}
               {trade.sellTxHash && (
-                <a href={`https://solscan.io/tx/${trade.sellTxHash}`} target="_blank" rel="noopener"
-                  style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--accent)', display: 'block', marginTop: 5 }}
-                  onClick={(e) => e.stopPropagation()}>
-                  {trade.sellTxHash.slice(0, 18)}… ↗
-                </a>
+                <div style={{
+                  background: 'var(--surface-2)', border: '1px solid var(--border)',
+                  borderRadius: 7, padding: '8px 10px',
+                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
+                }}>
+                  <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text)', flex: 1, wordBreak: 'break-all', lineHeight: 1.5 }}>
+                    {trade.sellTxHash}
+                  </span>
+                  <a
+                    href={`https://solscan.io/tx/${trade.sellTxHash}`}
+                    target="_blank" rel="noopener"
+                    style={{ fontSize: 11, color: '#a855f7', flexShrink: 0, fontFamily: 'var(--font-mono)' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >↗</a>
+                </div>
               )}
             </div>
           )}
