@@ -94,7 +94,10 @@ services:
 
       # ── Auth ─────────────────────────────────────────────────────
       - key: WEB_ORIGIN
-        value: https://qwai-web.onrender.com
+        fromService:
+          type: web
+          name: qwai-web
+          property: url
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
@@ -107,12 +110,18 @@ services:
       # No TELEGRAM_BOT_POLL needed — only set that for local dev.
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: TELEGRAM_WEBHOOK_URL
-        value: https://qwai-api.onrender.com/api/telegram/webhook
-      # Public web URL — used in bot magic links and scan deep-links.
-      # Change this to your actual Render web service URL.
+      # Render auto-resolves this to https://<service>.onrender.com — path is appended in code.
+      - key: TELEGRAM_API_BASE_URL
+        fromService:
+          type: web
+          name: qwai-api
+          property: url
+      # Public web URL — auto-resolved from the qwai-web service URL at deploy time.
       - key: APP_WEB_URL
-        value: https://qwai-web.onrender.com
+        fromService:
+          type: web
+          name: qwai-web
+          property: url
       # gramjs userbot (optional — only needed for Telegram group sniping)
       - key: TELEGRAM_API_ID
         sync: false

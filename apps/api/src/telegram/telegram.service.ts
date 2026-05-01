@@ -113,7 +113,13 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
   async startBot(token: string): Promise<void> {
     if (this.started) return;
     const bot = this.tgBot.build(token);
-    const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL;
+    // TELEGRAM_WEBHOOK_URL can be set directly, or derived from TELEGRAM_API_BASE_URL
+    // (which Render auto-populates via fromService). Falls back to polling if neither is set.
+    const webhookUrl =
+      process.env.TELEGRAM_WEBHOOK_URL ||
+      (process.env.TELEGRAM_API_BASE_URL
+        ? `${process.env.TELEGRAM_API_BASE_URL.replace(/\/$/, '')}/api/telegram/webhook`
+        : undefined);
     const preferPolling = process.env.TELEGRAM_BOT_POLL === '1' || !webhookUrl;
 
     if (preferPolling) {
