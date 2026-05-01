@@ -2,21 +2,29 @@
 # One static FE, one Node BE (API + workers + Telegram webhook), managed Postgres, managed Redis.
 # Deploy via Render Blueprint. Migrations run from startCommand (free plan has no preDeploy).
 #
-# ── First deploy checklist ────────────────────────────────────────────────────
-# Set these in the Render dashboard under Environment → Secret Files / Env Vars
-# (they have sync: false here so they're never committed to git):
-#
+# ── First deploy checklist — set these in Render Dashboard → Environment ──────
+# REQUIRED (bot will not start without these):
 #   TELEGRAM_BOT_TOKEN       Grammy bot token (from @BotFather)
-#   TELEGRAM_API_ID          From my.telegram.org — needed for gramjs userbot
-#   TELEGRAM_API_HASH        From my.telegram.org — needed for gramjs userbot
-#   JWT_SECRET               ≥32 random bytes (Render auto-generates if left as generateValue)
-#   OPENAI_API_KEY or ANTHROPIC_API_KEY  (set LLM_PROVIDER to match)
-#   SOLANA_RPC_URL           Use a private RPC — Helius/Alchemy free tier works fine
-#                            e.g. https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+#   ANTHROPIC_API_KEY        From console.anthropic.com → API Keys
+#   HELIUS_RPC_URL           https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+#   JWT_SECRET               ≥32 random bytes (auto-generated below)
+#   APP_WEB_URL              Your Render web URL, e.g. https://qwai-web.onrender.com
 #
-# Optional (leave blank to skip the feature):
-#   BIRDEYE_API_KEY  COINGECKO_API_KEY  GOPLUS_API_KEY
-#   AWS_KMS_KEY_ID   AWS_ACCESS_KEY_ID  AWS_SECRET_ACCESS_KEY  (for prod-grade key storage)
+# TOKEN INTELLIGENCE (enables richer scans — leave blank to disable each):
+#   SOLANA_TRACKER_API_KEY   solanatracker.io — top-100 holders, rug risk score
+#   MORALIS_API_KEY          moralis.io — pump.fun lifecycle, EVM holders
+#   BIRDEYE_API_KEY          birdeye.so — price impact simulation
+#   ETHERSCAN_API_KEY        etherscan.io — EVM top-holder lists
+#   BITQUERY_API_KEY         bitquery.io — bundle detection, pump.fun trades
+#
+# TRADING (optional):
+#   SOLANA_RPC_URL           Can reuse HELIUS_RPC_URL value or any private RPC
+#   JITO_BUNDLE_URL          https://mainnet.block-engine.jito.wtf (default)
+#   OPENAI_API_KEY           Alternative to Anthropic — set LLM_PROVIDER=openai
+#
+# OPTIONAL:
+#   TELEGRAM_API_ID / TELEGRAM_API_HASH  From my.telegram.org — gramjs userbot
+#   AWS_KMS_KEY_ID / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  Prod key storage
 # ─────────────────────────────────────────────────────────────────────────────
 
 databases:
@@ -28,7 +36,7 @@ databases:
 
 services:
   # ────────────────────────────────────────────────────────────────
-  # Managed Redis — BullMQ queues + LLM cache + session nonces.
+  # Managed Redis — BullMQ queues + LLM cache + hot-token store.
   # ────────────────────────────────────────────────────────────────
   - type: redis
     name: qwai-redis
@@ -38,7 +46,7 @@ services:
     maxmemoryPolicy: noeviction
 
   # ────────────────────────────────────────────────────────────────
-  # Backend — NestJS API + BullMQ workers + Telegram webhook, one process.
+  # Backend — NestJS API + BullMQ workers + Telegram bot, one process.
   # Workers run inline when QWAI_ROLE=all.
   # ────────────────────────────────────────────────────────────────
   - type: web
@@ -66,8 +74,7 @@ services:
         value: mainnet
 
       # Allow mainnet without AWS KMS — uses JWT_SECRET as the master key.
-      # Acceptable for a personal bot. Remove this and configure AWS_KMS_KEY_ID
-      # if you want production-grade wallet key security.
+      # For production-grade wallet security, remove this and set AWS_KMS_KEY_ID.
       - key: ALLOW_UNSAFE_LOCAL_KMS
         value: "1"
 
@@ -90,33 +97,85 @@ services:
         value: https://qwai-web.onrender.com
       - key: JWT_SECRET
         generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: REFRESH_EXPIRES_IN
+        value: 7d
 
       # ── Telegram ─────────────────────────────────────────────────
+      # Bot runs in webhook mode in production (TELEGRAM_WEBHOOK_URL set).
+      # No TELEGRAM_BOT_POLL needed — only set that for local dev.
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_WEBHOOK_URL
         value: https://qwai-api.onrender.com/api/telegram/webhook
-      # gramjs userbot — get both from https://my.telegram.org/apps
+      # Public web URL — used in bot magic links and scan deep-links.
+      # Change this to your actual Render web service URL.
+      - key: APP_WEB_URL
+        value: https://qwai-web.onrender.com
+      # gramjs userbot (optional — only needed for Telegram group sniping)
       - key: TELEGRAM_API_ID
         sync: false
       - key: TELEGRAM_API_HASH
         sync: false
 
       # ── LLM ──────────────────────────────────────────────────────
+      # anthropic is recommended — claude-sonnet-4-6 is the default model.
+      # Switch to openai + set OPENAI_API_KEY if preferred.
       - key: LLM_PROVIDER
-        value: openai
-      - key: OPENAI_API_KEY
-        sync: false
+        value: anthropic
+      - key: LLM_MODEL
+        value: claude-sonnet-4-6
+      - key: LLM_TIMEOUT_MS
+        value: "30000"
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
 
-      # ── Solana ───────────────────────────────────────────────────
-      # Use a private RPC — public mainnet-beta is heavily rate-limited.
-      # Free options: Helius (helius.dev), Alchemy (alchemy.com), QuickNode
+      # ── Solana RPC ───────────────────────────────────────────────
+      # Use Helius — the HELIUS_RPC_URL is also used by the token intelligence
+      # providers for holder data. Free tier: helius.dev (10 RPS).
+      - key: HELIUS_RPC_URL
+        sync: false
+      # SOLANA_RPC_URL can be the same as HELIUS_RPC_URL or any private RPC.
       - key: SOLANA_RPC_URL
         sync: false
       - key: JUPITER_API_BASE
         value: https://lite-api.jup.ag/swap/v1
+      - key: JITO_BUNDLE_URL
+        value: https://mainnet.block-engine.jito.wtf
+
+      # ── Token Intelligence Providers (all optional — leave blank to disable) ──
+      # solanatracker.io — top-100 holders, rug risk, pump.fun lifecycle
+      - key: SOLANA_TRACKER_API_KEY
+        sync: false
+      # moralis.io — pump.fun bonding curve, EVM token holders
+      - key: MORALIS_API_KEY
+        sync: false
+      # birdeye.so — price impact simulation ($500/$1K/$5K buy cost)
+      - key: BIRDEYE_API_KEY
+        sync: false
+      # etherscan.io — EVM top-20 holder lists (Ethereum, Base, BSC, etc.)
+      - key: ETHERSCAN_API_KEY
+        sync: false
+      # bitquery.io — bundle detection, pump.fun trade patterns
+      - key: BITQUERY_API_KEY
+        sync: false
+
+      # ── Hot Token Scanner ────────────────────────────────────────
+      - key: HOT_TOKENS_ENABLED
+        value: "true"
+      - key: HOT_TOKENS_FAST_SCAN
+        value: "false"
+
+      # ── Intel Cache Tuning ───────────────────────────────────────
+      # In-memory TTL (seconds). 60 = 1 min freshness per request.
+      - key: INTEL_CACHE_TTL_SEC
+        value: "60"
+      # DB cache TTL (seconds). Reports older than this trigger full re-analysis.
+      - key: INTEL_DB_CACHE_TTL_SEC
+        value: "120"
 
       # ── EVM RPCs (optional) ──────────────────────────────────────
       - key: ETH_RPC_URL
@@ -126,8 +185,6 @@ services:
       - key: BASE_RPC_URL
         sync: false
       - key: ONEINCH_API_KEY
-        sync: false
-      - key: JITO_BUNDLE_URL
         sync: false
 
       # ── AWS KMS (optional — remove ALLOW_UNSAFE_LOCAL_KMS if you use this) ──
@@ -140,16 +197,10 @@ services:
       - key: AWS_SECRET_ACCESS_KEY
         sync: false
 
-      # ── Market data (optional) ───────────────────────────────────
-      - key: COINGECKO_API_KEY
-        sync: false
-      - key: BIRDEYE_API_KEY
-        sync: false
-      - key: GOPLUS_API_KEY
-        sync: false
-      - key: RUGCHECK_API_KEY
-        sync: false
+      # ── Observability (optional) ─────────────────────────────────
       - key: DATADOG_API_KEY
+        sync: false
+      - key: SENTRY_DSN
         sync: false
 
       # Seed demo data only on the very first deploy, then set to false.
@@ -173,7 +224,7 @@ services:
       - key: NEXT_PUBLIC_API_BASE
         value: https://qwai-api.onrender.com/api
       # socket.io-client derives the WS URL from NEXT_PUBLIC_API_BASE
-      # by stripping /api — NEXT_PUBLIC_WS_BASE is intentionally omitted.
+      # by stripping /api — no separate NEXT_PUBLIC_WS_BASE needed.
       - key: NEXT_PUBLIC_NETWORK_MODE
         value: mainnet
     headers:
