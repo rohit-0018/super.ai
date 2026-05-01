@@ -768,3 +768,26 @@ model PhoneOtp {
   createdAt DateTime @default(now())
   @@index([phone])
 }
+
+// ── Provider Rate-Limit Registry ─────────────────────────────────────────────
+// Static config per external API provider. Dynamic state (counters, cooldowns)
+// lives in Redis (key prefix rl:). This table is the source-of-truth for limits
+// and is seeded once; ops can edit rows to tune limits without code deploys.
+model ProviderConfig {
+  id            String   @id @default(cuid())
+  key           String   @unique  // e.g. "dexscreener", "goplus"
+  displayName   String
+  dataGroup     String   // e.g. "MARKET_DATA", "SAFETY_SOL", "BUNDLE_SOL"
+  priority      Int      @default(100)  // lower = higher priority in fallback chain
+  reqsPerWindow Int      @default(60)   // max requests per windowSec
+  windowSec     Int      @default(60)   // sliding window duration in seconds
+  cooldownSec   Int      @default(120)  // back-off duration after 429/rate-limit
+  enabled       Boolean  @default(true)
+  requiresKey   String?  // env var that must be set for this provider to activate
+  baseUrl       String?  // informational
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([dataGroup, priority])
+}

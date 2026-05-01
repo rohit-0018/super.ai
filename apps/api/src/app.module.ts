@@ -10,6 +10,7 @@ import { WalletsModule } from './wallets/wallets.module';
 import { MarketDataModule } from './market-data/market-data.module';
 import { TokenIntelModule } from './token-intel/token-intel.module';
 import { TokenAnalysisModule } from './token-analysis/token-analysis.module';
+import { ProviderPoolModule } from './provider-pool/provider-pool.module';
 import { WalletAnalysisModule } from './wallet-analysis/wallet-analysis.module';
 import { AiAgentModule } from './ai-agent/ai-agent.module';
 import { ExecutionModule } from './execution/execution.module';
@@ -51,6 +52,7 @@ import { TraceMiddleware } from './common/trace.middleware';
     WalletsModule,
     MarketDataModule,
     TokenIntelModule,
+    ProviderPoolModule,
     TokenAnalysisModule,
     WalletAnalysisModule,
     AiAgentModule,

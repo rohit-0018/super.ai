@@ -4,6 +4,11 @@
 
 export type Chain = 'SOLANA' | 'EVM';
 
+// Re-export profile types so the web layer can import from one place
+export type { TradingProfile, ReportDepth } from './profile.config';
+export type { TradingStrategy } from './trading-strategy.engine';
+export type { ComparableToken } from './comparable-tokens.service';
+
 export interface TokenMeta {
   chain: Chain;
   chainId?: string;             // DexScreener-style id: "ethereum" | "bsc" | "base" | "solana" | …
@@ -59,15 +64,15 @@ export interface PlaybookSignal {
   label: string;
   weight: 'critical' | 'positive' | 'negative' | 'info';
   detail?: string;
-  delta?: number;       // contribution to score (positive or negative). Info signals omit this.
+  delta?: number;
 }
 
 export interface PlaybookBreakdown {
-  baseline: number;     // always 5.0 currently
+  baseline: number;
   appliedDeltas: { label: string; delta: number; weight: PlaybookSignal['weight'] }[];
-  raw: number;          // baseline + sum of deltas, BEFORE clamping
-  clamped: number;      // final score [0..10]
-  evidenceTotal: number;// sum of |delta| — used to decide insufficient_data
+  raw: number;
+  clamped: number;
+  evidenceTotal: number;
   evidenceThreshold: number;
 }
 
@@ -75,13 +80,13 @@ export interface Playbook {
   key: PlaybookKey;
   label: string;
   description: string;
-  score: number | null;         // 0-10, or null if insufficient data
+  score: number | null;
   verdict: Verdict;
   signals: PlaybookSignal[];
   breakdown: PlaybookBreakdown;
   plan?: {
-    sizeHint: string;           // e.g. "0.5-1% of portfolio"
-    entry: string;              // "market at spot" / "limit at X"
+    sizeHint: string;
+    entry: string;
     stop: string;
     targets: string[];
     notes?: string;
@@ -94,27 +99,92 @@ export interface KillResult {
   reason?: string;
 }
 
+// ── New enriched data structures ─────────────────────────────────────────────
+
+/** Detailed bundle-launch forensics. */
+export interface BundleInfo {
+  detected: boolean;
+  bundleCount?: number;          // number of distinct bundle groups
+  bundledSupplyPct?: number;     // % of total supply grabbed in bundles at launch
+  bundledWallets?: string[];     // addresses of bundled wallets (up to 10)
+  source?: string;               // which provider detected this
+}
+
+/** Price impact of a swap at different trade sizes. */
+export interface PriceImpact {
+  buy500Usd?: number;    // % price impact for $500 buy
+  buy1000Usd?: number;
+  buy5000Usd?: number;
+  sell500Usd?: number;
+  sell1000Usd?: number;
+  sell5000Usd?: number;
+}
+
+/** Token lifecycle stage (pump.fun / other launch pad). */
+export interface LifecycleInfo {
+  stage: 'bonding' | 'graduated' | 'migrated' | 'mature' | 'unknown';
+  bondingCurvePct?: number;      // 0-100, how far along the bonding curve
+  launchPlatform?: 'pump.fun' | 'pumpswap' | 'raydium' | 'uniswap' | 'other' | 'unknown';
+  graduatedAt?: string;          // ISO timestamp if graduated
+  kingOfTheHill?: boolean;
+}
+
+/** Macro chain-level context. */
+export interface ChainContext {
+  tvlUsd?: number;
+  tvl7dChangePct?: number;
+  tvl30dChangePct?: number;
+}
+
+/** A single smart-money wallet signal. */
+export interface SmartMoneySignal {
+  walletAddress: string;
+  label?: string;                // human label e.g. "0xHumbl..." or entity name
+  winRate?: number;              // 0-100 if available from GMGN
+  action?: 'holding' | 'bought' | 'sold';
+  amountUsd?: number;
+  source?: string;               // "gmgn" | "arkham"
+}
+
+// ── Holder Metrics (extended) ─────────────────────────────────────────────────
+
 export interface HolderMetrics {
   totalHolders?: number;
   top10ConcentrationPct?: number;
+  top100ConcentrationPct?: number;    // NEW — from Solana Tracker
   deployerHoldsPct?: number;
   bundleDetected?: boolean;
+  bundleInfo?: BundleInfo;            // NEW — detailed bundle data
+  priceImpact?: PriceImpact;          // NEW — exit sizing from Birdeye/Jupiter
+  lifecycle?: LifecycleInfo;          // NEW — pump.fun lifecycle stage
+  chainContext?: ChainContext;         // NEW — DeFiLlama TVL
+  organicScore?: number;              // NEW — Jupiter organic score 0-100
 }
+
+// ── Social Data (extended) ────────────────────────────────────────────────────
 
 export interface SocialData {
   twitterUrl?: string;
   telegramUrl?: string;
   websiteUrl?: string;
   telegramMembers?: number;
+  telegramActiveRate?: number;        // NEW — msgs/hr estimate
+  twitterMentions24h?: number;        // NEW — from snscrape
   domainAgeDays?: number;
+  websiteChanged?: boolean;           // NEW — Wayback Machine detected changes
   hasSocials: boolean;
 }
+
+// ── Smart Money Result (extended) ────────────────────────────────────────────
 
 export interface SmartMoneyResult {
   walletsChecked: number;
   holdersFound: number;
-  holders: Array<{ label: string }>;
+  holders: Array<{ label: string; address?: string; winRate?: number }>;
+  signals?: SmartMoneySignal[];       // NEW — detailed per-wallet signals
 }
+
+// ── AI ────────────────────────────────────────────────────────────────────────
 
 export type AiVerdict = 'STRONG_BUY' | 'BUY' | 'CAUTIOUS' | 'SKIP' | 'HIGH_RISK';
 
@@ -122,38 +192,47 @@ export interface AiReasoning {
   score: number;                // 0-100
   verdict: AiVerdict;
   categoryScores: {
-    safety: number;             // 0-30
+    safety: number;             // 0-35
+    distribution: number;       // 0-30  (was "holders")
     market: number;             // 0-20
-    holders: number;            // 0-20
-    social: number;             // 0-15
-    momentum: number;           // 0-15
+    social: number;             // 0-10
+    macro: number;              // 0-5
   };
   categoryReasons?: {
-    safety?: string;            // 1-2 sentences explaining the safety score
-    market?: string;            // why market got this score
-    holders?: string;
+    safety?: string;
+    distribution?: string;
+    market?: string;
     social?: string;
-    momentum?: string;
+    macro?: string;
   };
+  contradictions?: string[];    // NEW — cross-signal conflicts flagged
+  exitSizing?: string;          // NEW — natural language exit guidance
   bullishSignals: string[];
   riskFactors: string[];
   summary: string;
   generatedAt: string;
 }
 
+// ── Full Report ───────────────────────────────────────────────────────────────
+
 export interface TokenAnalysisReport {
   meta: TokenMeta;
   safety: SafetySignals;
   playbooks: Playbook[];
-  generatedAt: string;          // ISO
+  generatedAt: string;
   cacheTtlSec: number;
-  providers: ProviderStatus[];  // per-provider hit/miss/error so UI can show why scores are thin
-  dataSources: string[];        // legacy: provider names that returned data (kept for back-compat)
+  providers: ProviderStatus[];
+  dataSources: string[];        // legacy compat
   disclaimer: string;
-  // ── Intelligence layer (new) ────────────────────────────────────────
+  // ── Intelligence layers ──────────────────────────────────────────────────
   kill?: KillResult;
   holderMetrics?: HolderMetrics;
   socialData?: SocialData;
   smartMoney?: SmartMoneyResult;
   aiReasoning?: AiReasoning;
+  // ── Profile & strategy layers ────────────────────────────────────────────
+  profile?: string;             // TradingProfile key used for this report
+  depth?: string;               // ReportDepth key used for this report
+  tradingStrategy?: import('./trading-strategy.engine').TradingStrategy;
+  comparableTokens?: import('./comparable-tokens.service').ComparableToken[];
 }
