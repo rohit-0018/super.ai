@@ -158,23 +158,44 @@ function smartMoney(meta: TokenMeta, safety: SafetySignals): Playbook {
   const totalTx = buys + sells;
   if (totalTx > 0) {
     const ratio = sells > 0 ? buys / sells : 2;
-    if (ratio >= 1.5 && totalTx >= 100) b.push(`Buy/sell ratio ${ratio.toFixed(2)} over ${totalTx} txns`, 'positive', +1.5, 'Aggressive accumulation');
-    else if (ratio <= 0.6 && totalTx >= 100) b.push(`Sell-side dominant (ratio ${ratio.toFixed(2)})`, 'negative', -1.5);
-    else if (totalTx < 30) b.push(`Thin activity (${totalTx} txns 24h)`, 'negative', -0.5);
-    else b.info(`Balanced flow (${totalTx} txns, ratio ${ratio.toFixed(2)})`);
+    if (ratio >= 1.5 && totalTx >= 100) {
+      b.push(`Buy/sell ratio ${ratio.toFixed(2)} (${totalTx} txns)`, 'positive', +1.5, 'Aggressive accumulation');
+    } else if (ratio >= 1.2 && totalTx >= 100) {
+      b.push(`Mild buy edge, ratio ${ratio.toFixed(2)} (${totalTx} txns)`, 'positive', +0.5);
+    } else if (ratio <= 0.6 && totalTx >= 100) {
+      b.push(`Sell-side dominant, ratio ${ratio.toFixed(2)} (${totalTx} txns)`, 'negative', -1.5);
+    } else if (totalTx < 30) {
+      b.push(`Thin activity — only ${totalTx} txns 24h`, 'negative', -0.8);
+    } else {
+      // Balanced flow: no accumulation edge — small negative
+      b.push(`Balanced order flow, ratio ${ratio.toFixed(2)} (${totalTx} txns)`, 'negative', -0.3, 'No clear accumulation signal');
+    }
+  } else {
+    b.push('No transaction data — cannot score order flow', 'negative', -0.5);
   }
 
   const vol = meta.volume24hUsd ?? 0;
   const liq = meta.liquidityUsd ?? 0;
   if (vol > 0 && liq > 0) {
     const velocity = vol / liq;
-    if (velocity >= 2) b.push(`Volume/liquidity ${velocity.toFixed(1)}×`, 'positive', +0.8, 'Real activity, not just sitting');
-    else if (velocity < 0.3) b.push(`Low volume vs liquidity (${velocity.toFixed(1)}×)`, 'negative', -0.8);
+    if (velocity >= 3) b.push(`Volume/liquidity ${velocity.toFixed(1)}× — strong rotation`, 'positive', +1.0);
+    else if (velocity >= 2) b.push(`Volume/liquidity ${velocity.toFixed(1)}×`, 'positive', +0.8, 'Real activity, not just sitting');
+    else if (velocity >= 0.5) b.push(`Volume/liquidity ${velocity.toFixed(1)}× — moderate`, 'negative', -0.2);
+    else b.push(`Low volume vs liquidity (${velocity.toFixed(1)}×)`, 'negative', -0.8);
+  } else if (vol > 0) {
+    b.info(`Volume $${fmtUsd(vol)} — no liquidity reference`);
   }
 
-  if ((safety.holdersCount ?? 0) > 2000) b.push(`${safety.holdersCount} holders`, 'positive', +0.5);
-  else if ((safety.holdersCount ?? 0) > 0 && (safety.holdersCount as number) < 200)
-    b.push(`Only ${safety.holdersCount} holders`, 'negative', -0.5);
+  if ((safety.holdersCount ?? 0) > 5000) b.push(`${safety.holdersCount!.toLocaleString()} holders — established`, 'positive', +0.8);
+  else if ((safety.holdersCount ?? 0) > 2000) b.push(`${safety.holdersCount} holders`, 'positive', +0.5);
+  else if ((safety.holdersCount ?? 0) > 500) b.push(`${safety.holdersCount} holders — growing`, 'negative', -0.2);
+  else if ((safety.holdersCount ?? 0) > 0) b.push(`Only ${safety.holdersCount} holders — thin base`, 'negative', -0.8);
+
+  // Pair age as proxy for survival (smart money avoids brand-new tokens)
+  if (meta.pairAgeHours != null) {
+    if (meta.pairAgeHours >= 24 * 30) b.push(`Pair ${Math.round(meta.pairAgeHours/24)}d old — survived rug window`, 'positive', +0.5);
+    else if (meta.pairAgeHours < 24) b.push('Pair <24h — rug window open', 'negative', -0.5);
+  }
 
   if ((meta.priceChange.h1 ?? 0) > 3 && totalTx > 0 && buys / Math.max(1, sells) > 1.2) {
     b.push('Fresh 1h pump on buy pressure', 'positive', +1.0);
@@ -183,9 +204,9 @@ function smartMoney(meta: TokenMeta, safety: SafetySignals): Playbook {
     b.push('Dip being absorbed (buys > sells on 1h drawdown)', 'positive', +1.5, 'Classic accumulation pattern');
   }
 
-  b.info('Heuristic only', 'Free-tier plan: Nansen/Arkham labels not wired. Upgrade to label real smart-money wallets.');
+  b.info('Heuristic only — Nansen/Arkham wallet labels not wired');
 
-  const r = b.finalize(1.5);
+  const r = b.finalize(1.0);
   return {
     key: 'smart_money',
     label: 'Smart-Money Confluence',
@@ -211,26 +232,34 @@ function narrative(meta: TokenMeta, safety: SafetySignals): Playbook {
 
   const mc = meta.marketCapUsd;
   if (mc != null) {
-    if (mc >= 50_000_000 && mc < 1_000_000_000) b.push(`Mid-cap $${fmtUsd(mc)}`, 'positive', +1.2, 'Real project size');
-    else if (mc >= 1_000_000_000) b.info(`Large cap $${fmtUsd(mc)}`);
-    else if (mc < 2_000_000) b.push(`Cap too small for narrative play ($${fmtUsd(mc)})`, 'negative', -1.5);
+    if (mc >= 1_000_000_000) b.push(`Mega cap $${fmtUsd(mc)}`, 'positive', +0.8, 'Established — sector leader');
+    else if (mc >= 50_000_000) b.push(`Mid-cap $${fmtUsd(mc)}`, 'positive', +1.2, 'Real project size, narrative-ready');
+    else if (mc >= 5_000_000) b.push(`Small cap $${fmtUsd(mc)} — not yet established`, 'negative', -0.5, 'Narrative plays need MCap behind them');
+    else b.push(`Micro cap $${fmtUsd(mc)} — too small for a narrative bet`, 'negative', -1.5);
+  } else {
+    b.push('MCap not available — cannot size narrative potential', 'negative', -0.3);
   }
 
   const age = meta.pairAgeHours;
   if (age != null) {
-    if (age >= 24 * 14) b.push(`Mature pair (${Math.round(age / 24)}d)`, 'positive', +0.8, 'Has survived early-rug window');
-    else if (age < 48) b.push('Too new for a narrative bet', 'negative', -1.0);
+    if (age >= 24 * 30) b.push(`Mature pair (${Math.round(age / 24)}d)`, 'positive', +1.0, 'Survived multiple market cycles');
+    else if (age >= 24 * 14) b.push(`Established pair (${Math.round(age / 24)}d)`, 'positive', +0.8, 'Has survived early-rug window');
+    else if (age >= 24 * 7) b.push(`Pair ${Math.round(age / 24)}d old — early stage`, 'negative', -0.3);
+    else b.push('Too new for a narrative bet', 'negative', -1.0);
   }
 
   const text = `${meta.symbol ?? ''} ${meta.name ?? ''}`.toLowerCase();
   const sectors: { [pat: string]: string } = {
-    '\\bai\\b|gpt|agent|llm|ml|\\bml\\b': 'AI / Agents',
+    '\\bai\\b|gpt|agent|llm|\\bml\\b': 'AI / Agents',
     'depin|helium|iot|wifi|render|compute': 'DePIN',
     'rwa|real-world|treasury|ondo|tbill': 'RWA',
     'l2|layer2|rollup|arb|op|base|zksync|linea': 'L2 / Scaling',
     'game|gamefi|play|metagame': 'Gaming',
     'doge|shib|pepe|wif|bonk|mog|popcat|meme': 'Memes',
     'stake|lst|lrt|eigen|restake': 'LST / Restaking',
+    'sol|eth|btc|avax|matic|dot|ada': 'Layer 1',
+    'dex|swap|amm|lp|pool|liquidity': 'DeFi / DEX',
+    'nft|ordinals|inscription|rune': 'NFT / Ordinals',
   };
   let sector: string | null = null;
   for (const [pat, name] of Object.entries(sectors)) {
@@ -238,17 +267,24 @@ function narrative(meta: TokenMeta, safety: SafetySignals): Playbook {
   }
   if (sector) {
     const hot = ['AI / Agents', 'DePIN', 'RWA', 'L2 / Scaling', 'LST / Restaking'].includes(sector);
-    b.push(`Sector match: ${sector}`, hot ? 'positive' : 'info', hot ? +1.0 : 0, 'Heuristic from symbol/name');
+    b.push(`Sector: ${sector}`, hot ? 'positive' : 'negative', hot ? +1.0 : -0.2, 'Heuristic from symbol/name');
+  } else {
+    b.push('No known sector tag — harder to ride a narrative wave', 'negative', -0.4);
   }
 
   if ((safety.rugScore ?? 100) < 30 && (safety.holdersCount ?? 0) > 5000) {
     b.push('Low rug score + broad holder base', 'positive', +0.8);
   }
-  if ((meta.volume24hUsd ?? 0) > 1_000_000) b.push(`Deep volume $${fmtUsd(meta.volume24hUsd!)}`, 'positive', +0.5);
 
-  b.info('Narrative layer is shallow on free tier', 'Wire LunarCrush/Kaito for mindshare + sentiment confirmation.');
+  const vol = meta.volume24hUsd ?? 0;
+  if (vol >= 10_000_000) b.push(`Deep volume $${fmtUsd(vol)} — narrative is moving money`, 'positive', +0.8);
+  else if (vol >= 1_000_000) b.push(`Active volume $${fmtUsd(vol)}`, 'positive', +0.5);
+  else if (vol >= 100_000) b.push(`Moderate volume $${fmtUsd(vol)}`, 'negative', -0.2);
+  else if (vol > 0) b.push(`Low volume $${fmtUsd(vol)} — thin interest`, 'negative', -0.8);
 
-  const r = b.finalize(2.0);
+  b.info('Narrative layer — wire LunarCrush/Kaito for mindshare + sentiment confirmation');
+
+  const r = b.finalize(1.2);
   return {
     key: 'narrative',
     label: 'Narrative / Sector Bet',
@@ -273,32 +309,69 @@ function narrative(meta: TokenMeta, safety: SafetySignals): Playbook {
 function momentum(meta: TokenMeta, safety: SafetySignals): Playbook {
   const b = new Builder();
 
-  const h1 = meta.priceChange.h1, h6 = meta.priceChange.h6, h24 = meta.priceChange.h24;
-  if (h24 != null && h6 != null && h1 != null) {
-    if (h24 >= 8 && h6 >= 3 && h1 >= 0) b.push(`Trending up (1h ${fmtPct(h1)}, 6h ${fmtPct(h6)}, 24h ${fmtPct(h24)})`, 'positive', +1.5);
-    else if (h24 >= 15 && h1 < -2) b.push(`Big 24h but cooling on 1h (${fmtPct(h1)})`, 'negative', -1.5, 'Late — blow-off risk');
-    else if (h24 < 0) b.push(`Trending down (24h ${fmtPct(h24)})`, 'negative', -1.5);
+  // Kill switch first — overrides everything
+  if (safety.honeypot === 'yes') {
+    b.push('Honeypot — cannot momentum-trade an unsellable token', 'critical', -10);
+  } else if ((safety.rugScore ?? 0) >= 70) {
+    b.push(`Rug score ${safety.rugScore}/100 — too risky to momentum-trade`, 'critical', -4);
   }
 
+  const h1 = meta.priceChange.h1, h6 = meta.priceChange.h6, h24 = meta.priceChange.h24;
+
+  // Score using whatever timeframes are available — don't require all three
+  if (h24 != null) {
+    if (h24 >= 20) {
+      if ((h1 ?? 0) >= 0) b.push(`Strong 24h rally ${fmtPct(h24)}, holding on 1h`, 'positive', +1.5);
+      else b.push(`Big 24h ${fmtPct(h24)} but 1h fading — blow-off risk`, 'negative', -1.0);
+    } else if (h24 >= 8) {
+      b.push(`24h momentum ${fmtPct(h24)}`, 'positive', h1 != null && h1 >= 0 ? +1.2 : +0.6);
+    } else if (h24 >= 2) {
+      b.push(`Mild 24h gain ${fmtPct(h24)}`, 'negative', -0.2);
+    } else if (h24 < -10) {
+      b.push(`Dumping 24h ${fmtPct(h24)}`, 'negative', -1.5);
+    } else if (h24 < -3) {
+      b.push(`Downtrend 24h ${fmtPct(h24)}`, 'negative', -0.8);
+    } else {
+      b.push(`Flat 24h (${fmtPct(h24)}) — no momentum`, 'negative', -0.5);
+    }
+  }
+
+  if (h6 != null) {
+    if (h6 >= 5) b.push(`6h surge ${fmtPct(h6)} — intraday momentum`, 'positive', +0.8);
+    else if (h6 < -5) b.push(`6h drop ${fmtPct(h6)} — selling into strength`, 'negative', -0.8);
+  }
+
+  if (h1 != null) {
+    if (h1 >= 5) b.push(`1h spike ${fmtPct(h1)} — breaking out now`, 'positive', +0.8, 'Momentum is live');
+    else if (h1 < -5) b.push(`1h reversal ${fmtPct(h1)} — momentum failing`, 'negative', -0.8);
+  }
+
+  // Vol/MCap: primary momentum confirmation
   const vol = meta.volume24hUsd, mc = meta.marketCapUsd;
   if (vol != null && mc != null && mc > 0) {
     const ratio = vol / mc;
-    if (ratio >= 0.3) b.push(`Volume / MC ratio ${ratio.toFixed(2)}`, 'positive', +1.0, 'Heavy rotation');
-    else if (ratio < 0.05 && vol > 0) b.push(`Thin volume vs MC (${ratio.toFixed(2)})`, 'negative', -0.8);
+    if (ratio >= 0.5) b.push(`Vol/MCap ${(ratio*100).toFixed(0)}% — heavy rotation`, 'positive', +1.0, 'Money moving in size');
+    else if (ratio >= 0.2) b.push(`Vol/MCap ${(ratio*100).toFixed(0)}% — moderate rotation`, 'positive', +0.4);
+    else if (ratio >= 0.05) b.push(`Vol/MCap ${(ratio*100).toFixed(0)}% — thin`, 'negative', -0.5);
+    else b.push(`Vol/MCap ${(ratio*100).toFixed(0)}% — very low turnover`, 'negative', -1.0);
+  } else if (vol != null) {
+    if (vol >= 5_000_000) b.push(`High absolute volume $${fmtUsd(vol)}`, 'positive', +0.6);
+    else if (vol < 50_000) b.push(`Low volume $${fmtUsd(vol)} — illiquid`, 'negative', -0.8);
+    else b.push(`Volume $${fmtUsd(vol)} — MCap unavailable for ratio`, 'negative', -0.1);
   }
 
   const buys = meta.txns24h?.buys, sells = meta.txns24h?.sells;
-  if (buys != null && sells != null && buys + sells > 200 && buys > sells) {
-    b.push(`${buys + sells} txns, buy-dominant`, 'positive', +0.8);
+  if (buys != null && sells != null) {
+    const total = buys + sells;
+    if (total > 200 && buys > sells * 1.5) b.push(`${total} txns, strongly buy-dominant`, 'positive', +0.8);
+    else if (total > 50 && buys > sells) b.push(`${total} txns, buy-side leading`, 'positive', +0.3);
+    else if (total > 50 && sells > buys * 1.5) b.push(`${total} txns, sell-dominant — distribution`, 'negative', -0.8);
+    else if (total < 20) b.push(`Only ${total} txns — too thin for momentum trade`, 'negative', -0.8);
   }
 
-  if (safety.honeypot === 'yes' || (safety.rugScore ?? 0) >= 70) {
-    b.push('Unsafe to momentum-trade (honeypot or high rug score)', 'critical', -10);
-  }
+  b.info('Perp / OI / funding rate not wired — Coinglass integration would confirm derivatives leg');
 
-  b.info('Perp / OI / funding data not wired', 'Coinglass / Hyperliquid integration would confirm derivatives leg.');
-
-  const r = b.finalize(2.0);
+  const r = b.finalize(1.0);
   return {
     key: 'momentum',
     label: 'Momentum + Derivatives',

@@ -1,7 +1,7 @@
 'use client';
-import TokenIntelCard from '../../components/TokenIntelCard';
 import TrendingMovers from '../../components/TrendingMovers';
 import { Section } from '../../components/ui/Section';
+import Link from 'next/link';
 
 export default function TokensPage() {
   return (
@@ -9,16 +9,17 @@ export default function TokensPage() {
       <header className="page-header">
         <div>
           <div className="section-eyebrow">Tokens</div>
-          <h1 className="page-title">Token intel</h1>
+          <h1 className="page-title">Token Markets</h1>
           <p className="page-subtitle">
-            Conviction scores, rug checks, holder analytics — across Solana and EVM.
+            Trending pairs, movers, and watchlist — across Solana and EVM.
           </p>
         </div>
-        <a href="/tokens/analyze" className="btn btn-primary w-full sm:w-auto">Analyze by address →</a>
+        <Link href="/intel" className="btn btn-primary w-full sm:w-auto">
+          Intelligence dashboard →
+        </Link>
       </header>
 
       <TrendingMovers />
-      <TokenIntelCard />
 
       <Section title="Watchlist" subtitle="12 tokens">
         <div
@@ -27,7 +28,9 @@ export default function TokensPage() {
         >
           <div className="text-[13px] font-semibold">Watchlist coming soon</div>
           <div className="text-[12px] mt-1" style={{ color: 'var(--text-3)' }}>
-            Pin tokens from intel cards or insight feed to track conviction + rug score over time.
+            Pin tokens from the{' '}
+            <Link href="/intel" style={{ color: 'var(--accent)' }}>Intel dashboard</Link>{' '}
+            to track conviction + rug score over time.
           </div>
         </div>
       </Section>

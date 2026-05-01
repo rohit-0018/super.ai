@@ -247,7 +247,7 @@ model TradingDna {
 }
 
 model TokenIntel {
-  id              String  @id @default(cuid())
+  id              String    @id @default(cuid())
   chain           Chain
   address         String
   symbol          String?
@@ -258,7 +258,21 @@ model TokenIntel {
   securityFlags   Json?
   sentiment       Json?
   priceUsd        Float?
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime  @updatedAt
+
+  // ── Token intelligence layer ──────────────────────────────────────────
+  aiScore         Int?
+  aiVerdict       String?
+  aiSummary       String?
+  aiReasoning     Json?     // full AiReasoning object
+  killTriggered   Boolean   @default(false)
+  killReason      String?
+  holderMetrics   Json?
+  socialData      Json?
+  smartMoneyData  Json?
+  fullReport      Json?     // full TokenAnalysisReport for cache restore
+  aiAnalyzedAt    DateTime? // when the intelligence layer last ran
+
   @@unique([chain, address])
 }
 

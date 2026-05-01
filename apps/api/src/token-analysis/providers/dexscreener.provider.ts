@@ -16,6 +16,7 @@ export class DexScreenerProvider {
     try {
       const res = await fetch(`${this.base}/tokens/${address}`, {
         headers: { 'User-Agent': 'qwai/1.0' },
+        signal: AbortSignal.timeout(8_000),
       });
       if (!res.ok) {
         this.logger.warn(`DexScreener non-200 for ${address}: ${res.status}`);
@@ -26,11 +27,13 @@ export class DexScreenerProvider {
       if (!pairs.length) return null;
 
       // Filter to correct chain
-      const chainFilter = chain === 'SOLANA' ? 'solana' : ['ethereum', 'bsc', 'base', 'arbitrum', 'optimism', 'polygon'];
+      const EVM_CHAINS = new Set([
+        'ethereum', 'bsc', 'base', 'arbitrum', 'optimism', 'polygon',
+        'avalanche', 'zksync', 'linea', 'blast', 'scroll', 'mantle',
+        'fantom', 'cronos', 'gnosis', 'celo', 'moonbeam', 'aurora',
+      ]);
       const onChain = pairs.filter((p) =>
-        chain === 'SOLANA'
-          ? p.chainId === 'solana'
-          : (chainFilter as string[]).includes(p.chainId),
+        chain === 'SOLANA' ? p.chainId === 'solana' : EVM_CHAINS.has(p.chainId),
       );
       if (!onChain.length) return null;
 
@@ -73,6 +76,8 @@ export class DexScreenerProvider {
         pairAgeHours,
         dex: top.dexId,
         url: top.url,
+        socials:  Array.isArray(top?.info?.socials)  ? top.info.socials  : [],
+        websites: Array.isArray(top?.info?.websites) ? top.info.websites : [],
       };
     } catch (e: any) {
       this.logger.warn(`DexScreener fetch failed: ${e?.message}`);

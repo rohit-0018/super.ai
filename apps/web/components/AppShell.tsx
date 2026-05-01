@@ -82,7 +82,7 @@ const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }
   { href: '/agents',    label: 'Agents',    icon: IconAgents },
   { href: '/snipe',     label: 'Sniper',    icon: IconSnipe },
   { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
-  { href: '/tokens',    label: 'Tokens',    icon: IconGem },
+  { href: '/intel',     label: 'Intel',     icon: IconScan },
   { href: '/wallets',   label: 'Wallets',   icon: IconWallet },
   { href: '/chat',      label: 'Chat',      icon: IconChat },
   { href: '/analytics', label: 'Analytics', icon: IconAnalytics },
@@ -508,6 +508,21 @@ function IconGem({ size }: { size?: number }) {
     <Svg size={size}>
       <path d="M6 3h12l3 6-9 12L3 9z" />
       <path d="M3 9h18" />
+    </Svg>
+  );
+}
+function IconScan({ size }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+      <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+      <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+      <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 5v2" />
+      <path d="M12 17v2" />
+      <path d="M5 12h2" />
+      <path d="M17 12h2" />
     </Svg>
   );
 }

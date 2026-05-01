@@ -58,6 +58,7 @@ export class GeckoTerminalProvider {
     try {
       const res = await fetch(`${this.base}/networks/${network}/tokens/${address}?include=top_pools`, {
         headers: { 'User-Agent': 'qwai/1.0', accept: 'application/json' },
+        signal: AbortSignal.timeout(8_000),
       });
       if (!res.ok) {
         this.logger.warn(`GeckoTerminal ${network} ${address}: ${res.status}`);

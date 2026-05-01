@@ -1,4 +1,5 @@
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { Bot, InlineKeyboard } from 'grammy';
 import { ApprovalChannel, RejectCategory } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -6,6 +7,9 @@ import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { TelegramLinkService } from '../auth/telegram-link.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { SnipeGroupService } from '../snipe/snipe-group.service';
+import { detectChain } from '../token-analysis/chain-detector';
+import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
+import type { AiVerdict } from '../token-analysis/token-analysis.types';
 
 const NOT_LINKED_TEXT =
   '🔗 This Telegram is not linked to a QWAI account. Open web dashboard → Settings → "Link Telegram" to get a code, then send /link <code> here.';
@@ -22,7 +26,16 @@ export class TelegramBot {
     @Inject(forwardRef(() => ApprovalsService))
     private readonly approvals: ApprovalsService,
     @Optional() private readonly snipeGroup: SnipeGroupService,
+    private readonly moduleRef: ModuleRef,
   ) {}
+
+  private getTokenAnalysis(): TokenAnalysisService | null {
+    try {
+      return this.moduleRef.get(TokenAnalysisService, { strict: false });
+    } catch {
+      return null;
+    }
+  }
 
   get bot(): Bot | null {
     return this._bot;
@@ -63,6 +76,7 @@ export class TelegramBot {
           '',
           'Commands:',
           '/link <code> — connect to your web account',
+          '/scan <address> — AI token analysis (or just paste a CA)',
           '/portfolio — portfolio summary',
           '/buy <amount> <token> — quick market buy',
           '/sell <amount> <token> — quick market sell',
@@ -347,6 +361,14 @@ export class TelegramBot {
       );
     });
 
+    // /scan <address> — token intelligence report
+    bot.command('scan', async (ctx) => {
+      const parts = (ctx.message?.text ?? '').split(/\s+/);
+      const address = parts[1]?.trim();
+      if (!address) return ctx.reply('Usage: /scan <contract_address>\nExample: /scan 7xKXtg2C...');
+      return this.runScan(ctx, address);
+    });
+
     // Natural language + group catch-all
     bot.on('message:text', async (ctx) => {
       const chatType = ctx.chat.type;
@@ -361,13 +383,91 @@ export class TelegramBot {
         return;
       }
 
-      // Private chat: route to AI as before
+      // Private chat: auto-detect CA paste → run scan without needing /scan prefix
       if (ctx.message.text.startsWith('/')) return;
+      const text = ctx.message.text.trim();
+      if (detectChain(text)) return this.runScan(ctx, text);
+
+      // Everything else → AI
       try {
         return ctx.reply(await this.chat(ctx.chat.id, ctx.message.text));
       } catch (e: any) {
         return ctx.reply('Error talking to QWAI: ' + e.message);
       }
     });
+  }
+
+  private async runScan(ctx: any, address: string): Promise<void> {
+    const chain = detectChain(address);
+    if (!chain) {
+      await ctx.reply('Invalid address format. Paste a Solana or EVM contract address.');
+      return;
+    }
+
+    const svc = this.getTokenAnalysis();
+    if (!svc) {
+      await ctx.reply('Token analysis service unavailable.');
+      return;
+    }
+
+    await ctx.reply('Analyzing token...');
+
+    try {
+      const report = await svc.analyze(chain, address);
+      const ai = report.aiReasoning;
+      const kill = report.kill;
+
+      const EMOJI: Record<AiVerdict, string> = {
+        STRONG_BUY: '[STRONG BUY]',
+        BUY:        '[BUY]',
+        CAUTIOUS:   '[CAUTION]',
+        SKIP:       '[SKIP]',
+        HIGH_RISK:  '[HIGH RISK]',
+      };
+
+      if (kill?.triggered) {
+        await ctx.reply(
+          `[REJECTED] ${report.meta.symbol ?? address.slice(0, 12)}\n\n` +
+          `Kill switch triggered: ${kill.reason}\n\n` +
+          `This token failed a fatal safety check. Do not trade.`,
+        );
+        return;
+      }
+
+      const symbol = report.meta.symbol ?? address.slice(0, 12);
+      const score  = ai?.score != null ? `${ai.score}/100` : 'n/a';
+      const verdict = ai ? EMOJI[ai.verdict] : '';
+
+      const lines: string[] = [
+        `${verdict} ${symbol} — Score: ${score}`,
+        '',
+        ai?.summary ?? 'AI reasoning unavailable.',
+      ];
+
+      if (ai?.bullishSignals?.length) {
+        lines.push('', `Bullish: ${ai.bullishSignals.slice(0, 2).join(' · ')}`);
+      }
+      if (ai?.riskFactors?.length) {
+        lines.push(`Risks: ${ai.riskFactors.slice(0, 2).join(' · ')}`);
+      }
+
+      const holders = report.holderMetrics;
+      if (holders?.top10ConcentrationPct != null) {
+        lines.push(`Top 10 hold: ${holders.top10ConcentrationPct.toFixed(1)}%` +
+          (holders.bundleDetected ? ' | Bundle: YES' : ''));
+      }
+
+      const social = report.socialData;
+      if (social?.telegramMembers) {
+        lines.push(`Telegram members: ${social.telegramMembers.toLocaleString()}`);
+      }
+
+      if (report.meta.url) lines.push('', `Chart: ${report.meta.url}`);
+
+      await ctx.reply(lines.join('\n'));
+    } catch (e: any) {
+      this.logger.warn(`/scan failed for ${address}: ${e.message}`);
+      await ctx.reply(`Analysis failed: ${e.message.slice(0, 120)}`);
+    }
   }
 }

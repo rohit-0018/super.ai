@@ -18,7 +18,22 @@ export class LlmService {
   private responseCache = new Map<string, { result: string; ts: number }>();
   private readonly CACHE_TTL = 5 * 60_000;
 
-  async chat(messages: ChatMessage[]): Promise<string> {
+  /** Which provider + model is currently active. */
+  get activeProvider(): string {
+    if (this.provider === 'anthropic' && this.anthropic) {
+      return `anthropic/${process.env.LLM_MODEL ?? 'claude-sonnet-4-6'}`;
+    }
+    if (this.openai) {
+      return `openai/${process.env.LLM_MODEL ?? 'gpt-4o'}`;
+    }
+    return 'none';
+  }
+
+  get isConfigured(): boolean {
+    return !!(this.anthropic || this.openai);
+  }
+
+  async chat(messages: ChatMessage[], maxTokens = 1024): Promise<string> {
     const key = this.cacheKey(messages);
     const cached = this.responseCache.get(key);
     if (cached && Date.now() - cached.ts < this.CACHE_TTL) {
@@ -26,7 +41,7 @@ export class LlmService {
       return cached.result;
     }
     const timeout = Number(process.env.LLM_TIMEOUT_MS ?? 30_000);
-    const result = await this.race(this.callProvider(messages), timeout);
+    const result = await this.race(this.callProvider(messages, maxTokens), timeout);
     this.responseCache.set(key, { result, ts: Date.now() });
     if (this.responseCache.size > 200) {
       const oldest = [...this.responseCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
@@ -112,13 +127,13 @@ export class LlmService {
     yield await this.chat(messages);
   }
 
-  private async callProvider(messages: ChatMessage[]): Promise<string> {
+  private async callProvider(messages: ChatMessage[], maxTokens = 1024): Promise<string> {
     if (this.provider === 'anthropic' && this.anthropic) {
       const sys = messages.find((m) => m.role === 'system')?.content;
       const rest = messages.filter((m) => m.role !== 'system') as { role: 'user' | 'assistant'; content: string }[];
       const r = await this.anthropic.messages.create({
-        model: process.env.LLM_MODEL ?? 'claude-opus-4-6',
-        max_tokens: 1024,
+        model: process.env.LLM_MODEL ?? 'claude-sonnet-4-6',
+        max_tokens: maxTokens,
         system: sys,
         messages: rest,
       });
@@ -128,10 +143,11 @@ export class LlmService {
       const r = await this.openai.chat.completions.create({
         model: process.env.LLM_MODEL ?? 'gpt-4o',
         messages,
+        max_tokens: maxTokens,
       });
       return r.choices[0]?.message?.content ?? '';
     }
-    throw new Error('LLM provider not configured.');
+    throw new Error('No LLM provider configured. Set ANTHROPIC_API_KEY (LLM_PROVIDER=anthropic) or OPENAI_API_KEY (LLM_PROVIDER=openai).');
   }
 
   private race<T>(p: Promise<T>, ms: number): Promise<T> {
