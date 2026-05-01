@@ -55,7 +55,7 @@ const GOPLUS_CHAIN_BY_DEX: Record<string, string> = {
 export class TokenAnalysisService {
   private readonly logger = new Logger(TokenAnalysisService.name);
   private readonly cacheTtlMs = parseInt(process.env.INTEL_CACHE_TTL_SEC ?? '60') * 1_000;
-  private readonly dbCacheTtlMs = parseInt(process.env.INTEL_DB_CACHE_TTL_SEC ?? '120') * 1_000;
+  private readonly dbCacheTtlMs = parseInt(process.env.INTEL_DB_CACHE_TTL_SEC ?? '720') * 1_000;
   private readonly aiEnabled = !!(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
   private cache = new Map<string, { report: TokenAnalysisReport; ts: number }>();
 

@@ -9,10 +9,16 @@ import { ApprovalsService } from '../approvals/approvals.service';
 import { SnipeGroupService } from '../snipe/snipe-group.service';
 import { detectChain } from '../token-analysis/chain-detector';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
-import type { AiVerdict } from '../token-analysis/token-analysis.types';
+import {
+  formatScanReport,
+  formatKillReport,
+  formatPlaceholder,
+} from './telegram-scan.formatter';
 
 const NOT_LINKED_TEXT =
-  '🔗 This Telegram is not linked to a QWAI account. Open web dashboard → Settings → "Link Telegram" to get a code, then send /link <code> here.';
+  '🔗 This Telegram is not linked to a QWAI account.\n\nOpen web dashboard → Settings → "Link Telegram" to get a code, then send /link <code> here.';
+
+const WEB_URL = (process.env.APP_WEB_URL ?? 'https://app.qwai.io').replace(/\/$/, '');
 
 @Injectable()
 export class TelegramBot {
@@ -37,13 +43,8 @@ export class TelegramBot {
     }
   }
 
-  get bot(): Bot | null {
-    return this._bot;
-  }
-
-  isEnabled(): boolean {
-    return !!this._bot;
-  }
+  get bot(): Bot | null { return this._bot; }
+  isEnabled(): boolean  { return !!this._bot; }
 
   build(token: string): Bot {
     if (this._bot) return this._bot;
@@ -68,61 +69,81 @@ export class TelegramBot {
   }
 
   private registerHandlers(bot: Bot) {
-    // /start — welcome + inline action buttons
+
+    /* ── /start ────────────────────────────────────────────────────────────── */
     bot.command('start', (ctx) =>
       ctx.reply(
         [
-          '👋 I am QWAI — your personal AI trading agent.',
+          '🔥 <b>QWAI Token Scanner</b>',
           '',
-          'Commands:',
-          '/link <code> — connect to your web account',
-          '/scan <address> — AI token analysis (or just paste a CA)',
-          '/portfolio — portfolio summary',
-          '/buy <amount> <token> — quick market buy',
-          '/sell <amount> <token> — quick market sell',
-          '/dca <amount> <token> <interval> — set up DCA',
-          '/alerts — recent alerts',
-          '/kill — emergency kill switch',
-          '/paper — toggle paper mode info',
+          'Paste any Solana or EVM token address to get instant analysis:',
+          '• Price, liquidity, volume',
+          '• Safety checks (honeypot, taxes, mint authority, LP lock)',
+          '• Bundle launch detection',
+          '• Smart money wallet signals',
+          '• AI verdict + score (when cached)',
+          '',
+          'Full report with entry price, stop-loss, and targets:',
+          `<a href="${WEB_URL}">${WEB_URL.replace('https://', '')}</a>`,
+          '',
+          '<b>Commands:</b>',
+          '/scan &lt;address&gt; — analyze a token',
+          '/link &lt;code&gt; — connect your web account (for trading features)',
+          '/portfolio — your portfolio (requires /link)',
+          '/buy /sell — trade (requires /link)',
           '/snipe — sniper bot commands',
-          '',
-          'Or just talk naturally: "Buy $200 of SOL"',
         ].join('\n'),
         {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
           reply_markup: new InlineKeyboard()
+            .url('🔍 Open Scanner', WEB_URL)
             .text('📊 Portfolio', 'action:portfolio')
-            .text('🔔 Alerts', 'action:alerts')
             .row()
-            .text('🛑 Kill switch', 'action:kill')
-            .text('📝 Paper mode', 'action:paper'),
+            .text('🔔 Alerts', 'action:alerts')
+            .text('🛑 Kill switch', 'action:kill'),
         },
       ),
     );
 
-    // /link — connect telegram to web account
+    /* ── /link ─────────────────────────────────────────────────────────────── */
     bot.command('link', async (ctx) => {
       const code = ctx.match?.trim();
       if (!code) {
-        return ctx.reply('Usage: `/link <code>`\nGenerate from web dashboard → Settings.', { parse_mode: 'Markdown' });
+        return ctx.reply(
+          'Usage: <code>/link &lt;code&gt;</code>\n\nGenerate from web dashboard → Settings → Link Telegram.',
+          { parse_mode: 'HTML' },
+        );
       }
       try {
         await this.tgLink.link(String(ctx.chat.id), code);
-        return ctx.reply('✅ Telegram linked! You now share memory + wallets with the web dashboard.');
+        return ctx.reply('✅ <b>Linked!</b> Your Telegram and web dashboard now share memory, wallets, and agents.', { parse_mode: 'HTML' });
       } catch (e: any) {
         return ctx.reply(`❌ Link failed: ${e?.message ?? 'unknown error'}`);
       }
     });
 
-    // /portfolio
+    /* ── /scan ─────────────────────────────────────────────────────────────── */
+    bot.command('scan', async (ctx) => {
+      const parts = (ctx.message?.text ?? '').split(/\s+/);
+      const address = parts[1]?.trim();
+      if (!address) {
+        return ctx.reply(
+          '📋 <b>Usage:</b> <code>/scan &lt;address&gt;</code>\n\nOr just paste a contract address directly — I\'ll detect it automatically.',
+          { parse_mode: 'HTML' },
+        );
+      }
+      return this.runScan(ctx, address);
+    });
+
+    /* ── /portfolio ────────────────────────────────────────────────────────── */
     bot.command('portfolio', async (ctx) => {
       try {
         return ctx.reply(await this.chat(ctx.chat.id, 'Give me my portfolio summary with current positions and P&L.'));
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
-    // /buy <amount> <token>
+    /* ── /buy /sell ────────────────────────────────────────────────────────── */
     bot.command('buy', async (ctx) => {
       const args = ctx.match?.trim();
       if (!args) return ctx.reply('Usage: /buy 200 SOL');
@@ -133,12 +154,9 @@ export class TelegramBot {
             .text('✅ Confirm', `confirm:buy:${args}`)
             .text('❌ Cancel', 'confirm:cancel'),
         });
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
-    // /sell <amount> <token>
     bot.command('sell', async (ctx) => {
       const args = ctx.match?.trim();
       if (!args) return ctx.reply('Usage: /sell 1 SOL');
@@ -149,32 +167,24 @@ export class TelegramBot {
             .text('✅ Confirm', `confirm:sell:${args}`)
             .text('❌ Cancel', 'confirm:cancel'),
         });
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
-    // /dca <amount> <token> <interval>
+    /* ── /dca /alerts /kill /paper ─────────────────────────────────────────── */
     bot.command('dca', async (ctx) => {
       const args = ctx.match?.trim();
       if (!args) return ctx.reply('Usage: /dca 50 SOL daily');
       try {
         return ctx.reply(await this.chat(ctx.chat.id, `Set up a DCA: buy ${args}`));
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
-    // /alerts
     bot.command('alerts', async (ctx) => {
       try {
         return ctx.reply(await this.chat(ctx.chat.id, 'Show me my recent alerts and notifications.'));
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
-    // /kill
     bot.command('kill', async (ctx) =>
       ctx.reply('🚨 Are you sure you want to engage the kill switch? This pauses ALL agents.', {
         reply_markup: new InlineKeyboard()
@@ -183,19 +193,17 @@ export class TelegramBot {
       }),
     );
 
-    // /paper
     bot.command('paper', async (ctx) =>
-      ctx.reply('Paper mode toggle: open the web /settings page to flip between paper ↔ live. This keeps both interfaces in sync.'),
+      ctx.reply('Paper mode can be toggled in the web dashboard under Settings. Both Telegram and web share the same mode.'),
     );
 
-    // /snipe — show sniper status + help
+    /* ── /snipe commands ───────────────────────────────────────────────────── */
     bot.command('snipe', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
-
       const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
       const lines = [
-        '⚡ *Sniper Bot*',
+        '⚡ <b>Sniper Bot</b>',
         '',
         config
           ? [
@@ -205,17 +213,13 @@ export class TelegramBot {
               `Slippage: ${(config.maxSlippageBps / 100).toFixed(0)}%`,
               `Groups: ${config.groupIds.length} monitored`,
             ].join('\n')
-          : 'No config yet. Use /snipe\\_start or REST API POST /api/snipe/config',
+          : 'No config yet. Set via REST API POST /api/snipe/config',
         '',
-        'Commands:',
-        '/snipe\\_on — enable + start hot session',
-        '/snipe\\_off — disable + stop session',
-        '/snipe\\_status — session status',
+        'Commands: /snipe_on  /snipe_off  /snipe_status',
       ];
-      return ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+      return ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
     });
 
-    // /snipe_on — enable sniper (requires existing config with walletId)
     bot.command('snipe_on', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
@@ -223,13 +227,10 @@ export class TelegramBot {
         const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
         if (!config) return ctx.reply('No snipe config found. Configure at /api/snipe/config first.');
         await this.prisma.snipeConfig.update({ where: { userId }, data: { enabled: true } });
-        return ctx.reply(`✅ Sniper enabled. Add this bot to your groups, make sure privacy mode is OFF in BotFather.\n\nHot session starts automatically when the bot receives a group message for your user.`, { parse_mode: 'Markdown' });
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+        return ctx.reply('✅ Sniper enabled. Add this bot to your groups with privacy mode OFF in BotFather.');
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
-    // /snipe_off — disable sniper
     bot.command('snipe_off', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
@@ -237,54 +238,39 @@ export class TelegramBot {
         await this.prisma.snipeConfig.updateMany({ where: { userId }, data: { enabled: false } });
         this.snipeGroup?.stopUserSession(userId);
         return ctx.reply('🔴 Sniper disabled.');
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
-    // /snipe_status
     bot.command('snipe_status', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
-      const status = this.snipeGroup
-        ? this.snipeGroup.getUserSessionStatus(userId)
-        : { active: false };
+      const status = this.snipeGroup ? this.snipeGroup.getUserSessionStatus(userId) : { active: false };
       const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
-      return ctx.reply(
-        [
-          `Session: ${status.active ? `🟢 Active (expires ${new Date((status as any).expiresAt).toISOString()})` : '🔴 No hot session'}`,
-          `Sniper: ${config?.enabled ? '🟢 Enabled' : '🔴 Disabled'}`,
-          `Groups: ${config?.groupIds?.join(', ') || 'none'}`,
-        ].join('\n'),
-      );
+      return ctx.reply([
+        `Session: ${status.active ? `🟢 Active` : '🔴 Inactive'}`,
+        `Sniper: ${config?.enabled ? '🟢 Enabled' : '🔴 Disabled'}`,
+        `Groups: ${config?.groupIds?.join(', ') || 'none'}`,
+      ].join('\n'));
     });
 
-    // ── Inline callbacks ──
-
+    /* ── Inline callbacks ──────────────────────────────────────────────────── */
     bot.callbackQuery(/^action:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const action = ctx.match[1];
       switch (action) {
-        case 'portfolio':
-          return ctx.reply(await this.chat(ctx.chat!.id, 'Portfolio summary'));
-        case 'alerts':
-          return ctx.reply(await this.chat(ctx.chat!.id, 'Show my recent alerts'));
-        case 'kill':
-          return ctx.reply('Use /kill to engage the kill switch.');
-        case 'paper':
-          return ctx.reply('Toggle paper mode in the web Settings page.');
-        default:
-          return ctx.reply(`Unknown action: ${action}`);
+        case 'portfolio': return ctx.reply(await this.chat(ctx.chat!.id, 'Portfolio summary'));
+        case 'alerts':    return ctx.reply(await this.chat(ctx.chat!.id, 'Show my recent alerts'));
+        case 'kill':      return ctx.reply('Use /kill to engage the kill switch.');
+        case 'paper':     return ctx.reply('Toggle paper mode in the web Settings page.');
+        default:          return ctx.reply(`Unknown action: ${action}`);
       }
     });
 
     bot.callbackQuery(/^confirm:kill$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       try {
-        return ctx.reply(`🚨 ${await this.chat(ctx.chat!.id, 'Engage kill switch immediately. Pause all agents.')}`);
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+        return ctx.reply(await this.chat(ctx.chat!.id, 'Engage kill switch immediately. Pause all agents.'));
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^confirm:cancel$/, async (ctx) => {
@@ -297,9 +283,7 @@ export class TelegramBot {
       const [, action, args] = ctx.match;
       try {
         return ctx.reply(await this.chat(ctx.chat!.id, `Confirmed — ${action} ${args}. Execute now.`));
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^approve:([\w-]+)$/, async (ctx) => {
@@ -310,22 +294,20 @@ export class TelegramBot {
       try {
         await this.approvals.respond(userId, requestId, true, ApprovalChannel.TELEGRAM);
         return ctx.reply('✅ Approved. Executing.');
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^reject:([\w-]+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const [, requestId] = ctx.match;
       const keyboard = new InlineKeyboard()
-        .text('Too risky', `reject_reason:${requestId}:TOO_RISKY`)
+        .text('Too risky',   `reject_reason:${requestId}:TOO_RISKY`)
         .text('Wrong token', `reject_reason:${requestId}:WRONG_TOKEN`)
         .row()
-        .text('Bad timing', `reject_reason:${requestId}:BAD_TIMING`)
-        .text('Wrong size', `reject_reason:${requestId}:WRONG_SIZE`)
+        .text('Bad timing',  `reject_reason:${requestId}:BAD_TIMING`)
+        .text('Wrong size',  `reject_reason:${requestId}:WRONG_SIZE`)
         .row()
-        .text('Other', `reject_reason:${requestId}:OTHER`);
+        .text('Other',       `reject_reason:${requestId}:OTHER`);
       return ctx.reply('Why are you rejecting?', { reply_markup: keyboard });
     });
 
@@ -339,68 +321,64 @@ export class TelegramBot {
           rejectCategory: category as RejectCategory,
         });
         return ctx.reply(`❌ Rejected (${category.toLowerCase().replace('_', ' ')}).`);
-      } catch (e: any) {
-        return ctx.reply(`Error: ${e.message}`);
-      }
+      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^snooze:(\d+)$/, async (ctx) => {
-      await ctx.answerCallbackQuery('Snoozed for 1 hour');
-      return ctx.reply('🔕 Alert snoozed for 1 hour.');
+      await ctx.answerCallbackQuery('Snoozed');
+      return ctx.reply('🔕 Alert snoozed.');
     });
 
-    // ── Group / channel message handler (sniper hot path) ──
-    // Runs BEFORE the catch-all so group messages never hit the AI.
+    /* ── Rescan callback (inline button on scan results) ───────────────────── */
+    bot.callbackQuery(/^rescan:(.+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery('Rescanning…');
+      return this.runScan(ctx, ctx.match[1], true);
+    });
 
+    /* ── Channel posts → sniper hot path ───────────────────────────────────── */
     bot.on('channel_post:text', async (ctx) => {
       if (!this.snipeGroup) return;
       const groupId = String(ctx.chat.id);
-      const text = ctx.channelPost.text ?? '';
-      this.snipeGroup.handleGroupMessage(groupId, text).catch((e) =>
-        this.logger.error(`snipeGroup channel_post error: ${e.message}`),
-      );
+      this.snipeGroup.handleGroupMessage(groupId, ctx.channelPost.text ?? '')
+        .catch(e => this.logger.error(`snipeGroup channel_post: ${e.message}`));
     });
 
-    // /scan <address> — token intelligence report
-    bot.command('scan', async (ctx) => {
-      const parts = (ctx.message?.text ?? '').split(/\s+/);
-      const address = parts[1]?.trim();
-      if (!address) return ctx.reply('Usage: /scan <contract_address>\nExample: /scan 7xKXtg2C...');
-      return this.runScan(ctx, address);
-    });
-
-    // Natural language + group catch-all
+    /* ── Catch-all message handler ─────────────────────────────────────────── */
     bot.on('message:text', async (ctx) => {
       const chatType = ctx.chat.type;
+      const text = (ctx.message.text ?? '').trim();
 
-      // Group/supergroup messages: check for CA and run sniper; don't reply
+      // Groups: sniper hot path (no unsolicited replies unless /scan used)
       if ((chatType === 'group' || chatType === 'supergroup') && this.snipeGroup) {
         const groupId = String(ctx.chat.id);
-        const text = ctx.message.text ?? '';
-        this.snipeGroup.handleGroupMessage(groupId, text).catch((e) =>
-          this.logger.error(`snipeGroup message error: ${e.message}`),
-        );
+        this.snipeGroup.handleGroupMessage(groupId, text)
+          .catch(e => this.logger.error(`snipeGroup message: ${e.message}`));
         return;
       }
 
-      // Private chat: auto-detect CA paste → run scan without needing /scan prefix
-      if (ctx.message.text.startsWith('/')) return;
-      const text = ctx.message.text.trim();
+      // Skip explicit commands (handled above)
+      if (text.startsWith('/')) return;
+
+      // Private chat: auto-detect CA → scan
       if (detectChain(text)) return this.runScan(ctx, text);
 
-      // Everything else → AI
+      // Everything else → AI agent
       try {
-        return ctx.reply(await this.chat(ctx.chat.id, ctx.message.text));
+        return ctx.reply(await this.chat(ctx.chat.id, text));
       } catch (e: any) {
         return ctx.reply('Error talking to QWAI: ' + e.message);
       }
     });
   }
 
-  private async runScan(ctx: any, address: string): Promise<void> {
+  /* ── Core scan implementation ────────────────────────────────────────────── */
+  private async runScan(ctx: any, address: string, force = false): Promise<void> {
     const chain = detectChain(address);
     if (!chain) {
-      await ctx.reply('Invalid address format. Paste a Solana or EVM contract address.');
+      await ctx.reply(
+        '❌ <b>Unrecognized address format.</b>\n\nPaste a Solana (base58) or EVM (0x…) token address.',
+        { parse_mode: 'HTML' },
+      );
       return;
     }
 
@@ -410,64 +388,61 @@ export class TelegramBot {
       return;
     }
 
-    await ctx.reply('Analyzing token...');
+    // 1. Send placeholder immediately so user gets instant feedback
+    let placeholderMsgId: number | undefined;
+    try {
+      const msg = await ctx.reply(formatPlaceholder(address), { parse_mode: 'HTML' });
+      placeholderMsgId = msg.message_id;
+    } catch {
+      // If placeholder fails, we'll send a new message later
+    }
+
+    const editOrReply = async (text: string, opts: Record<string, any>) => {
+      if (placeholderMsgId) {
+        try {
+          return await ctx.api.editMessageText(ctx.chat.id, placeholderMsgId, text, opts);
+        } catch {
+          // Fall back to new message if edit fails (e.g. message too old)
+        }
+      }
+      return ctx.reply(text, opts);
+    };
 
     try {
-      const report = await svc.analyze(chain, address);
-      const ai = report.aiReasoning;
-      const kill = report.kill;
+      // 2. Run full analysis (in-memory + DB cache → instant if warm; pipeline if cold)
+      const report = await svc.analyzeAddress(address, force);
 
-      const EMOJI: Record<AiVerdict, string> = {
-        STRONG_BUY: '[STRONG BUY]',
-        BUY:        '[BUY]',
-        CAUTIOUS:   '[CAUTION]',
-        SKIP:       '[SKIP]',
-        HIGH_RISK:  '[HIGH RISK]',
-      };
+      const result = report.kill?.triggered
+        ? formatKillReport(report, address, WEB_URL)
+        : formatScanReport(report, address, WEB_URL);
 
-      if (kill?.triggered) {
-        await ctx.reply(
-          `[REJECTED] ${report.meta.symbol ?? address.slice(0, 12)}\n\n` +
-          `Kill switch triggered: ${kill.reason}\n\n` +
-          `This token failed a fatal safety check. Do not trade.`,
-        );
-        return;
+      // Add rescan button
+      result.keyboard.row().text('🔄 Rescan', `rescan:${address}`);
+
+      await editOrReply(result.text, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        reply_markup: result.keyboard,
+      });
+
+      // 3. Background: pre-warm meme_hunter profile so website link loads instantly
+      if (!force) {
+        svc.analyzeWithProfile(address, 'meme_hunter', 'alpha', false, null)
+          .catch(() => {});
       }
 
-      const symbol = report.meta.symbol ?? address.slice(0, 12);
-      const score  = ai?.score != null ? `${ai.score}/100` : 'n/a';
-      const verdict = ai ? EMOJI[ai.verdict] : '';
-
-      const lines: string[] = [
-        `${verdict} ${symbol} — Score: ${score}`,
-        '',
-        ai?.summary ?? 'AI reasoning unavailable.',
-      ];
-
-      if (ai?.bullishSignals?.length) {
-        lines.push('', `Bullish: ${ai.bullishSignals.slice(0, 2).join(' · ')}`);
-      }
-      if (ai?.riskFactors?.length) {
-        lines.push(`Risks: ${ai.riskFactors.slice(0, 2).join(' · ')}`);
-      }
-
-      const holders = report.holderMetrics;
-      if (holders?.top10ConcentrationPct != null) {
-        lines.push(`Top 10 hold: ${holders.top10ConcentrationPct.toFixed(1)}%` +
-          (holders.bundleDetected ? ' | Bundle: YES' : ''));
-      }
-
-      const social = report.socialData;
-      if (social?.telegramMembers) {
-        lines.push(`Telegram members: ${social.telegramMembers.toLocaleString()}`);
-      }
-
-      if (report.meta.url) lines.push('', `Chart: ${report.meta.url}`);
-
-      await ctx.reply(lines.join('\n'));
     } catch (e: any) {
       this.logger.warn(`/scan failed for ${address}: ${e.message}`);
-      await ctx.reply(`Analysis failed: ${e.message.slice(0, 120)}`);
+      const errText = [
+        `❌ <b>Analysis failed</b>`,
+        `<code>${address.slice(0, 20)}…</code>`,
+        '',
+        `<i>${e.message.slice(0, 200)}</i>`,
+        '',
+        'Try again with /scan or check the address is correct.',
+      ].join('\n');
+
+      await editOrReply(errText, { parse_mode: 'HTML' }).catch(() => {});
     }
   }
 }

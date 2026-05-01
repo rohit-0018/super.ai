@@ -35,6 +35,8 @@ export const QUEUES = {
   EPISODE_INGEST: 'episode-ingest',
   EPISODE_OUTCOME: 'episode-outcome',
   CONVICTION_LEARNER: 'conviction-learner',
+  HOT_TOKENS_SCAN: 'hot-tokens-scan',
+  HOT_TOKENS_REFRESH: 'hot-tokens-refresh',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];

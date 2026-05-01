@@ -38,6 +38,8 @@ import { TokenIntelService } from '../token-intel/token-intel.service';
 import { ConvictionEngine } from '../token-intel/conviction.engine';
 import { ConvictionLearnerService } from '../ai-agent/conviction-learner.service';
 import { startConvictionLearnerWorker } from './conviction-learner.worker';
+import { startHotTokensScanWorker, startHotTokensRefreshWorker } from '../hot-tokens/hot-tokens.worker';
+import { HotTokensService } from '../hot-tokens/hot-tokens.service';
 import { Bot } from 'grammy';
 
 export interface WorkerDeps {
@@ -73,6 +75,7 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
   private tokenIntel!: TokenIntelService;
   private conviction!: ConvictionEngine;
   private convictionLearner!: ConvictionLearnerService;
+  private hotTokens!: HotTokensService;
 
   constructor(
     private prisma: PrismaService,
@@ -116,6 +119,7 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
     this.tokenIntel = this.moduleRef.get(TokenIntelService, { strict: false });
     this.conviction = this.moduleRef.get(ConvictionEngine, { strict: false });
     this.convictionLearner = this.moduleRef.get(ConvictionLearnerService, { strict: false });
+    this.hotTokens = this.moduleRef.get(HotTokensService, { strict: false });
 
     const deps: WorkerDeps = {
       prisma: this.prisma,
@@ -174,6 +178,14 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
 
     // L5 conviction learner — per-user weight updates every 6h (or milestone).
     this.workers.push(startConvictionLearnerWorker({ ...deps, learner: this.convictionLearner }));
+
+    // Hot tokens scanner — discovery every 10 min + optional 10-sec price refresh.
+    if (this.hotTokens) {
+      this.workers.push(startHotTokensScanWorker(this.hotTokens));
+      if (this.hotTokens.fastScan) {
+        this.workers.push(startHotTokensRefreshWorker(this.hotTokens));
+      }
+    }
 
     // Telegram outbound sender — reuse the same Grammy Bot instance owned by
     // TelegramService when available; fall back to a bare instance if we
@@ -309,6 +321,28 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
       removeOnFail: 20,
       jobId: 'learner-tick',
     });
+
+    // Hot token scanner — full discovery + score every 10 min.
+    if (process.env.HOT_TOKENS_ENABLED !== 'false') {
+      const hotScan = makeQueue(QUEUES.HOT_TOKENS_SCAN);
+      await hotScan.add('hot-tokens-scan', {}, {
+        repeat: { pattern: '*/10 * * * *' },
+        removeOnComplete: 20,
+        removeOnFail: 20,
+        jobId: 'hot-tokens-scan',
+      });
+
+      // Optional 10-sec price refresh for the already-discovered hot list.
+      if (process.env.HOT_TOKENS_FAST_SCAN === 'true') {
+        const hotRefresh = makeQueue(QUEUES.HOT_TOKENS_REFRESH);
+        await hotRefresh.add('hot-tokens-refresh', {}, {
+          repeat: { every: 10_000 },
+          removeOnComplete: 10,
+          removeOnFail: 10,
+          jobId: 'hot-tokens-refresh',
+        });
+      }
+    }
   }
 
   async stop() {

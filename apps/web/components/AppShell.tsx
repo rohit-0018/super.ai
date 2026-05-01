@@ -8,6 +8,7 @@ import LearningModePill from './LearningModePill';
 import NotificationBell from './NotificationBell';
 import UserMenu from './UserMenu';
 import { TickerBar, type TickerItem } from './ui/TickerBar';
+import { HotTokensBar } from './HotTokensBar';
 import AgentLauncher from './AgentLauncher';
 import { useApi } from '../lib/useApi';
 import { api } from '../lib/api';
@@ -35,6 +36,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <Rail pathname={pathname} />
       <div className="shell-main-col flex-1 flex flex-col min-w-0">
         <TopStatusBar />
+        <HotTokensBar />
         <main className="flex-1 min-w-0">{children}</main>
         <BottomStatusBar />
       </div>

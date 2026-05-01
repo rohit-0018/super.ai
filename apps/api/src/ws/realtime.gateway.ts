@@ -34,6 +34,13 @@ export class RealtimeGateway {
     this.server.to(`user:${userId}`).emit(event, envelope);
   }
 
+  emitGlobal(event: string, payload: unknown): void {
+    if (!this.server) return;
+    const envelope = this.ensureTraceEnvelope(payload);
+    this.logger.debug(`emit → global [${event}]`);
+    this.server.emit(event, envelope);
+  }
+
   emitPrice(symbol: string, payload: unknown): void {
     if (!this.server) return;
     const envelope = this.ensureTraceEnvelope(payload);

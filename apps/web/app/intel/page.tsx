@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import type { ReactNode } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
@@ -1125,114 +1125,301 @@ function ReportView({ report, onReanalyze, busy, profile, depth }: {
   );
 }
 
+/* ─── Skeleton loader ────────────────────────────────────────────────────── */
+function SkLine({ w = '100%', h = 13, mb = 0 }: { w?: string | number; h?: number; mb?: number }) {
+  return (
+    <div style={{
+      width: w, height: h, borderRadius: 4, marginBottom: mb,
+      /* use a noticeable contrast between surface-2 and a white-alpha highlight */
+      background: 'linear-gradient(90deg, var(--surface-2) 0%, rgba(255,255,255,0.09) 50%, var(--surface-2) 100%)',
+      backgroundSize: '200% 100%',
+      animation: 'shimmer-bg 1.4s linear infinite',
+    }} />
+  );
+}
+
+/* ─── Indeterminate progress bar shown during any analysis ───────────────── */
+function LoadingBar() {
+  return (
+    <div style={{
+      position: 'relative', height: 2, borderRadius: 2, overflow: 'hidden',
+      background: 'rgba(255,255,255,0.05)', marginBottom: 14, flexShrink: 0,
+    }}>
+      <div style={{
+        position: 'absolute', top: 0, height: '100%', borderRadius: 2,
+        background: 'var(--accent)',
+        animation: 'load-bar 1.6s ease-in-out infinite',
+      }} />
+    </div>
+  );
+}
+
+function ReportSkeleton({ msg, steps }: { msg: string; steps: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* progress bar */}
+      <LoadingBar />
+      {/* token header skeleton */}
+      <div className="section" style={{ padding: '14px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <SkLine w={120} h={26} />
+          <SkLine w={60} h={20} />
+          <SkLine w={80} h={20} />
+        </div>
+        <SkLine w={180} h={36} mb={10} />
+        <div style={{ display: 'flex', gap: 20 }}>
+          <SkLine w={80} h={14} />
+          <SkLine w={80} h={14} />
+          <SkLine w={80} h={14} />
+          <SkLine w={80} h={14} />
+        </div>
+      </div>
+      {/* verdict card skeleton */}
+      <div className="section" style={{ padding: '20px 24px' }}>
+        <div style={{ display: 'flex', gap: 24, alignItems: 'center' }}>
+          <div style={{ width: 108, height: 108, borderRadius: '50%', background: 'var(--surface-2)', flexShrink: 0 }} />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <SkLine w="40%" h={14} />
+            <SkLine w="60%" h={34} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <SkLine w={90} h={18} />
+              <SkLine w={80} h={18} />
+              <SkLine w={70} h={18} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 190 }}>
+            {[35, 30, 20, 10, 5].map((w, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <SkLine w={76} h={11} />
+                <SkLine w="100%" h={4} />
+                <SkLine w={38} h={11} />
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* pipeline status */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>
+            {msg}
+          </div>
+          <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>{steps}</div>
+          <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
+            {steps.split('→').map((s, i) => (
+              <span key={i} style={{
+                fontSize: 10, padding: '2px 7px', borderRadius: 4,
+                background: 'var(--surface-2)', color: 'var(--text-3)',
+                border: '1px solid var(--border)',
+              }}>{s.trim()}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+      {/* 2-col grid skeleton for safety + market */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        {[0, 1].map(i => (
+          <div key={i} className="section">
+            <div style={{ padding: '0 14px', height: 44, display: 'flex', alignItems: 'center' }}><SkLine w="50%" h={14} /></div>
+            <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[...Array(4)].map((_, j) => <SkLine key={j} h={12} />)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Re-analyze overlay (keeps existing report visible underneath) ──────── */
+function AnalyzingOverlay({ msg, steps }: { msg: string; steps: string }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 60,
+      background: 'rgba(10,13,20,0.78)',
+      backdropFilter: 'blur(4px)',
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      gap: 10,
+    }}>
+      <div style={{
+        background: 'var(--surface)', border: '1px solid var(--border)',
+        borderRadius: 14, padding: '28px 36px', minWidth: 340,
+        boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 64px rgba(0,0,0,0.7)',
+        textAlign: 'center',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 14 }}>
+          <Spinner size={18} />
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{msg}</span>
+        </div>
+        <LoadingBar />
+        <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)', lineHeight: 1.9, letterSpacing: '0.01em' }}>
+          {steps.split('→').map((s, i, arr) => (
+            <span key={i}>
+              <span style={{ color: 'var(--accent)' }}>{s.trim()}</span>
+              {i < arr.length - 1 && <span style={{ color: 'var(--text-3)', margin: '0 6px' }}>→</span>}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Spinner({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" style={{ animation: 'qwai-spin 0.8s linear infinite', flexShrink: 0 }}>
+      <circle cx="12" cy="12" r="10" fill="none" stroke="var(--border-2)" strokeWidth="2.5" />
+      <path d="M12 2 a10 10 0 0 1 10 10" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /* ─── Main page ──────────────────────────────────────────────────────────── */
 function IntelPageClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [input, setInput] = useState(searchParams.get('address') ?? '');
   const [profile, setProfile] = useState<TradingProfile>(() => {
+    // URL param takes precedence over localStorage when navigating from hot tokens
+    const fromParam = searchParams.get('profile');
+    if (fromParam && fromParam in PROFILES) return fromParam as TradingProfile;
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(PROFILE_KEY);
       if (saved && saved in PROFILES) return saved as TradingProfile;
     }
-    const fromParam = searchParams.get('profile');
-    if (fromParam && fromParam in PROFILES) return fromParam as TradingProfile;
     return 'meme_hunter';
   });
   const [depth, setDepth] = useState<ReportDepth>(() => {
     const d = searchParams.get('depth');
     return (d === 'quick' || d === 'dossier') ? d : 'alpha';
   });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);   // first load — no report yet
+  const [analyzing, setAnalyzing] = useState(false); // re-analyzing — old report stays visible
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [histKey, setHistKey] = useState(0);
 
-  const handleProfileChange = (p: TradingProfile) => {
-    setProfile(p);
-    try { localStorage.setItem(PROFILE_KEY, p); } catch {}
-    if (report) {
-      // Re-analyze with new profile
-      triggerAnalyze(report.meta.address, p, depth, false);
-    }
-  };
+  // Stable ref so the searchParams effect can call the latest triggerAnalyze
+  // without needing it in the dependency array (avoids stale closure on router)
+  const triggerAnalyzeRef = useRef<(addr: string, p: TradingProfile, d: ReportDepth, force: boolean) => Promise<void>>(
+    async () => {},
+  );
 
   const triggerAnalyze = useCallback(async (
     addr: string, p: TradingProfile, d: ReportDepth, force: boolean,
   ) => {
     const trimmed = addr.trim();
     if (!trimmed) return;
-    if (force) setBusy(true); else setLoading(true);
     setError(null);
-    if (!force) setReport(null);
+    if (force) {
+      setBusy(true);
+    } else if (report) {
+      setAnalyzing(true);  // show overlay; keep old report visible beneath
+    } else {
+      setLoading(true);    // first load — show full skeleton
+    }
     try {
-      let url: string;
-      if (d === 'quick') {
-        url = `/intel/${encodeURIComponent(trimmed)}?depth=quick${force ? '&force=true' : ''}`;
-      } else {
-        url = `/intel/${encodeURIComponent(trimmed)}?depth=${d}&profile=${p}${force ? '&force=true' : ''}`;
-      }
+      const url = d === 'quick'
+        ? `/intel/${encodeURIComponent(trimmed)}?depth=quick${force ? '&force=true' : ''}`
+        : `/intel/${encodeURIComponent(trimmed)}?depth=${d}&profile=${p}${force ? '&force=true' : ''}`;
       const { data } = await api.get<Report>(url);
       setReport(data);
       saveHistory(data);
-      setHistKey(k => k+1);
+      setHistKey(k => k + 1);
       router.replace(`/intel?address=${encodeURIComponent(trimmed)}&profile=${p}&depth=${d}`, { scroll: false });
     } catch (e: any) {
       const msg = e?.response?.data?.message ?? e?.message ?? 'Analysis failed.';
       setError(typeof msg === 'string' ? msg : JSON.stringify(msg));
     } finally {
       setLoading(false);
+      setAnalyzing(false);
       setBusy(false);
     }
-  }, [router]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, report]);
+
+  triggerAnalyzeRef.current = triggerAnalyze;
 
   const analyze = useCallback((addr: string, force = false) => {
     triggerAnalyze(addr, profile, depth, force);
   }, [triggerAnalyze, profile, depth]);
 
+  const handleProfileChange = (p: TradingProfile) => {
+    setProfile(p);
+    try { localStorage.setItem(PROFILE_KEY, p); } catch {}
+    if (report) triggerAnalyze(report.meta.address, p, depth, false);
+  };
+
+  // Track the last URL combo we analyzed so we never double-fire
+  const lastAnalyzedRef = useRef<string | null>(null);
+
   useEffect(() => {
     const addr = searchParams.get('address');
-    if (addr) { setInput(addr); triggerAnalyze(addr, profile, depth, false); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const profileParam = searchParams.get('profile') as TradingProfile | null;
+    const depthParam = searchParams.get('depth') as ReportDepth | null;
+    if (!addr) return;
+
+    const effectiveProfile = (profileParam && profileParam in PROFILES) ? profileParam : profile;
+    const effectiveDepth = (depthParam === 'quick' || depthParam === 'dossier') ? depthParam : depth;
+    const key = `${addr}:${effectiveProfile}:${effectiveDepth}`;
+
+    // Don't re-trigger for the exact same address+profile+depth we already analyzed
+    if (lastAnalyzedRef.current === key) return;
+    lastAnalyzedRef.current = key;
+
+    setInput(addr);
+    if (profileParam && profileParam in PROFILES && profileParam !== profile) {
+      setProfile(profileParam);
+    }
+    triggerAnalyzeRef.current(addr, effectiveProfile, effectiveDepth, false);
+  // searchParams is the only real dependency — everything else is accessed via refs or set-fns
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const loadingMsg = depth === 'quick'
-    ? '⚡ Running fast scan…'
+    ? 'Running fast scan'
     : depth === 'dossier'
-    ? `📋 ${PROFILES[profile].icon} Full Dossier pipeline…`
-    : `🤖 ${PROFILES[profile].icon} ${PROFILES[profile].label} analysis…`;
+    ? `${PROFILES[profile].label} — Full Dossier`
+    : `${PROFILES[profile].label} — AI Analysis`;
 
   const loadingSteps = depth === 'quick'
     ? 'DexScreener → Safety → Playbooks'
     : 'DexScreener → Safety → Holders → Social → Smart Money → Claude AI';
 
+  const isAnalyzing = loading || analyzing;
+
   return (
     <div style={{ display: 'flex', height: '100%', minHeight: 0, overflow: 'hidden' }}>
-      <HistorySidebar key={histKey} onAnalyze={(addr, force) => { setInput(addr); analyze(addr, force); }} currentAddr={report?.meta.address} />
+      <HistorySidebar
+        key={histKey}
+        onAnalyze={(addr, force) => { setInput(addr); analyze(addr, force); }}
+        currentAddr={report?.meta.address}
+      />
 
       <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '18px 20px 32px' }}>
-        {/* Header */}
         <header style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 2 }}>Token Intelligence</div>
           <h1 style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.02em', margin: 0 }}>Intelligence Dashboard</h1>
         </header>
 
-        {/* Controls */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <ProfileSelector profile={profile} onChange={handleProfileChange} />
           <div style={{ marginLeft: 'auto' }}>
-            <DepthToggle depth={depth} onChange={(d) => { setDepth(d); if (report) triggerAnalyze(report.meta.address, profile, d, false); }} />
+            <DepthToggle depth={depth} onChange={(d) => {
+              setDepth(d);
+              if (report) {
+                lastAnalyzedRef.current = null; // allow re-trigger on depth change
+                triggerAnalyze(report.meta.address, profile, d, false);
+              }
+            }} />
           </div>
         </div>
 
-        {/* Tagline for selected profile */}
         <div style={{ fontSize: 11, fontWeight: 500, color: PROFILES[profile].color, marginBottom: 12, opacity: 0.8 }}>
           {PROFILES[profile].tagline}
         </div>
 
-        {/* Search */}
-        <form onSubmit={e => { e.preventDefault(); triggerAnalyze(input, profile, depth, false); }} style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        <form onSubmit={e => { e.preventDefault(); lastAnalyzedRef.current = null; triggerAnalyze(input, profile, depth, false); }} style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
           <input
             className="input"
             placeholder="Paste token address — Solana or 0x… EVM"
@@ -1240,36 +1427,45 @@ function IntelPageClient() {
             onChange={e => setInput(e.target.value)}
             style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 12 }}
           />
-          <button type="submit" disabled={loading} className="btn btn-primary btn-sm" style={{ flexShrink: 0, minWidth: 90, height: 32, fontSize: 12, fontWeight: 700 }}>
-            {loading ? '⏳' : '🔍 Analyze'}
+          <button
+            type="submit"
+            disabled={isAnalyzing}
+            className="btn btn-primary btn-sm"
+            style={{ flexShrink: 0, minWidth: 100, height: 32, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}
+          >
+            {isAnalyzing ? <><Spinner size={12} /> Analyzing…</> : 'Analyze'}
           </button>
         </form>
 
-        {loading && (
-          <div className="section" style={{ padding: '36px 24px', textAlign: 'center' }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-2)', marginBottom: 8 }}>{loadingMsg}</div>
-            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{loadingSteps}</div>
-          </div>
-        )}
-
-        {error && !loading && (
-          <div style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.22)', borderRadius: 10, padding: '12px 16px' }}>
-            <div style={{ color: '#ef4444', fontSize: 14, fontWeight: 700, marginBottom: 3 }}>🚨 Analysis failed</div>
+        {/* Error */}
+        {error && !isAnalyzing && (
+          <div style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.22)', borderRadius: 10, padding: '12px 16px', marginBottom: 12 }}>
+            <div style={{ color: '#ef4444', fontSize: 14, fontWeight: 700, marginBottom: 3 }}>Analysis failed</div>
             <div style={{ color: 'var(--text-2)', fontSize: 12, fontWeight: 500 }}>{error}</div>
           </div>
         )}
 
-        {report && !loading && (
-          <ReportView
-            report={report}
-            onReanalyze={() => analyze(report.meta.address, true)}
-            busy={busy}
-            profile={profile}
-            depth={depth}
-          />
+        {/* First load — full skeleton */}
+        {loading && !report && (
+          <ReportSkeleton msg={loadingMsg} steps={loadingSteps} />
         )}
 
-        {!report && !loading && !error && (
+        {/* Report — with full-screen overlay while re-analyzing */}
+        {report && (
+          <>
+            {analyzing && <AnalyzingOverlay msg={loadingMsg} steps={loadingSteps} />}
+            <ReportView
+              report={report}
+              onReanalyze={() => { lastAnalyzedRef.current = null; analyze(report.meta.address, true); }}
+              busy={busy}
+              profile={profile}
+              depth={depth}
+            />
+          </>
+        )}
+
+        {/* Empty state */}
+        {!report && !isAnalyzing && !error && (
           <div className="section" style={{ padding: '56px 24px', textAlign: 'center' }}>
             <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5 }}>Paste a token address above</div>
@@ -1277,9 +1473,9 @@ function IntelPageClient() {
               Solana · Ethereum · BSC · Base · Arbitrum · Optimism and more
             </div>
             <div style={{ display: 'inline-grid', gridTemplateColumns: '1fr 1fr', gap: '5px 24px', fontSize: 11, fontWeight: 500, color: 'var(--text-3)', textAlign: 'left' }}>
-              <span>🤖 5 trading profiles with AI personas</span><span>🛡️ Safety · Bundle · Honeypot checks</span>
-              <span>📈 Trading strategy: entry, stop, targets</span><span>⚡ Quick mode &lt;2s without AI</span>
-              <span>🧠 Smart money + GMGN wallet signals</span><span>📋 Dossier mode with comparable tokens</span>
+              <span>5 trading profiles with AI personas</span><span>Safety · Bundle · Honeypot checks</span>
+              <span>Trading strategy: entry, stop, targets</span><span>Quick mode under 2s without AI</span>
+              <span>Smart money + GMGN wallet signals</span><span>Dossier mode with comparable tokens</span>
             </div>
           </div>
         )}

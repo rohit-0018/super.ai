@@ -11,7 +11,13 @@ import { TokenIntelModule } from '../token-intel/token-intel.module';
 import { AgentsModule } from '../agents/agents.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { EpisodesModule } from '../episodes/episodes.module';
+import { WalletsModule } from '../wallets/wallets.module';
 import { ConvictionLearnerService } from './conviction-learner.service';
+
+// TokenAnalysisModule and HotTokensModule are NOT imported here — they both pull
+// in TokenIntelModule which already has a forwardRef back to AiAgentModule, creating
+// an unresolvable cycle. ToolExecutorService and AiAgentService resolve those two
+// services lazily via ModuleRef.get() instead.
 
 @Module({
   imports: [
@@ -21,8 +27,16 @@ import { ConvictionLearnerService } from './conviction-learner.service';
     forwardRef(() => AgentsModule),
     AnalyticsModule,
     forwardRef(() => EpisodesModule),
+    WalletsModule,
   ],
-  providers: [AiAgentService, LlmService, ConversationMemoryService, TradingDnaService, ToolExecutorService, ConvictionLearnerService],
+  providers: [
+    AiAgentService,
+    LlmService,
+    ConversationMemoryService,
+    TradingDnaService,
+    ToolExecutorService,
+    ConvictionLearnerService,
+  ],
   controllers: [AiAgentController],
   exports: [AiAgentService, TradingDnaService, ConversationMemoryService, LlmService, ConvictionLearnerService],
 })

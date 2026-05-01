@@ -31,6 +31,7 @@ import { IntentModule } from './intent/intent.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { EpisodesModule } from './episodes/episodes.module';
 import { SnipeModule } from './snipe/snipe.module';
+import { HotTokensModule } from './hot-tokens/hot-tokens.module';
 import { HealthController } from './health.controller';
 import { TraceMiddleware } from './common/trace.middleware';
 
@@ -73,6 +74,7 @@ import { TraceMiddleware } from './common/trace.middleware';
     ConversationsModule,
     EpisodesModule,
     SnipeModule,
+    HotTokensModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

@@ -716,6 +716,11 @@ body { position: relative; overflow-x: hidden; }
     animation: skeleton-shimmer 1.6s ease-in-out infinite;
   }
   @keyframes skeleton-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+  @keyframes shimmer-bg { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  /* hot tokens marquee — mirrors ticker-scroll but named separately */
+  @keyframes hot-scroll { 0% { transform: translate3d(0,0,0); } 100% { transform: translate3d(-50%,0,0); } }
+  /* indeterminate loading bar */
+  @keyframes load-bar { 0% { left: -40%; width: 40%; } 60% { left: 40%; width: 60%; } 100% { left: 110%; width: 40%; } }
 
   .qwai-spinner {
     border-radius: 999px;

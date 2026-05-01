@@ -12,6 +12,8 @@ import { IntentRuleService } from '../intent/intent-rule.service';
 import { ConversationService } from '../conversations/conversation.service';
 import { ConversationalMemoryService } from '../conversations/conversational-memory.service';
 import { EpisodicMemoryService } from '../episodes/episodic-memory.service';
+import { HotTokensService } from '../hot-tokens/hot-tokens.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { ChatChannel } from '@prisma/client';
 
 @Injectable()
@@ -25,6 +27,7 @@ export class AiAgentService {
     private tools: ToolExecutorService,
     private inputGuard: InputGuardService,
     private securityAudit: SecurityAuditService,
+    private prisma: PrismaService,
     private moduleRef: ModuleRef,
   ) {}
 
@@ -160,6 +163,16 @@ export class AiAgentService {
   // Fire-and-forget enqueue for L4 intent extraction. Gated by env so that a
   // missing worker never stalls the chat hot path; worker itself also checks
   // the flag so double-gating is fine.
+  private async getHotTokensContext(): Promise<string | undefined> {
+    try {
+      const ht = this.moduleRef.get(HotTokensService, { strict: false });
+      const text = ht.getHotTokensForAgent('meme_hunter');
+      return text.includes('No hot tokens') ? undefined : text;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async fanoutIntentExtraction(userId: string, userMsg: string, assistantReply: string) {
     if (process.env.INTENT_MEMORY_ENABLED !== 'true') return;
     try {
@@ -218,9 +231,13 @@ export class AiAgentService {
         this.logger.warn(`L6 buildContext failed, falling back: ${e.message}`);
       }
     }
-    const dna = await this.dna.profileForPrompt(userId);
+    const [dna, user, hotCtx] = await Promise.all([
+      this.dna.profileForPrompt(userId),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { paperMode: true } }).catch(() => null),
+      this.getHotTokensContext(),
+    ]);
     const history = await this.memory.recent(userId, 20);
-    const base = buildSystemPrompt(dna, ruleTexts);
+    const base = buildSystemPrompt(dna, ruleTexts, { hotTokens: hotCtx, paperMode: user?.paperMode });
     return [{ role: 'system', content: systemExtra ? base + systemExtra : base }, ...history];
   }
 }

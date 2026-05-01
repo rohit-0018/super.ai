@@ -73,6 +73,11 @@ async function getSocket(apiBase: string): Promise<any> {
         case 'tg_status':
           invalidate('/snipe/tg/status');
           break;
+        case 'hot_tokens_update':
+          // useHotTokens handles this directly via its own useRealtime call;
+          // also invalidate the REST cache for any direct pollers.
+          invalidate('/hot-tokens');
+          break;
       }
       emit(event, data);
     });
