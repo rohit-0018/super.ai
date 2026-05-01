@@ -407,9 +407,11 @@ model AlertEvent {
   severity    AlertSeverity @default(INFO)
   payload     Json
   deliveredAt DateTime?
+  readAt      DateTime?
   traceId     String?
   createdAt   DateTime      @default(now())
   @@index([userId, createdAt])
+  @@index([userId, readAt])
 }
 
 model PriceAlert {

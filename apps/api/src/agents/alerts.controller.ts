@@ -1,4 +1,4 @@
-import { Body, Controller, DefaultValuePipe, Get, ParseIntPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, DefaultValuePipe, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { IsEnum, IsNumber, IsString } from 'class-validator';
 import { Chain } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -37,9 +37,27 @@ export class AlertsController {
   @Get('unread-count')
   async unreadCount(@Req() req: any) {
     const count = await this.prisma.alertEvent.count({
-      where: { userId: req.user.userId, deliveredAt: null },
+      where: { userId: req.user.userId, readAt: null },
     });
     return { count };
+  }
+
+  @Post('read-all')
+  async markAllRead(@Req() req: any) {
+    await this.prisma.alertEvent.updateMany({
+      where: { userId: req.user.userId, readAt: null },
+      data: { readAt: new Date() },
+    });
+    return { ok: true };
+  }
+
+  @Patch(':id/read')
+  async markRead(@Req() req: any, @Param('id') id: string) {
+    await this.prisma.alertEvent.updateMany({
+      where: { id, userId: req.user.userId },
+      data: { readAt: new Date() },
+    });
+    return { ok: true };
   }
 
   @Get('briefings/latest')

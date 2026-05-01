@@ -4,9 +4,11 @@ import { Bot, InlineKeyboard } from 'grammy';
 import { ApprovalChannel, RejectCategory } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
+import { LlmService, ChatMessage } from '../ai-agent/llm.service';
 import { TelegramLinkService } from '../auth/telegram-link.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { SnipeGroupService } from '../snipe/snipe-group.service';
+import { HotTokensService } from '../hot-tokens/hot-tokens.service';
 import { detectChain } from '../token-analysis/chain-detector';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import {
@@ -16,18 +18,30 @@ import {
 } from './telegram-scan.formatter';
 
 const NOT_LINKED_TEXT =
-  '🔗 This Telegram is not linked to a QWAI account.\n\nOpen web dashboard → Settings → "Link Telegram" to get a code, then send /link <code> here.';
+  '🔗 Account not linked. Send /login for a one-tap connect link.';
+
+const LOGIN_CTA_TEXT =
+  '\n\n🔗 <i>Link your QWAI account to unlock trading, portfolio, and personalized signals.</i>\nTap /login to connect.';
 
 const WEB_URL = (process.env.APP_WEB_URL ?? 'https://app.qwai.io').replace(/\/$/, '');
+
+interface GuestSession {
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  lastAt: number;
+}
 
 @Injectable()
 export class TelegramBot {
   private readonly logger = new Logger(TelegramBot.name);
   private _bot: Bot | null = null;
 
+  // Guest (unlinked) conversation history — 15-min TTL, max 8 messages per session
+  private guestSessions = new Map<string, GuestSession>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly agent: AiAgentService,
+    private readonly llm: LlmService,
     private readonly tgLink: TelegramLinkService,
     @Inject(forwardRef(() => ApprovalsService))
     private readonly approvals: ApprovalsService,
@@ -38,6 +52,14 @@ export class TelegramBot {
   private getTokenAnalysis(): TokenAnalysisService | null {
     try {
       return this.moduleRef.get(TokenAnalysisService, { strict: false });
+    } catch {
+      return null;
+    }
+  }
+
+  private getHotTokens(): HotTokensService | null {
+    try {
+      return this.moduleRef.get(HotTokensService, { strict: false });
     } catch {
       return null;
     }
@@ -63,9 +85,83 @@ export class TelegramBot {
 
   private async chat(chatId: number, content: string): Promise<string> {
     const userId = await this.resolveUserId(chatId);
-    if (!userId) return NOT_LINKED_TEXT;
+    if (!userId) {
+      return `❌ This command requires a linked QWAI account.\n\n/login to connect in one tap.`;
+    }
     const reply = await this.agent.chat(userId, content, 'telegram');
     return reply ?? '…';
+  }
+
+  private async guestChat(chatId: string, message: string): Promise<string> {
+    if (!this.llm.isConfigured) return '❌ AI is not configured.';
+
+    // Build hot tokens context
+    let hotContext = '';
+    try {
+      const svc = this.getHotTokens();
+      if (svc) {
+        const tokens = svc.getHotTokensForAgent('meme_hunter');
+        if (tokens) hotContext = `\n\n<b>Live hot tokens right now:</b>\n${tokens}`;
+      }
+    } catch { /* */ }
+
+    const systemPrompt = [
+      'You are QWAI, an expert AI crypto trading assistant.',
+      '',
+      'WHAT YOU CAN DO:',
+      '- Answer questions about any crypto token, DeFi protocol, or market trend',
+      '- Explain concepts like rug pulls, bundle launches, honeypots, bonding curves, liquidity',
+      '- List hot/trending tokens from the live scan data provided',
+      '- Discuss general market conditions and sentiment',
+      '- When user pastes a token address, tell them to paste it directly in the chat for an automatic scan',
+      '',
+      'WHAT YOU CANNOT DO (requires linked QWAI account):',
+      '- Access portfolio, wallet balances, trade history',
+      '- Execute trades (buy/sell)',
+      '- Set up agents, DCA, or alerts',
+      '- If asked for these, say: "This requires a linked account. Use /login to connect in one tap."',
+      '',
+      'FORMATTING (Telegram HTML parse_mode — strict rules):',
+      '- Use <b>text</b> for important values and headers',
+      '- Use <i>text</i> for notes and context',
+      '- Use <code>text</code> for addresses, symbols, and numbers',
+      '- Separate sections with a blank line',
+      '- Never use markdown (no ** or ##)',
+      '- Max ~600 chars per response. Be dense and insightful.',
+      '- Lead with the key insight. Put context after.',
+      '',
+      hotContext,
+    ].join('\n');
+
+    const now = Date.now();
+    const SESSION_TTL = 15 * 60_000;
+    let session = this.guestSessions.get(chatId);
+    if (!session || now - session.lastAt > SESSION_TTL) {
+      session = { messages: [], lastAt: now };
+      this.guestSessions.set(chatId, session);
+    }
+    session.lastAt = now;
+
+    session.messages.push({ role: 'user', content: message });
+    if (session.messages.length > 8) session.messages.splice(0, session.messages.length - 8);
+
+    const msgs: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      ...session.messages,
+    ];
+
+    const reply = await this.llm.chat(msgs, 600);
+    session.messages.push({ role: 'assistant', content: reply });
+
+    // Prune old sessions every 50 calls to avoid unbounded growth
+    if (this.guestSessions.size > 1000) {
+      const cutoff = Date.now() - SESSION_TTL;
+      for (const [id, s] of this.guestSessions) {
+        if (s.lastAt < cutoff) this.guestSessions.delete(id);
+      }
+    }
+
+    return reply + LOGIN_CTA_TEXT;
   }
 
   private registerHandlers(bot: Bot) {
@@ -74,37 +170,63 @@ export class TelegramBot {
     bot.command('start', (ctx) =>
       ctx.reply(
         [
-          '🔥 <b>QWAI Token Scanner</b>',
+          '🔥 <b>QWAI — AI Crypto Scanner</b>',
           '',
-          'Paste any Solana or EVM token address to get instant analysis:',
-          '• Price, liquidity, volume',
-          '• Safety checks (honeypot, taxes, mint authority, LP lock)',
-          '• Bundle launch detection',
-          '• Smart money wallet signals',
-          '• AI verdict + score (when cached)',
+          'Paste any Solana or EVM token address for instant analysis:',
+          '• Price · liquidity · volume · safety',
+          '• Bundle launch detection · smart money signals',
+          '• AI verdict + trading strategy',
           '',
-          'Full report with entry price, stop-loss, and targets:',
-          `<a href="${WEB_URL}">${WEB_URL.replace('https://', '')}</a>`,
+          'Ask me anything: <i>"show hot tokens"</i>, <i>"explain rug pull"</i>, <i>"best memecoins today"</i>',
           '',
           '<b>Commands:</b>',
-          '/scan &lt;address&gt; — analyze a token',
-          '/link &lt;code&gt; — connect your web account (for trading features)',
-          '/portfolio — your portfolio (requires /link)',
-          '/buy /sell — trade (requires /link)',
-          '/snipe — sniper bot commands',
+          '/scan &lt;address&gt; — deep-scan a token',
+          '/login — link your QWAI account (1-tap)',
+          '/portfolio — your positions &amp; P&amp;L (linked only)',
+          '/buy /sell — trade (linked only)',
+          '/snipe — sniper bot',
         ].join('\n'),
         {
           parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
           reply_markup: new InlineKeyboard()
-            .url('🔍 Open Scanner', WEB_URL)
-            .text('📊 Portfolio', 'action:portfolio')
+            .url('🌐 Open QWAI', WEB_URL)
+            .text('🔗 Link Account', 'action:login')
             .row()
-            .text('🔔 Alerts', 'action:alerts')
-            .text('🛑 Kill switch', 'action:kill'),
+            .text('🔥 Hot Tokens', 'action:hot')
+            .text('📊 Portfolio', 'action:portfolio'),
         },
       ),
     );
+
+    /* ── /login (TG→Web magic link) ───────────────────────────────────────── */
+    bot.command('login', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (userId) {
+        return ctx.reply(
+          '✅ <b>Already linked!</b> Your Telegram and QWAI account are connected.\n\nUse /portfolio, /buy, /sell and all trading commands.',
+          { parse_mode: 'HTML' },
+        );
+      }
+      const { token, expiresAt } = this.tgLink.issueMagicToken(String(ctx.chat.id));
+      const url = `${WEB_URL}/auth/telegram?token=${token}`;
+      const mins = Math.round((expiresAt.getTime() - Date.now()) / 60_000);
+      return ctx.reply(
+        [
+          '🔗 <b>Connect your QWAI account</b>',
+          '',
+          'Tap the button below — you\'ll be taken to QWAI where you can connect your wallet.',
+          `<i>Link expires in ${mins} minutes.</i>`,
+          '',
+          `<a href="${url}">${url}</a>`,
+        ].join('\n'),
+        {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+          reply_markup: new InlineKeyboard().url('🔗 Connect Account →', url),
+        },
+      );
+    });
 
     /* ── /link ─────────────────────────────────────────────────────────────── */
     bot.command('link', async (ctx) => {
@@ -257,9 +379,26 @@ export class TelegramBot {
     bot.callbackQuery(/^action:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const action = ctx.match[1];
+      const chatId = ctx.chat!.id;
       switch (action) {
-        case 'portfolio': return ctx.reply(await this.chat(ctx.chat!.id, 'Portfolio summary'));
-        case 'alerts':    return ctx.reply(await this.chat(ctx.chat!.id, 'Show my recent alerts'));
+        case 'login': {
+          const userId = await this.resolveUserId(chatId);
+          if (userId) return ctx.reply('✅ Already linked! Use /portfolio, /buy, /sell.', { parse_mode: 'HTML' });
+          const { token, expiresAt } = this.tgLink.issueMagicToken(String(chatId));
+          const url = `${WEB_URL}/auth/telegram?token=${token}`;
+          const mins = Math.round((expiresAt.getTime() - Date.now()) / 60_000);
+          return ctx.reply(
+            `🔗 <b>Connect QWAI Account</b>\n\nExpires in ${mins} min.\n<a href="${url}">Tap to connect →</a>`,
+            { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: new InlineKeyboard().url('🔗 Connect →', url) },
+          );
+        }
+        case 'hot': {
+          const userId = await this.resolveUserId(chatId);
+          if (userId) return ctx.reply(await this.chat(chatId, 'Show me the top hot tokens right now'));
+          return ctx.reply(await this.guestChat(String(chatId), 'Show me the top hot tokens right now'));
+        }
+        case 'portfolio': return ctx.reply(await this.chat(chatId, 'Portfolio summary'));
+        case 'alerts':    return ctx.reply(await this.chat(chatId, 'Show my recent alerts'));
         case 'kill':      return ctx.reply('Use /kill to engage the kill switch.');
         case 'paper':     return ctx.reply('Toggle paper mode in the web Settings page.');
         default:          return ctx.reply(`Unknown action: ${action}`);
@@ -362,13 +501,139 @@ export class TelegramBot {
       // Private chat: auto-detect CA → scan
       if (detectChain(text)) return this.runScan(ctx, text);
 
-      // Everything else → AI agent
-      try {
-        return ctx.reply(await this.chat(ctx.chat.id, text));
-      } catch (e: any) {
-        return ctx.reply('Error talking to QWAI: ' + e.message);
+      // Hot tokens shortcut — bypass LLM, format directly
+      if (this.isHotTokensQuery(text)) {
+        return this.runHotTokens(ctx);
       }
+
+      // Everything else → AI with loading indicator
+      return this.runChat(ctx, text);
     });
+  }
+
+  /* ── Hot-tokens direct formatter (no LLM) ───────────────────────────────── */
+  private isHotTokensQuery(text: string): boolean {
+    return /hot\s*tokens?|trending\s*(tokens?|coins?)|top\s*\d*\s*(tokens?|coins?)|what.*(hot|trending|pumping|mooning)|show.*tokens?|list.*tokens?|best\s*(tokens?|coins?)\s*today|pump|gem/i.test(text);
+  }
+
+  private async runHotTokens(ctx: any): Promise<void> {
+    // Send placeholder immediately
+    let msgId: number | undefined;
+    try {
+      const m = await ctx.reply('🔥 <b>Fetching hot tokens…</b>', { parse_mode: 'HTML' });
+      msgId = m.message_id;
+    } catch { /* */ }
+
+    const editOrReply = async (text: string, opts: Record<string, any>) => {
+      if (msgId) {
+        try { return await ctx.api.editMessageText(ctx.chat.id, msgId, text, opts); } catch { /* */ }
+      }
+      return ctx.reply(text, opts);
+    };
+
+    const svc = this.getHotTokens();
+    const scan = svc?.getLatest('meme_hunter');
+
+    if (!scan || !scan.tokens.length) {
+      await editOrReply(
+        '📡 <b>Hot tokens scanner is warming up.</b>\n\n<i>First scan runs on startup — check back in a minute.</i>',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const tokens = scan.tokens.slice(0, 10);
+    const ageMin = Math.round((Date.now() - new Date(scan.scannedAt).getTime()) / 60_000);
+    const ageStr = ageMin < 1 ? 'just now' : `${ageMin}m ago`;
+
+    const lines: string[] = [
+      `🔥 <b>Hot Tokens — Meme Hunter</b>  <i>· ${ageStr}</i>`,
+      '',
+    ];
+
+    const VERDICT_ICON: Record<string, string> = {
+      STRONG_BUY: '🚀', BUY: '📈', CAUTIOUS: '⚠️', SKIP: '⏭', HIGH_RISK: '🚨',
+    };
+
+    tokens.forEach((t, i) => {
+      const icon    = VERDICT_ICON[t.verdict] ?? '•';
+      const price   = t.priceUsd < 0.0001
+        ? `$${t.priceUsd.toExponential(2)}`
+        : t.priceUsd < 1
+        ? `$${t.priceUsd.toFixed(6)}`
+        : `$${t.priceUsd.toFixed(4)}`;
+      const ch1h    = `${t.priceChange1h >= 0 ? '+' : ''}${t.priceChange1h.toFixed(1)}%`;
+      const ch24h   = `${t.priceChange24h >= 0 ? '+' : ''}${t.priceChange24h.toFixed(1)}%`;
+      const mcap    = fmtUsd(t.marketCapUsd);
+      const vol     = fmtUsd(t.volume24hUsd);
+
+      lines.push(`${i + 1}. ${icon} <b>${esc(t.symbol)}</b>  ·  ${esc(price)}`);
+      lines.push(`   <code>${t.address.slice(0, 8)}…${t.address.slice(-4)}</code>  ·  Score <b>${t.score}/100</b>`);
+      lines.push(`   ${ch1h} 1h  ·  ${ch24h} 24h  ·  MCap ${mcap}  ·  Vol ${vol}`);
+      if (t.summary) lines.push(`   <i>${esc(t.summary.slice(0, 80))}</i>`);
+      lines.push('');
+    });
+
+    lines.push(`<a href="${WEB_URL}/intel">🔍 Full deep-scan on any token →</a>`);
+
+    const keyboard = new InlineKeyboard()
+      .text('🔄 Refresh', 'action:hot')
+      .url('🌐 Open QWAI', WEB_URL)
+      .row()
+      .text('🔗 Link Account', 'action:login');
+
+    await editOrReply(lines.join('\n'), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      reply_markup: keyboard,
+    });
+  }
+
+  /* ── General chat with loading indicator ────────────────────────────────── */
+  private async runChat(ctx: any, text: string): Promise<void> {
+    // Send thinking placeholder immediately
+    let msgId: number | undefined;
+    try {
+      const m = await ctx.reply(
+        '⏳ <i>Thinking…</i>',
+        { parse_mode: 'HTML' },
+      );
+      msgId = m.message_id;
+    } catch { /* */ }
+
+    const editOrReply = async (replyText: string, opts: Record<string, any>) => {
+      if (msgId) {
+        try { return await ctx.api.editMessageText(ctx.chat.id, msgId, replyText, opts); } catch { /* */ }
+      }
+      return ctx.reply(replyText, opts);
+    };
+
+    const userId = await this.resolveUserId(ctx.chat.id);
+
+    try {
+      if (userId) {
+        // Linked user → full agent with all tools
+        const reply = await this.agent.chat(userId, text, 'telegram');
+        await editOrReply(reply ?? '…', {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
+      } else {
+        // Guest → read-only AI
+        const reply = await this.guestChat(String(ctx.chat.id), text);
+        await editOrReply(reply, {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+          reply_markup: new InlineKeyboard()
+            .text('🔗 Link Account', 'action:login')
+            .url('🌐 Open QWAI', WEB_URL),
+        });
+      }
+    } catch (e: any) {
+      await editOrReply(`❌ <i>${esc(e.message?.slice(0, 200) ?? 'Something went wrong')}</i>`, {
+        parse_mode: 'HTML',
+      }).catch(() => {});
+    }
   }
 
   /* ── Core scan implementation ────────────────────────────────────────────── */
@@ -421,7 +686,7 @@ export class TelegramBot {
 
       await editOrReply(result.text, {
         parse_mode: 'HTML',
-        disable_web_page_preview: true,
+        link_preview_options: { is_disabled: true },
         reply_markup: result.keyboard,
       });
 
@@ -445,4 +710,17 @@ export class TelegramBot {
       await editOrReply(errText, { parse_mode: 'HTML' }).catch(() => {});
     }
   }
+}
+
+/* ── Module-level helpers ────────────────────────────────────────────────── */
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function fmtUsd(v: number): string {
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(1)}B`;
+  if (v >= 1_000_000)     return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000)         return `$${(v / 1_000).toFixed(0)}K`;
+  return `$${v.toFixed(0)}`;
 }

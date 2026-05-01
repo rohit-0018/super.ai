@@ -10,6 +10,10 @@ class TgLinkDto {
   @IsString() telegramChatId!: string;
 }
 
+class TgClaimDto {
+  @IsString() @Length(10, 10) token!: string;
+}
+
 class PhoneRequestDto {
   @IsString() @Matches(/^\+?[0-9\s\-().]{7,20}$/) phone!: string;
 }
@@ -60,6 +64,13 @@ export class AuthController {
   @Post('telegram/link')
   linkTelegram(@Body() dto: TgLinkDto) {
     return this.tgLink.link(dto.telegramChatId, dto.code);
+  }
+
+  /** TG→Web magic-link claim: logged-in web user redeems a one-time token issued by the bot. */
+  @UseGuards(JwtAuthGuard)
+  @Post('telegram/claim')
+  claimTelegramMagicLink(@Req() req: any, @Body() dto: TgClaimDto) {
+    return this.tgLink.claimMagicToken(dto.token, req.user.userId);
   }
 
   @Post('phone/request')

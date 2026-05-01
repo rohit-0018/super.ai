@@ -12,6 +12,7 @@ import { TelegramBot } from './telegram.bot';
 export interface TelegramSendOpts {
   parse_mode?: 'Markdown' | 'MarkdownV2' | 'HTML';
   disable_web_page_preview?: boolean;
+  link_preview_options?: { is_disabled?: boolean };
   reply_markup?: unknown;
 }
 

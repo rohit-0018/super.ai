@@ -10,6 +10,7 @@ import UserMenu from './UserMenu';
 import { TickerBar, type TickerItem } from './ui/TickerBar';
 import { HotTokensBar } from './HotTokensBar';
 import AgentLauncher from './AgentLauncher';
+import NotificationBanner from './NotificationBanner';
 import { useApi } from '../lib/useApi';
 import { api } from '../lib/api';
 
@@ -42,6 +43,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       </div>
       <MobileTabBar pathname={pathname} />
       <AgentLauncher />
+      <NotificationBanner />
     </div>
   );
 }

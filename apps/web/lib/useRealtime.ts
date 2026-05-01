@@ -46,7 +46,9 @@ async function getSocket(apiBase: string): Promise<any> {
     socket.onAny((event: string, data: any) => {
       switch (event) {
         case 'alert':
+          invalidate('/alerts?limit=20');
           invalidate('/alerts?limit=15');
+          invalidate('/alerts/unread-count');
           break;
         case 'agent_update':
           invalidate('/agents');
