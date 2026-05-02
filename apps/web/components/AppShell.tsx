@@ -87,6 +87,7 @@ const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }
   { href: '/snipe',     label: 'Sniper',    icon: IconSnipe },
   { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
   { href: '/intel',     label: 'Intel',     icon: IconScan },
+  { href: '/intel-track', label: 'Track',   icon: IconScan },
   { href: '/wallets',   label: 'Wallets',   icon: IconWallet },
   { href: '/chat',      label: 'Chat',      icon: IconChat },
   { href: '/analytics', label: 'Analytics', icon: IconAnalytics },
