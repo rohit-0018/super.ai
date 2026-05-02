@@ -12,14 +12,31 @@ import { getNetworkMode } from './common/network-config';
 
 // teleproto/gramjs holds long-lived MTProto TCP sockets to Telegram DCs. These
 // get reset on idle by Render's NAT or Telegram's edge (NAT timeouts, DC
-// failover). The library auto-reconnects, but the raw socket error escapes as
-// an "uncaught" event with no app frames in the stack. Swallow it specifically
-// to keep logs readable; everything else propagates normally.
+// failover). The library auto-reconnects fine, but it logs the raw socket
+// error via console.error AND occasionally lets it bubble as uncaughtException
+// — neither carries any app frames. Filter both channels to keep logs readable;
+// every other error path propagates normally.
 const isTeleprotoSocketReset = (err: any): boolean => {
-  if (!err || err.code !== 'ECONNRESET') return false;
-  const stack = String(err.stack ?? '');
-  return stack.includes('TCP.onStreamRead') && !stack.includes('apps/api');
+  if (!err) return false;
+  if (err.code === 'ECONNRESET') {
+    const stack = String(err.stack ?? '');
+    if (stack.includes('TCP.onStreamRead') && !stack.includes('apps/api')) return true;
+  }
+  return false;
 };
+
+// Patch console.error to drop teleproto ECONNRESET prints. NestJS Logger writes
+// to stdout via its own formatter, so this only affects stray console.error
+// calls — exactly what gramjs uses internally.
+const originalConsoleError = console.error.bind(console);
+console.error = (...args: any[]) => {
+  for (const a of args) {
+    if (isTeleprotoSocketReset(a)) return;
+    if (typeof a === 'string' && /ECONNRESET/.test(a) && /TCP\.onStreamRead/.test(args.join('\n'))) return;
+  }
+  originalConsoleError(...args);
+};
+
 process.on('uncaughtException', (err: any) => {
   if (isTeleprotoSocketReset(err)) return;
   Logger.error(`uncaughtException: ${err?.message ?? err}`, err?.stack, 'Bootstrap');
