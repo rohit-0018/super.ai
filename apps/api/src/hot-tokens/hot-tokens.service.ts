@@ -58,6 +58,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   private scanCache = new Map<string, { scan: HotTokensScan; ts: number }>();
   private priceRefreshCache = new Map<string, HotToken>();
   private scanning = false;
+  private lastRedisErrorLog = 0;
 
   constructor(
     private readonly realtime: RealtimeGateway,
@@ -68,18 +69,21 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       lazyConnect: true,
       enableReadyCheck: false,
     });
+    this.redis.on('error', (err) => {
+      // Avoid log floods — only log first error per minute
+      const now = Date.now();
+      if (now - this.lastRedisErrorLog > 60_000) {
+        this.lastRedisErrorLog = now;
+        this.logger.warn(`Redis error (hot tokens fall back to in-memory): ${err.message}`);
+      }
+    });
   }
 
   async onModuleInit() {
     if (!this.enabled) return;
 
-    try {
-      await this.redis.connect();
-    } catch {
-      this.logger.warn('Redis connect failed — hot tokens will use in-memory only');
-    }
-
-    // Warm in-memory cache from Redis so the first request is never empty
+    // ioredis lazy-connects on first command — no explicit connect needed.
+    // Warm in-memory cache from Redis so the first request is never empty.
     await this.loadFromRedis();
 
     // If Redis was also cold (fresh deploy), kick off the first scan immediately
