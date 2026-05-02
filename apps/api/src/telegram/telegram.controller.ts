@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
 import { TelegramService } from './telegram.service';
 
 /**
@@ -17,5 +17,15 @@ export class TelegramController {
     if (!bot) return { ok: false };
     await bot.handleUpdate(update);
     return { ok: true };
+  }
+
+  /**
+   * Public bot identity. The web app calls this to build deep-links like
+   * `https://t.me/<username>` without hard-coding the bot handle — works for
+   * any deployment regardless of which bot token is configured.
+   */
+  @Get('me')
+  async me(): Promise<{ username: string | null; firstName: string | null; id: number | null }> {
+    return this.tg.getBotIdentity();
   }
 }

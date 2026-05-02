@@ -13,6 +13,15 @@ function TelegramLinkInner() {
 
   const [status, setStatus] = useState<'checking' | 'linking' | 'success' | 'error'>('checking');
   const [errMsg, setErrMsg] = useState('');
+  const [botUsername, setBotUsername] = useState<string | null>(null);
+
+  // Resolve the actual bot username so the "Back to Bot" link points to the
+  // right bot regardless of which token is configured on the API.
+  useEffect(() => {
+    api.get<{ username: string | null }>('/telegram/me')
+      .then((res) => setBotUsername(res?.username ?? null))
+      .catch(() => setBotUsername(null));
+  }, []);
 
   useEffect(() => {
     if (!token) {
@@ -40,6 +49,8 @@ function TelegramLinkInner() {
         );
       });
   }, [token, accessToken, router]);
+
+  const botHref = botUsername ? `https://t.me/${botUsername}` : 'https://t.me/';
 
   return (
     <div style={{
@@ -100,9 +111,9 @@ function TelegramLinkInner() {
               Your Telegram is now connected to QWAI. Head back to the bot to access your portfolio, get AI analysis, and trade.
             </p>
             <a
-              href="https://t.me/qwai_bot"
+              href={botHref}
               className="btn btn-primary"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, textDecoration: 'none', opacity: botUsername ? 1 : 0.6, pointerEvents: botUsername ? 'auto' : 'none' }}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                 <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>

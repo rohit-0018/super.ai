@@ -110,6 +110,9 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
     });
   }
 
+  private webhookUrl: string | null = null;
+  private webhookHealRunning = false;
+
   async startBot(token: string): Promise<void> {
     if (this.started) return;
     const bot = this.tgBot.build(token);
@@ -135,13 +138,50 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
       try {
         await bot.init();
         await bot.api.setWebhook(webhookUrl!, { allowed_updates: ['message', 'callback_query'] });
+        this.webhookUrl = webhookUrl!;
         this.logger.log(`QWAI Telegram bot running (webhook ${webhookUrl}).`);
+        this.startWebhookHealer();
       } catch (e: any) {
         this.logger.error(`setWebhook failed: ${e.message}`);
         throw e;
       }
     }
     this.started = true;
+  }
+
+  /**
+   * Self-healing webhook validator. Every 15 min, asks Telegram what URL it
+   * thinks our webhook is. If it differs from what we set (because something
+   * else called setWebhook — e.g. a local dev session, a previous deploy that
+   * didn't get torn down, or a manual deleteWebhook for debugging), we re-set
+   * it. Also surfaces last delivery error so it's visible in our own logs
+   * instead of only via the Telegram API.
+   */
+  private startWebhookHealer(): void {
+    setInterval(async () => {
+      if (this.webhookHealRunning) return;
+      this.webhookHealRunning = true;
+      try {
+        const bot = this.getBot();
+        if (!bot || !this.webhookUrl) return;
+        const info = await bot.api.getWebhookInfo();
+        if (info.last_error_message) {
+          this.logger.warn(
+            `Telegram webhook last error: ${info.last_error_message} (pending=${info.pending_update_count})`,
+          );
+        }
+        if (info.url !== this.webhookUrl) {
+          this.logger.warn(
+            `Webhook drift detected (telegram=${info.url || '<empty>'} expected=${this.webhookUrl}); re-registering`,
+          );
+          await bot.api.setWebhook(this.webhookUrl, { allowed_updates: ['message', 'callback_query'] });
+        }
+      } catch (e: any) {
+        this.logger.warn(`Webhook healer tick failed: ${e.message}`);
+      } finally {
+        this.webhookHealRunning = false;
+      }
+    }, 15 * 60_000);
   }
 
   async stopBot(): Promise<void> {
@@ -159,5 +199,31 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
 
   getBot() {
     return this.tgBot?.bot ?? null;
+  }
+
+  /**
+   * Returns the bot's public identity (username, first name, id). Used by the
+   * web app to build correct deep-links to whichever bot is wired to this API.
+   * Cached for 5 minutes — getMe is otherwise hit on every link page load.
+   */
+  private cachedIdentity: { username: string | null; firstName: string | null; id: number | null; ts: number } | null = null;
+  async getBotIdentity(): Promise<{ username: string | null; firstName: string | null; id: number | null }> {
+    const now = Date.now();
+    if (this.cachedIdentity && now - this.cachedIdentity.ts < 5 * 60_000) {
+      const { username, firstName, id } = this.cachedIdentity;
+      return { username, firstName, id };
+    }
+    const bot = this.getBot();
+    if (!bot) return { username: null, firstName: null, id: null };
+    try {
+      const me = await bot.api.getMe();
+      const identity = { username: me.username ?? null, firstName: me.first_name ?? null, id: me.id ?? null, ts: now };
+      this.cachedIdentity = identity;
+      const { username, firstName, id } = identity;
+      return { username, firstName, id };
+    } catch (e: any) {
+      this.logger.warn(`getMe failed: ${e.message}`);
+      return { username: null, firstName: null, id: null };
+    }
   }
 }
