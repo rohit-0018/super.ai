@@ -194,6 +194,7 @@ model User {
   snipeTrades         SnipeTrade[]
   snipeGroupOverrides SnipeGroupOverride[]
   tgUserSession       TgUserSession?
+  intelSnapshots      IntelSnapshot[]
 }
 
 model Wallet {
@@ -774,6 +775,74 @@ model PhoneOtp {
   used      Boolean  @default(false)
   createdAt DateTime @default(now())
   @@index([phone])
+}
+
+// ── Intel Track Record ────────────────────────────────────────────────────────
+// Frozen snapshots of every meaningful token call the bot has made. Used for
+// the public track record / "if you'd entered when we said, you'd be up X%"
+// marketing surface. The IntelSnapshot row is immutable for the "what we
+// said" frozen fields; aggregates (currentMcapUsd, pumpedHigh, etc) are
+// updated by the IntelRescanWorker. IntelRescan is an append-only ticks
+// table for the timeline / sparkline.
+model IntelSnapshot {
+  id              String   @id @default(cuid())
+  userId          String?              // null = system-captured (hot tokens scan)
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  chain           Chain
+  address         String
+  symbol          String?
+  name            String?
+  capturedAt      DateTime @default(now())
+  source          String                // 'hot_tokens_scan' | 'manual_scan' | 'telegram_scan' | 'snipe'
+  profileKey      String?               // e.g. 'meme_hunter' for hot tokens
+  // Frozen-at-capture market state
+  priceUsdAtCapture     Float
+  marketCapUsdAtCapture Float?
+  liquidityUsdAtCapture Float?
+  volume24hAtCapture    Float?
+  // What we said and why — full TokenAnalysisReport JSON
+  reportJson      Json
+  aiScore         Int?
+  aiVerdict       String?
+  aiSummary       String?
+  killTriggered   Boolean  @default(false)
+  // Mutable aggregates (updated by IntelRescanWorker)
+  lastRescannedAt   DateTime?
+  currentPriceUsd   Float?
+  currentMcapUsd    Float?
+  currentLiquidity  Float?
+  pumpedHigh        Float?              // highest mcap observed since capture
+  pumpedHighAt      DateTime?
+  drawdownLow       Float?
+  drawdownLowAt     DateTime?
+  rescanCount       Int      @default(0)
+  reappearedAt      DateTime?
+  reappearedSource  String?
+  // active | retired | rugged | graduated
+  status            String   @default("active")
+  // Pre-computed sparkline (last N mcap-band values, uint16-equivalent ints)
+  sparkline         Json?
+
+  rescans           IntelRescan[]
+
+  @@unique([chain, address])
+  @@index([status, capturedAt])
+  @@index([pumpedHigh])
+  @@index([source, capturedAt])
+}
+
+model IntelRescan {
+  id            String   @id @default(cuid())
+  snapshotId    String
+  snapshot      IntelSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  ts            DateTime @default(now())
+  priceUsd      Float
+  marketCapUsd  Float?
+  liquidityUsd  Float?
+  volume24hUsd  Float?
+  aiVerdict     String?
+  aiScore       Int?
+  @@index([snapshotId, ts])
 }
 
 // ── Provider Rate-Limit Registry ─────────────────────────────────────────────

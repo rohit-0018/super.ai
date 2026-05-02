@@ -8,6 +8,86 @@
 -- ║  Every statement is idempotent (IF NOT EXISTS). Safe to re-run forever.  ║
 -- ╚══════════════════════════════════════════════════════════════════════════╝
 
+-- ── Intel Track Record ───────────────────────────────────────────────────────
+-- Frozen snapshots + price ticks for the "we called this at $X, now $Y" surface.
+CREATE TABLE IF NOT EXISTS "IntelSnapshot" (
+    "id"                    TEXT NOT NULL,
+    "userId"                TEXT,
+    "chain"                 "Chain" NOT NULL,
+    "address"               TEXT NOT NULL,
+    "symbol"                TEXT,
+    "name"                  TEXT,
+    "capturedAt"            TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "source"                TEXT NOT NULL,
+    "profileKey"            TEXT,
+    "priceUsdAtCapture"     DOUBLE PRECISION NOT NULL,
+    "marketCapUsdAtCapture" DOUBLE PRECISION,
+    "liquidityUsdAtCapture" DOUBLE PRECISION,
+    "volume24hAtCapture"    DOUBLE PRECISION,
+    "reportJson"            JSONB NOT NULL,
+    "aiScore"               INTEGER,
+    "aiVerdict"             TEXT,
+    "aiSummary"             TEXT,
+    "killTriggered"         BOOLEAN NOT NULL DEFAULT false,
+    "lastRescannedAt"       TIMESTAMP(3),
+    "currentPriceUsd"       DOUBLE PRECISION,
+    "currentMcapUsd"        DOUBLE PRECISION,
+    "currentLiquidity"      DOUBLE PRECISION,
+    "pumpedHigh"            DOUBLE PRECISION,
+    "pumpedHighAt"          TIMESTAMP(3),
+    "drawdownLow"           DOUBLE PRECISION,
+    "drawdownLowAt"         TIMESTAMP(3),
+    "rescanCount"           INTEGER NOT NULL DEFAULT 0,
+    "reappearedAt"          TIMESTAMP(3),
+    "reappearedSource"      TEXT,
+    "status"                TEXT NOT NULL DEFAULT 'active',
+    "sparkline"             JSONB,
+    CONSTRAINT "IntelSnapshot_pkey" PRIMARY KEY ("id")
+);
+DO $$ BEGIN
+  CREATE UNIQUE INDEX "IntelSnapshot_chain_address_key" ON "IntelSnapshot"("chain", "address");
+EXCEPTION WHEN duplicate_table THEN NULL;
+END; $$;
+DO $$ BEGIN
+  CREATE INDEX "IntelSnapshot_status_capturedAt_idx" ON "IntelSnapshot"("status", "capturedAt");
+EXCEPTION WHEN duplicate_table THEN NULL;
+END; $$;
+DO $$ BEGIN
+  CREATE INDEX "IntelSnapshot_pumpedHigh_idx" ON "IntelSnapshot"("pumpedHigh");
+EXCEPTION WHEN duplicate_table THEN NULL;
+END; $$;
+DO $$ BEGIN
+  CREATE INDEX "IntelSnapshot_source_capturedAt_idx" ON "IntelSnapshot"("source", "capturedAt");
+EXCEPTION WHEN duplicate_table THEN NULL;
+END; $$;
+DO $$ BEGIN
+  ALTER TABLE "IntelSnapshot" ADD CONSTRAINT "IntelSnapshot_userId_fkey"
+    FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END; $$;
+
+CREATE TABLE IF NOT EXISTS "IntelRescan" (
+    "id"            TEXT NOT NULL,
+    "snapshotId"    TEXT NOT NULL,
+    "ts"            TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "priceUsd"      DOUBLE PRECISION NOT NULL,
+    "marketCapUsd"  DOUBLE PRECISION,
+    "liquidityUsd"  DOUBLE PRECISION,
+    "volume24hUsd"  DOUBLE PRECISION,
+    "aiVerdict"     TEXT,
+    "aiScore"       INTEGER,
+    CONSTRAINT "IntelRescan_pkey" PRIMARY KEY ("id")
+);
+DO $$ BEGIN
+  CREATE INDEX "IntelRescan_snapshotId_ts_idx" ON "IntelRescan"("snapshotId", "ts");
+EXCEPTION WHEN duplicate_table THEN NULL;
+END; $$;
+DO $$ BEGIN
+  ALTER TABLE "IntelRescan" ADD CONSTRAINT "IntelRescan_snapshotId_fkey"
+    FOREIGN KEY ("snapshotId") REFERENCES "IntelSnapshot"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END; $$;
+
 -- ── ProviderConfig (whole table) ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "ProviderConfig" (
     "id"            TEXT NOT NULL,

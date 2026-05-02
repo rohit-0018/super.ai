@@ -32,6 +32,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { EpisodesModule } from './episodes/episodes.module';
 import { SnipeModule } from './snipe/snipe.module';
 import { HotTokensModule } from './hot-tokens/hot-tokens.module';
+import { IntelTrackModule } from './intel-track/intel-track.module';
 import { HealthController } from './health.controller';
 import { TraceMiddleware } from './common/trace.middleware';
 
@@ -75,6 +76,7 @@ import { TraceMiddleware } from './common/trace.middleware';
     EpisodesModule,
     SnipeModule,
     HotTokensModule,
+    IntelTrackModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
