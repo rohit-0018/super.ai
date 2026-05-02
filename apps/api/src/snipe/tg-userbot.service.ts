@@ -56,16 +56,26 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn('TELEGRAM_API_ID / TELEGRAM_API_HASH not set — userbot disabled');
       return;
     }
-    const sessions = await this.prisma.tgUserSession.findMany({ where: { isActive: true } });
-    this.logger.log(`Reconnecting ${sessions.length} Telegram userbot sessions…`);
-    await Promise.allSettled(
-      sessions.map((row) =>
-        this.reconnect(row.userId, row.encryptedSession, row.encryptedDek).catch((e) =>
-          this.logger.warn(`Failed to reconnect userId=${row.userId}: ${e.message}`),
-        ),
-      ),
-    );
-    this.logger.log(`Telegram sessions ready.`);
+    // Don't await reconnects — each MTProto handshake can take 10–60s on cold
+    // boot, which would block app.listen() and trip Render's health-check
+    // timeout. Detach so /api/health goes live immediately; sessions warm up
+    // in the background and emit tg_status over WS when ready.
+    setImmediate(async () => {
+      try {
+        const sessions = await this.prisma.tgUserSession.findMany({ where: { isActive: true } });
+        this.logger.log(`Reconnecting ${sessions.length} Telegram userbot sessions in background…`);
+        await Promise.allSettled(
+          sessions.map((row) =>
+            this.reconnect(row.userId, row.encryptedSession, row.encryptedDek).catch((e) =>
+              this.logger.warn(`Failed to reconnect userId=${row.userId}: ${e.message}`),
+            ),
+          ),
+        );
+        this.logger.log(`Telegram sessions ready.`);
+      } catch (e: any) {
+        this.logger.warn(`Background TG session warm-up errored: ${e.message}`);
+      }
+    });
   }
 
   async onModuleDestroy() {
