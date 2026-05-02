@@ -12,7 +12,10 @@ import { HotTokensBar } from './HotTokensBar';
 import AgentLauncher from './AgentLauncher';
 import NotificationBanner from './NotificationBanner';
 import PumpStreakToast from './PumpStreakToast';
+import SignalBanner from './SignalBanner';
+import SignalQueuePanel from './SignalQueuePanel';
 import { IntelTrackRail } from './IntelTrackRail';
+import { useRealtime } from '../lib/useRealtime';
 import { useApi } from '../lib/useApi';
 import { api } from '../lib/api';
 
@@ -35,20 +38,26 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="shell-outer">
-      <Rail pathname={pathname} />
-      <div className="shell-main-col flex-1 flex flex-col min-w-0">
-        <TopStatusBar />
-        <HotTokensBar />
-        <main className="shell-scroll min-w-0">{children}</main>
-        <BottomStatusBar />
-      </div>
-      <IntelTrackDrawer />
-      <MobileTabBar pathname={pathname} />
-      <AgentLauncher />
-      <NotificationBanner />
-      <PumpStreakToast />
-    </div>
+    <SignalQueueProvider>
+      {({ signalOpen, setSignalOpen, strongBuyCount }) => (
+        <div className="shell-outer">
+          <Rail pathname={pathname} onSignalToggle={() => setSignalOpen(!signalOpen)} signalCount={strongBuyCount} />
+          <div className="shell-main-col flex-1 flex flex-col min-w-0">
+            <TopStatusBar />
+            <SignalBanner />
+            <HotTokensBar />
+            <main className="shell-scroll min-w-0">{children}</main>
+            <BottomStatusBar />
+          </div>
+          <SignalQueuePanel open={signalOpen} onClose={() => setSignalOpen(false)} />
+          <IntelTrackDrawer />
+          <MobileTabBar pathname={pathname} />
+          <AgentLauncher />
+          <NotificationBanner />
+          <PumpStreakToast />
+        </div>
+      )}
+    </SignalQueueProvider>
   );
 }
 
@@ -155,6 +164,30 @@ function MobileTabBar({ pathname }: { pathname: string }) {
 }
 
 /* ============================================================ */
+/* Signal queue state provider (counts strong buys for badge)   */
+/* ============================================================ */
+
+function SignalQueueProvider({
+  children,
+}: {
+  children: (ctx: { signalOpen: boolean; setSignalOpen: (open: boolean) => void; strongBuyCount: number }) => React.ReactNode;
+}) {
+  const [signalOpen, setSignalOpen] = useState(false);
+  const [strongBuyCount, setStrongBuyCount] = useState(0);
+
+  useRealtime('signal_alert', () => {
+    setStrongBuyCount((n) => n + 1);
+  });
+
+  const handleSetOpen = (open: boolean) => {
+    setSignalOpen(open);
+    if (open) setStrongBuyCount(0);
+  };
+
+  return <>{children({ signalOpen, setSignalOpen: handleSetOpen, strongBuyCount })}</>;
+}
+
+/* ============================================================ */
 /* Rail                                                         */
 /* ============================================================ */
 
@@ -173,12 +206,36 @@ const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }
   { href: '/social',    label: 'Social',    icon: IconSocial },
 ];
 
-function Rail({ pathname }: { pathname: string }) {
+function Rail({ pathname, onSignalToggle, signalCount }: { pathname: string; onSignalToggle: () => void; signalCount: number }) {
   return (
     <aside className="rail">
       <Link href="/" className="rail-brand" aria-label="QWAI home">
         <QwaiMark size={26} />
       </Link>
+
+      {/* Signal queue toggle — top of rail, always visible */}
+      <button
+        onClick={onSignalToggle}
+        className="rail-item"
+        aria-label="Signal queue"
+        title="Signal Queue"
+        style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', width: '100%' }}
+      >
+        <IconSignal size={18} />
+        {signalCount > 0 && (
+          <span style={{
+            position: 'absolute', top: 6, right: 6,
+            width: 14, height: 14, borderRadius: '50%',
+            background: '#22c55e', color: '#fff',
+            fontSize: 8, fontWeight: 800,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 0 6px #22c55e',
+          }}>
+            {signalCount > 9 ? '9+' : signalCount}
+          </span>
+        )}
+      </button>
+
       {RAIL_ITEMS.map(({ href, label, icon: Icon }) => {
         const active = pathname.startsWith(href);
         return (
@@ -618,6 +675,16 @@ function IconPortfolio({ size }: { size?: number }) {
       <rect x="3" y="13" width="5" height="8" rx="1" />
       <rect x="9.5" y="8" width="5" height="13" rx="1" />
       <rect x="16" y="3" width="5" height="18" rx="1" />
+    </Svg>
+  );
+}
+function IconSignal({ size }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M3 18a1 1 0 0 1 1-1h1a1 1 0 0 1 0 2H4a1 1 0 0 1-1-1zm4-3a1 1 0 0 1 1-1h1a1 1 0 0 1 0 2H8a1 1 0 0 1-1-1zm4-3a1 1 0 0 1 1-1h1a1 1 0 0 1 0 2h-1a1 1 0 0 1-1-1zm4-3a1 1 0 0 1 1-1h1a1 1 0 0 1 0 2h-1a1 1 0 0 1-1-1z" />
+      <path d="M5.3 6.3a1 1 0 0 1 1.4 0A9 9 0 0 1 12 4a9 9 0 0 1 5.3 2.3 1 1 0 0 1-1.4 1.4A7 7 0 0 0 12 6a7 7 0 0 0-3.9 1.7 1 1 0 0 1-1.4-1.4z" />
+      <path d="M8.1 9.1a1 1 0 0 1 1.4 0A5 5 0 0 1 12 8a5 5 0 0 1 2.5.9 1 1 0 1 1-1 1.7A3 3 0 0 0 12 10a3 3 0 0 0-1.5.5 1 1 0 0 1-1.4-1.4z" />
+      <circle cx="12" cy="18" r="1.5" />
     </Svg>
   );
 }

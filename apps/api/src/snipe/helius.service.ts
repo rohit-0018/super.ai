@@ -155,6 +155,8 @@ export class HeliusService implements OnModuleInit {
 
   private deriveStakedUrl(rpcUrl: string, apiKey: string | null): string | null {
     if (!apiKey) return null;
+    // Staked endpoint requires Helius paid plan — only enable if HELIUS_STAKED=true
+    if (process.env.HELIUS_STAKED !== 'true') return null;
     try {
       const u = new URL(rpcUrl);
       if (!u.hostname.includes('helius')) return null;

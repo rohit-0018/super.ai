@@ -115,6 +115,11 @@ export function disconnectRealtime() {
   listeners.clear();
 }
 
+/** Fire a local-only WS event (no server round-trip) — useful for testing banners/toasts. */
+export function emitLocal(event: string, data: unknown) {
+  emit(event, data);
+}
+
 export function useRealtime(event: string, handler: EventHandler) {
   const { accessToken, hydrated } = useAuth();
   const handlerRef = useRef(handler);

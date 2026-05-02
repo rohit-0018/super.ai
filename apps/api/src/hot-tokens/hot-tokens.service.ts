@@ -3,6 +3,7 @@ import IORedis from 'ioredis';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
+import { SignalPipelineService } from './signal-pipeline.service';
 import { getProfile } from '../token-analysis/profile.config';
 import { fmtPriceUsd } from '../common/format-price';
 import type { TradingProfile } from '../token-analysis/profile.config';
@@ -83,6 +84,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     private readonly realtime: RealtimeGateway,
     private readonly tokenAnalysis: TokenAnalysisService,
     @Optional() private readonly intelSnapshots: IntelSnapshotService,
+    @Optional() private readonly signalPipeline: SignalPipelineService,
   ) {
     this.redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
       maxRetriesPerRequest: 3,
@@ -214,6 +216,16 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
 
       // Streak tracking — fire-and-forget so it never blocks the scan.
       void this.processPumpStreaks(byProfile, scannedAt);
+
+      // Feed signal pipeline with all unique tokens from this scan.
+      // New tokens jump to the front of the pipeline queue so the strongest
+      // candidates get AI analysis within seconds of appearing.
+      if (this.signalPipeline) {
+        const allTokens = [...new Map(
+          Object.values(byProfile).flat().map((t) => [t.address, t]),
+        ).values()];
+        this.signalPipeline.enqueue(allTokens);
+      }
 
       // Pre-warm full analysis for unique hot addresses so clicking any chip is instant.
       // Fire-and-forget — we don't await; a stagger avoids slamming provider rate limits.

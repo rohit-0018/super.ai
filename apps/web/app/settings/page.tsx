@@ -6,6 +6,7 @@ import { useAuth } from '../../lib/auth-store';
 import { Skeleton, Spinner } from '../../components/ui/Skeleton';
 import IntentRulesPanel from '../../components/IntentRulesPanel';
 import ConvictionWeightsPanel from '../../components/ConvictionWeightsPanel';
+import { useBannerSettings } from '../../lib/useBannerSettings';
 
 type AutonomyLevel = 'MANUAL' | 'GUIDED' | 'SEMI_AUTO' | 'FULL_AUTO';
 type ApprovalChannel = 'WEB' | 'TELEGRAM';
@@ -52,6 +53,7 @@ const AUTONOMY_TIERS: { value: AutonomyLevel; label: string; hint: string }[] = 
 
 export default function Settings() {
   const { logout } = useAuth();
+  const { settings: banner, setSettings: setBanner } = useBannerSettings();
   const { data: g, loading: gLoading } = useApi<any>('/guardrails');
   const { data: me, loading: meLoading } = useApi<Me>('/me');
   const [localG, setLocalG] = useState<any>(null);
@@ -203,6 +205,188 @@ export default function Settings() {
         <h1 className="page-title">Preferences</h1>
         <p className="page-subtitle">Guardrails, trading mode, notifications, and account.</p>
       </header>
+
+      {/* ── Signal Banner ─────────────────────────────────────────────────── */}
+      {process.env.NEXT_PUBLIC_SIGNAL_BANNER_VISIBLE !== 'false' && (
+        <div className="panel">
+          <h2 className="section-title mb-1" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 16 }}>🚨</span> Signal Banner
+          </h2>
+          <p className="page-subtitle mb-4">
+            When the AI pipeline finds a strong signal, a banner slides in below the topbar with one-click buy and exit targets (T1 / T2 / stop-loss).
+          </p>
+
+          {/* Enable / disable */}
+          <div className="flex items-center justify-between mb-4 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div>
+              <div className="text-[13px] font-medium">Enable signal banner</div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>Show the banner when a hot token hits the signal threshold</div>
+            </div>
+            <ToggleSwitch on={banner.enabled} color="var(--ok)" onToggle={() => setBanner({ enabled: !banner.enabled })} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-8 gap-y-4" style={{ opacity: banner.enabled ? 1 : 0.4, pointerEvents: banner.enabled ? 'auto' : 'none' }}>
+            {/* Signal threshold */}
+            <div>
+              <label className="label">Signal threshold (min score)</label>
+              <div className="flex gap-2">
+                {[62, 70, 78, 85].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setBanner({ minScore: v })}
+                    className="btn btn-sm"
+                    style={banner.minScore === v ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}}
+                  >
+                    {v === 62 ? 'BUY+' : v === 78 ? 'STRONG' : v + '+'}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)' }}>
+                {banner.minScore >= 78 ? 'Only STRONG BUY signals' : 'BUY + STRONG BUY signals'}
+              </p>
+            </div>
+
+            {/* Default position size */}
+            <div>
+              <label className="label">Manual buy size (USD)</label>
+              <div className="flex gap-2 flex-wrap">
+                {[5, 10, 25, 50, 100].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setBanner({ positionSizeUsd: v })}
+                    className="btn btn-sm"
+                    style={banner.positionSizeUsd === v ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}}
+                  >
+                    ${v}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Auto-dismiss */}
+            <div>
+              <label className="label">Auto-dismiss after</label>
+              <div className="flex gap-2">
+                {[0, 20, 45, 90].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setBanner({ dismissAfterSec: v })}
+                    className="btn btn-sm"
+                    style={banner.dismissAfterSec === v ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}}
+                  >
+                    {v === 0 ? 'Manual' : `${v}s`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Sound */}
+            <div>
+              <label className="label">Sound alert</label>
+              <div className="flex gap-2">
+                {[true, false].map((v) => (
+                  <button
+                    key={String(v)}
+                    onClick={() => setBanner({ sound: v })}
+                    className="btn btn-sm"
+                    style={banner.sound === v ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}}
+                  >
+                    {v ? 'On' : 'Off'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Signal Trade (Auto) ───────────────────────────────────────────── */}
+      {process.env.NEXT_PUBLIC_SIGNAL_TRADE_VISIBLE !== 'false' && (
+        <div className="panel" style={{ borderColor: banner.autoBuy ? 'color-mix(in srgb, var(--warn) 40%, var(--border))' : undefined }}>
+          <h2 className="section-title mb-1" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 16 }}>⚡</span> Signal Trade
+            <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 4, background: 'color-mix(in srgb, var(--warn) 15%, transparent)', color: 'var(--warn)', border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)' }}>
+              AUTO MODE
+            </span>
+          </h2>
+          <p className="page-subtitle mb-4">
+            Fast-lane: the AI pipeline buys automatically the instant a strong signal fires — no banner interaction required. Configure position size and exit rules here.
+          </p>
+
+          {/* Auto-buy master toggle */}
+          <div className="flex items-center justify-between mb-4 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div>
+              <div className="text-[13px] font-medium" style={{ color: banner.autoBuy ? 'var(--warn)' : undefined }}>
+                Auto-buy on signal
+              </div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
+                {banner.autoBuy
+                  ? 'ACTIVE — buys execute automatically when score ≥ threshold'
+                  : 'Off — signals show a banner only, no automatic execution'}
+              </div>
+            </div>
+            <ToggleSwitch on={banner.autoBuy} color="var(--warn)" onToggle={() => setBanner({ autoBuy: !banner.autoBuy, autoSell: banner.autoBuy ? false : banner.autoSell })} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-8 gap-y-4" style={{ opacity: banner.autoBuy ? 1 : 0.4, pointerEvents: banner.autoBuy ? 'auto' : 'none' }}>
+            {/* Auto position size — separate from manual banner size */}
+            <div>
+              <label className="label">Auto-buy size (USD)</label>
+              <div className="flex gap-2 flex-wrap">
+                {[5, 10, 25, 50, 100].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setBanner({ positionSizeUsd: v })}
+                    className="btn btn-sm"
+                    style={banner.positionSizeUsd === v ? { background: 'var(--warn)', color: '#fff', borderColor: 'var(--warn)' } : {}}
+                  >
+                    ${v}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)' }}>Shared with banner buy size</p>
+            </div>
+
+            {/* Min score for auto trigger */}
+            <div>
+              <label className="label">Auto-trigger min score</label>
+              <div className="flex gap-2">
+                {[70, 78, 85, 90].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setBanner({ minScore: v })}
+                    className="btn btn-sm"
+                    style={banner.minScore === v ? { background: 'var(--warn)', color: '#fff', borderColor: 'var(--warn)' } : {}}
+                  >
+                    {v}+
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)' }}>Higher = fewer but stronger signals</p>
+            </div>
+
+            {/* Auto-sell at T1 */}
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="label" style={{ marginBottom: 2 }}>Auto-sell at T1</label>
+                  <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+                    {banner.autoSell ? 'Places a limit sell order at T1 immediately after buy fills' : 'Off — exit manually or set a stop-loss in guardrails'}
+                  </div>
+                </div>
+                <ToggleSwitch on={banner.autoSell} color="var(--accent)" onToggle={() => setBanner({ autoSell: !banner.autoSell })} />
+              </div>
+            </div>
+          </div>
+
+          {banner.autoBuy && (
+            <div className="mt-4 p-3 rounded-lg text-[11px]"
+              style={{ background: 'color-mix(in srgb, var(--warn) 8%, var(--surface-2))', border: '1px solid color-mix(in srgb, var(--warn) 25%, var(--border))', color: 'var(--warn)' }}>
+              ⚠ Auto mode uses real funds without confirmation. Paper mode still applies — flip it off only for live trading. Per-trade and daily limits in Guardrails cap the downside.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Guardrails */}
       <div className="panel">
@@ -513,5 +697,32 @@ export default function Settings() {
         </button>
       </div>
     </div>
+  );
+}
+
+function ToggleSwitch({
+  on,
+  color = 'var(--ok)',
+  onToggle,
+}: {
+  on: boolean;
+  color?: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      style={{
+        width: 40, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer', flexShrink: 0,
+        background: on ? color : 'var(--surface-2)',
+        position: 'relative', transition: 'background 150ms',
+      }}
+    >
+      <span style={{
+        position: 'absolute', top: 3, width: 16, height: 16, borderRadius: '50%',
+        background: '#fff', transition: 'left 150ms',
+        left: on ? 21 : 3,
+      }} />
+    </button>
   );
 }

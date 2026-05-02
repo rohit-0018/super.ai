@@ -6,6 +6,7 @@ import { useApi } from '../../lib/useApi';
 import { useRealtime } from '../../lib/useRealtime';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { fmtUsdCompact } from '../../lib/format-price';
+import { SignalResult } from '../../components/SignalBanner';
 
 function CopyCA({ address }: { address: string }) {
   const [copied, setCopied] = useState(false);
@@ -56,6 +57,16 @@ interface CaptureEvent {
   ts: string;
 }
 
+/** Extra signal data stored per address from the signal_analysis WS event */
+interface SignalExtra {
+  t1Pct?: number;
+  t2Pct?: number;
+  stopLossPct?: number;
+  riskReward?: number;
+  aiSummary?: string;
+  holdRange?: string;
+}
+
 const SOURCE_LABEL: Record<Source, string> = {
   hot_tokens_scan: '🔥 Hot scan',
   manual_scan: '🔍 Manual',
@@ -77,6 +88,22 @@ const STATUS_TONE: Record<Status, string> = {
   rugged: 'var(--bad)',
 };
 
+const VERDICT_COLOR: Record<string, string> = {
+  STRONG_BUY: '#22c55e',
+  BUY:        '#4ade80',
+  CAUTIOUS:   '#f59e0b',
+  SKIP:       '#8a8fa3',
+  HIGH_RISK:  '#ef4444',
+};
+
+const VERDICT_LABEL: Record<string, string> = {
+  STRONG_BUY: '🔥 STRONG BUY',
+  BUY:        '✅ BUY',
+  CAUTIOUS:   '⚠ CAUTIOUS',
+  HIGH_RISK:  '🛑 HIGH RISK',
+  SKIP:       '— SKIP',
+};
+
 const FEED_MAX = 100;          // cap to avoid DOM bloat
 const FRESH_FLASH_MS = 6_000;  // how long a new card stays highlighted
 
@@ -89,6 +116,16 @@ function relTime(iso: string): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
+/** Returns sort group 0 (best) … 4 (worst) based on verdict/score */
+function verdictGroup(item: FeedItem): number {
+  if (item.aiVerdict === null) return 3;
+  if (item.aiVerdict === 'HIGH_RISK' || item.aiVerdict === 'SKIP') return 4;
+  const score = item.aiScore ?? 0;
+  if (score >= 78) return 0;
+  if (score >= 62) return 1;
+  return 2;
+}
+
 /* ── Page ──────────────────────────────────────────────────────── */
 export default function HotFeedPage() {
   // Initial backfill — last 60 captures, no minDelta so we see everything fresh.
@@ -98,6 +135,7 @@ export default function HotFeedPage() {
   );
 
   const [items, setItems] = useState<FeedItem[]>([]);
+  const [signalExtras, setSignalExtras] = useState<Record<string, SignalExtra>>({});
   const [pulseCount, setPulseCount] = useState(0);
   const seenIds = useRef<Set<string>>(new Set());
   const liveCount = useRef(0);
@@ -158,6 +196,58 @@ export default function HotFeedPage() {
 
   useRealtime('intel_capture_new', onCapture);
 
+  // Live: update AI score/verdict when signal_analysis arrives
+  const onSignalAnalysis = useCallback((result: SignalResult) => {
+    if (!result?.address) return;
+
+    // Update the matching FeedItem with the score and verdict
+    setItems((prev) =>
+      prev.map((item) =>
+        item.address === result.address
+          ? { ...item, aiScore: result.score, aiVerdict: result.verdict }
+          : item,
+      ),
+    );
+
+    // Store extra signal data keyed by address
+    setSignalExtras((prev) => ({
+      ...prev,
+      [result.address]: {
+        t1Pct:       result.t1Pct,
+        t2Pct:       result.t2Pct,
+        stopLossPct: result.stopLossPct,
+        riskReward:  result.riskReward,
+        aiSummary:   result.aiSummary,
+        holdRange:   result.holdRange,
+      },
+    }));
+  }, []);
+
+  useRealtime('signal_analysis', onSignalAnalysis);
+
+  // Sort items by verdict group, then score desc, then capturedAt desc.
+  // Fresh items always float to the absolute top.
+  const sortedItems = useMemo(() => {
+    const fresh = items.filter((i) => i._isFresh);
+    const rest  = items.filter((i) => !i._isFresh);
+    rest.sort((a, b) => {
+      const ga = verdictGroup(a);
+      const gb = verdictGroup(b);
+      if (ga !== gb) return ga - gb;
+      const sa = a.aiScore ?? -1;
+      const sb = b.aiScore ?? -1;
+      if (sa !== sb) return sb - sa;
+      return new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime();
+    });
+    return [...fresh, ...rest];
+  }, [items]);
+
+  // Derive section groups for headers (ignoring fresh — they float above)
+  const nonFreshItems = sortedItems.filter((i) => !i._isFresh);
+  const hasStrongBuy = nonFreshItems.some((i) => verdictGroup(i) === 0);
+  const hasBuy       = nonFreshItems.some((i) => verdictGroup(i) === 1);
+  const hasOthers    = nonFreshItems.some((i) => verdictGroup(i) >= 2);
+
   return (
     <div className="page space-y-4">
       <header className="page-header">
@@ -200,7 +290,40 @@ export default function HotFeedPage() {
         </div>
       ) : (
         <div className="hot-feed-stack">
-          {items.map((s) => <FeedCard key={s.id} s={s} />)}
+          {/* Fresh items — always at top, no section header */}
+          {sortedItems.filter((i) => i._isFresh).map((s) => (
+            <FeedCard key={s.id} s={s} extra={signalExtras[s.address]} />
+          ))}
+
+          {/* Strong Buy section */}
+          {hasStrongBuy && (
+            <>
+              <SectionHeader label="🔥 Strong Buy" color="#22c55e" />
+              {nonFreshItems.filter((i) => verdictGroup(i) === 0).map((s) => (
+                <FeedCard key={s.id} s={s} extra={signalExtras[s.address]} />
+              ))}
+            </>
+          )}
+
+          {/* Buy section */}
+          {hasBuy && (
+            <>
+              <SectionHeader label="✅ Buy Signals" color="#4ade80" />
+              {nonFreshItems.filter((i) => verdictGroup(i) === 1).map((s) => (
+                <FeedCard key={s.id} s={s} extra={signalExtras[s.address]} />
+              ))}
+            </>
+          )}
+
+          {/* Others section (groups 2, 3, 4) */}
+          {hasOthers && (
+            <>
+              <SectionHeader label="📊 Others" color="var(--text-3)" />
+              {nonFreshItems.filter((i) => verdictGroup(i) >= 2).map((s) => (
+                <FeedCard key={s.id} s={s} extra={signalExtras[s.address]} />
+              ))}
+            </>
+          )}
         </div>
       )}
 
@@ -210,6 +333,10 @@ export default function HotFeedPage() {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
           gap: 12px;
+        }
+        /* Section headers span the full grid width */
+        .hot-feed-section-header {
+          grid-column: 1 / -1;
         }
         @keyframes feed-card-in {
           from {
@@ -235,22 +362,54 @@ export default function HotFeedPage() {
               0 8px 28px -10px rgba(0, 0, 0, 0.5);
           }
         }
+        @keyframes analyzing-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
       `}</style>
     </div>
   );
 }
 
+/* ── Section Header ─────────────────────────────────────────────── */
+function SectionHeader({ label, color }: { label: string; color: string }) {
+  return (
+    <div
+      className="hot-feed-section-header"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '6px 0 2px',
+      }}
+    >
+      <span style={{
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+        color,
+      }}>
+        {label}
+      </span>
+      <div style={{ flex: 1, height: 1, background: `color-mix(in srgb, ${color} 25%, var(--border))` }} />
+    </div>
+  );
+}
+
 /* ── Card ──────────────────────────────────────────────────────── */
-function FeedCard({ s }: { s: FeedItem }) {
+function FeedCard({ s, extra }: { s: FeedItem; extra?: SignalExtra }) {
   const tone = SOURCE_TONE[s.source] ?? 'var(--accent)';
   const statusTone = STATUS_TONE[s.status] ?? 'var(--text-3)';
   const peak = s.peakDeltaPct;
   const peakColor = peak == null ? 'var(--text-3)' : peak >= 50 ? 'var(--ok)' : peak >= 5 ? 'var(--accent)' : 'var(--text-3)';
 
+  const verdictColor = s.aiVerdict ? (VERDICT_COLOR[s.aiVerdict] ?? 'var(--text-3)') : undefined;
+  const analyzed = s.aiVerdict != null;
+
   const tickRef = useRef<HTMLSpanElement>(null);
   const lastCurrent = useRef<number | null>(s.currentMcapUsd);
   // Subtle flash on mcap tick — picks up live updates from the rescan worker
-  // when we eventually wire that event in too.
   useEffect(() => {
     if (s.currentMcapUsd == null || lastCurrent.current === s.currentMcapUsd) return;
     const node = tickRef.current;
@@ -270,21 +429,32 @@ function FeedCard({ s }: { s: FeedItem }) {
       style={{
         textDecoration: 'none', color: 'inherit',
         position: 'relative',
-        border: '1px solid var(--border)',
+        border: analyzed && verdictColor
+          ? `1px solid color-mix(in srgb, ${verdictColor} 45%, var(--border))`
+          : '1px solid var(--border)',
         borderRadius: 12,
         padding: '14px 16px',
-        background: `
-          radial-gradient(circle at 0% 0%, color-mix(in srgb, ${tone} 14%, transparent) 0%, transparent 55%),
-          var(--surface-1)
-        `,
+        background: analyzed && verdictColor
+          ? `
+            radial-gradient(circle at 0% 0%, color-mix(in srgb, ${verdictColor} 10%, transparent) 0%, transparent 55%),
+            var(--surface-1)
+          `
+          : `
+            radial-gradient(circle at 0% 0%, color-mix(in srgb, ${tone} 14%, transparent) 0%, transparent 55%),
+            var(--surface-1)
+          `,
         display: 'flex', flexDirection: 'column', gap: 10,
         animation: s._isFresh
           ? 'feed-card-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1), feed-card-pulse 1.6s ease-in-out 0s 3'
           : 'feed-card-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1)',
         transition: 'transform 0.18s ease, border-color 0.18s ease',
+        boxShadow: analyzed && verdictColor
+          ? `0 0 18px -6px color-mix(in srgb, ${verdictColor} 30%, transparent)`
+          : undefined,
       }}
     >
-      {s._isFresh && (
+      {/* Fresh badge */}
+      {s._isFresh && !analyzed && (
         <span style={{
           position: 'absolute', top: 8, right: 8,
           fontSize: 9, fontWeight: 700, letterSpacing: '0.08em',
@@ -295,6 +465,78 @@ function FeedCard({ s }: { s: FeedItem }) {
         }}>
           NEW
         </span>
+      )}
+
+      {/* Analyzing spinner — shown when no verdict yet */}
+      {!analyzed && !s._isFresh && (
+        <span style={{
+          position: 'absolute', top: 8, right: 8,
+          fontSize: 9, fontWeight: 600, letterSpacing: '0.06em',
+          padding: '2px 7px', borderRadius: 4,
+          background: 'color-mix(in srgb, var(--accent) 10%, var(--surface-2))',
+          border: '1px solid color-mix(in srgb, var(--accent) 25%, var(--border))',
+          color: 'var(--text-3)',
+          display: 'flex', alignItems: 'center', gap: 4,
+        }}>
+          <span style={{ display: 'inline-block', animation: 'analyzing-spin 1.2s linear infinite' }}>⏳</span>
+          Analyzing…
+        </span>
+      )}
+
+      {/* AI Verdict overlay — shown when analysis is available */}
+      {analyzed && verdictColor && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: `color-mix(in srgb, ${verdictColor} 12%, var(--surface-2))`,
+          border: `1px solid color-mix(in srgb, ${verdictColor} 35%, var(--border))`,
+          borderRadius: 8,
+          padding: '6px 10px',
+          gap: 8,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{
+              fontSize: 11, fontWeight: 700, letterSpacing: '0.07em',
+              color: verdictColor, textTransform: 'uppercase', whiteSpace: 'nowrap',
+            }}>
+              {VERDICT_LABEL[s.aiVerdict!] ?? s.aiVerdict}
+            </span>
+            {s.aiScore != null && (
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700,
+                color: verdictColor,
+                textShadow: `0 0 8px color-mix(in srgb, ${verdictColor} 40%, transparent)`,
+              }}>
+                {s.aiScore}
+                <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-3)' }}>/100</span>
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, minWidth: 0 }}>
+            {extra?.t1Pct != null && (
+              <span style={{ fontSize: 10, color: 'var(--ok)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
+                → T1 +{extra.t1Pct.toFixed(0)}%
+              </span>
+            )}
+            {extra?.riskReward != null && (
+              <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
+                R:R {extra.riskReward.toFixed(1)}x
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* AI Summary — truncated 1 line */}
+      {analyzed && extra?.aiSummary && (
+        <div style={{
+          fontSize: 11, color: 'var(--text-2)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          opacity: 0.85,
+        }}>
+          {extra.aiSummary}
+        </div>
       )}
 
       {/* Header */}
@@ -331,11 +573,6 @@ function FeedCard({ s }: { s: FeedItem }) {
         }}>
           {SOURCE_LABEL[s.source] ?? s.source}
         </span>
-        {s.aiScore != null && (
-          <span style={{ fontSize: 10, color: 'var(--text-3)', padding: '2px 6px' }}>
-            AI <strong style={{ color: 'var(--text-1)' }}>{s.aiScore}</strong>/100
-          </span>
-        )}
         <span style={{ fontSize: 10, color: 'var(--text-3)', padding: '2px 0' }}>
           · {relTime(s.capturedAt)}
         </span>
