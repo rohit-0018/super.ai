@@ -11,6 +11,7 @@ import { TickerBar, type TickerItem } from './ui/TickerBar';
 import { HotTokensBar } from './HotTokensBar';
 import AgentLauncher from './AgentLauncher';
 import NotificationBanner from './NotificationBanner';
+import { IntelTrackRail } from './IntelTrackRail';
 import { useApi } from '../lib/useApi';
 import { api } from '../lib/api';
 
@@ -41,10 +42,85 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <main className="flex-1 min-w-0">{children}</main>
         <BottomStatusBar />
       </div>
+      <IntelTrackDrawer />
       <MobileTabBar pathname={pathname} />
       <AgentLauncher />
       <NotificationBanner />
     </div>
+  );
+}
+
+/* ============================================================ */
+/* Intel Track Drawer — slide-out from the right edge            */
+/* Tab is fixed-pinned. Click → expand panel showing top calls.  */
+/* ============================================================ */
+function IntelTrackDrawer() {
+  const [open, setOpen] = useState(false);
+  // Persist preference so the drawer state survives page nav.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('qwai_intel_track_drawer');
+      if (saved === 'open') setOpen(true);
+    } catch { /* ignore */ }
+  }, []);
+  const toggle = () => {
+    setOpen((v) => {
+      const next = !v;
+      try { localStorage.setItem('qwai_intel_track_drawer', next ? 'open' : 'closed'); } catch { /* ignore */ }
+      return next;
+    });
+  };
+  return (
+    <>
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        aria-label={open ? 'Hide track record' : 'Show track record'}
+        title="Track Record"
+        className="hide-mobile"
+        style={{
+          position: 'fixed',
+          right: open ? 280 : 0,
+          top: 'calc(50vh - 60px)',
+          zIndex: 30,
+          width: 24,
+          height: 80,
+          borderRadius: '8px 0 0 8px',
+          border: '1px solid var(--border)',
+          borderRight: 0,
+          background: 'var(--surface-2)',
+          color: 'var(--text-2)',
+          cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
+          writingMode: 'vertical-rl',
+          textOrientation: 'mixed',
+          transition: 'right 0.18s ease',
+        }}
+      >
+        {open ? '×' : 'TRACK ↤'}
+      </button>
+      <aside
+        className="hide-mobile"
+        aria-hidden={!open}
+        style={{
+          position: 'fixed',
+          right: open ? 0 : -300,
+          top: 0, bottom: 0,
+          width: 280,
+          background: 'var(--surface)',
+          borderLeft: '1px solid var(--border)',
+          padding: '16px 10px 14px',
+          overflowY: 'auto',
+          zIndex: 25,
+          transition: 'right 0.22s ease',
+          boxShadow: open ? '-12px 0 24px rgba(0,0,0,0.25)' : 'none',
+        }}
+      >
+        {open && <IntelTrackRail />}
+      </aside>
+    </>
   );
 }
 

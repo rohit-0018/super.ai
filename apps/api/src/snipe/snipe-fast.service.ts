@@ -8,6 +8,7 @@ import { HeliusService } from './helius.service';
 import { newTraceId } from '../common/trace-context';
 import { TokenMetadataService } from '../market-data/token-metadata.service';
 import { CoinGeckoProvider } from '../market-data/providers/coingecko.provider';
+import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -63,6 +64,7 @@ export class SnipeFastService {
     @Optional() private ws: RealtimeGateway,
     @Optional() private tokenMeta?: TokenMetadataService,
     @Optional() private coingecko?: CoinGeckoProvider,
+    @Optional() private tokenAnalysis?: TokenAnalysisService,
   ) {}
 
   async execute(
@@ -326,6 +328,15 @@ export class SnipeFastService {
             data: { status: 'confirmed' },
           });
           this.ws?.emitToUser(config.userId, 'snipe_update', { txHash: currentSig, status: 'confirmed' });
+          // Track-record capture — fire-and-forget. Real money was just put in,
+          // so this is the highest-signal source for the marketing surface.
+          // Goes through analyzeAddress so the snapshot has the same depth as
+          // any manual scan (AI verdict, holder metrics, social signals).
+          if (this.tokenAnalysis) {
+            this.tokenAnalysis.analyzeAddress(mint, false, 'snipe').catch((e: any) => {
+              this.logger.debug(`[trc=${traceId}] intel-track snipe capture failed: ${e?.message}`);
+            });
+          }
           return;
         }
 
