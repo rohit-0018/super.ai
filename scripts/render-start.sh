@@ -26,7 +26,9 @@ for migration in \
   20260429_snipe_tables \
   20260430_snipe_trade_error_msg \
   20260430_phone_auth \
-  20260502_alert_read_at
+  20260502_alert_read_at \
+  20260503_provider_config \
+  20260503010000_schema_drift_fix
 do
   pnpm prisma migrate resolve --rolled-back "$migration" \
     --schema=./prisma/schema.prisma 2>/dev/null || true
