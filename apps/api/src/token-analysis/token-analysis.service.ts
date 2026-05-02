@@ -1,6 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProviderPoolService } from '../provider-pool/provider-pool.service';
+import { BoundedCache } from '../common/bounded-cache';
 import { GoPlusProvider } from '../token-intel/providers/goplus.provider';
 import { RugCheckProvider } from '../token-intel/providers/rugcheck.provider';
 import { DexScreenerProvider } from './providers/dexscreener.provider';
@@ -57,7 +58,11 @@ export class TokenAnalysisService {
   private readonly cacheTtlMs = parseInt(process.env.INTEL_CACHE_TTL_SEC ?? '60') * 1_000;
   private readonly dbCacheTtlMs = parseInt(process.env.INTEL_DB_CACHE_TTL_SEC ?? '720') * 1_000;
   private readonly aiEnabled = !!(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
-  private cache = new Map<string, { report: TokenAnalysisReport; ts: number }>();
+  // Reports are 50–200KB each (holders, AI reasoning, smart-money, etc).
+  // 200 entries × 200KB worst case = ~40MB ceiling. DB still has the full
+  // history; this cache only avoids re-running the analysis pipeline within
+  // the TTL window for hot tokens.
+  private cache = new BoundedCache<string, TokenAnalysisReport>(200, this.cacheTtlMs);
 
   constructor(
     private prisma: PrismaService,
@@ -92,7 +97,7 @@ export class TokenAnalysisService {
     const normalizedAddress = chain === 'EVM' ? address.toLowerCase() : address;
     const cacheKey = `short:${chain}:${normalizedAddress}`;
     const cached = this.cache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < this.cacheTtlMs) return cached.report;
+    if (cached) return cached;
 
     const providers: ProviderStatus[] = [];
     const [dexMeta, geckoMeta] = await this.fetchMarketData(chain, address, providers);
@@ -107,7 +112,7 @@ export class TokenAnalysisService {
     const kill = checkKill(safety, merged);
     const playbooks = runPlaybooks(merged, safety);
     const report = this.buildReport(merged, safety, playbooks, providers, kill);
-    this.cache.set(cacheKey, { report, ts: Date.now() });
+    this.cache.set(cacheKey, report);
     return report;
   }
 
@@ -183,15 +188,11 @@ export class TokenAnalysisService {
 
     if (!force) {
       const cached = this.cache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < this.cacheTtlMs) {
-        if (cached.report.aiReasoning || !this.aiEnabled) return cached.report;
-      }
+      if (cached && (cached.aiReasoning || !this.aiEnabled)) return cached;
       const dbCached = await this.loadFromDb(chain, normalizedAddress);
-      if (dbCached) {
-        if (dbCached.aiReasoning || !this.aiEnabled) {
-          this.cache.set(cacheKey, { report: dbCached, ts: Date.now() });
-          return dbCached;
-        }
+      if (dbCached && (dbCached.aiReasoning || !this.aiEnabled)) {
+        this.cache.set(cacheKey, dbCached);
+        return dbCached;
       }
     }
 
@@ -216,7 +217,7 @@ export class TokenAnalysisService {
     const kill: KillResult = checkKill(safety, meta);
     if (kill.triggered) {
       const report = this.buildReport(meta, safety, runPlaybooks(meta, safety), providers, kill);
-      this.cache.set(cacheKey, { report, ts: Date.now() });
+      this.cache.set(cacheKey, report);
       await this.persistToDb(chain, normalizedAddress, report);
       return report;
     }
@@ -246,7 +247,7 @@ export class TokenAnalysisService {
     if (aiReasoning) providers.push({ name: 'AI Reasoner (Claude)', status: 'hit' });
 
     const report = this.buildReport(meta, safety, playbooks, providers, kill, holderMetrics, socialData, smartMoneyData, aiReasoning);
-    this.cache.set(cacheKey, { report, ts: Date.now() });
+    this.cache.set(cacheKey, report);
     await this.persistToDb(chain, normalizedAddress, report);
     return report;
   }

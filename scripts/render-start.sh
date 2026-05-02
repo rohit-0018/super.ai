@@ -86,4 +86,8 @@ if [[ "${SEED_DB_ON_DEPLOY:-false}" == "true" ]]; then
 fi
 
 echo "▶ launching API"
-exec node apps/api/dist/main.js
+# Render free plan caps the container at 512MB. Node's default heap target is
+# ~1.4GB so V8 won't bother GC'ing until well past the OOM kill line. Cap the
+# old-space at 400MB to leave headroom for native modules (Prisma engine,
+# bs58/keccak, sharp, etc.) and force aggressive GC under pressure.
+exec node --max-old-space-size=400 apps/api/dist/main.js

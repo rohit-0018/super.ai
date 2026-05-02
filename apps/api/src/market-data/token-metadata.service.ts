@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { BirdeyeProvider } from './providers/birdeye.provider';
+import { BoundedCache } from '../common/bounded-cache';
 
 export interface TokenDetail {
   mint: string;
@@ -19,11 +20,6 @@ export interface TokenDetail {
   fetchedAt: string;
 }
 
-interface CacheEntry {
-  detail: TokenDetail;
-  ts: number;
-}
-
 @Injectable()
 export class TokenMetadataService {
   private readonly logger = new Logger(TokenMetadataService.name);
@@ -33,14 +29,17 @@ export class TokenMetadataService {
   // floor for "current price/mcap" freshness in a portfolio view.
   private readonly TTL_MS = 60_000;
 
-  private cache = new Map<string, CacheEntry>();
+  // 500-entry LRU cap — most users hold <50 tokens; 500 covers a busy hot-tokens
+  // scan (12 tokens × 5 profiles × buffer) plus active portfolio views. Each
+  // TokenDetail is ~1KB so worst case ~500KB.
+  private cache = new BoundedCache<string, TokenDetail>(500, this.TTL_MS);
   private inflight = new Map<string, Promise<TokenDetail>>();
 
   constructor(private birdeye: BirdeyeProvider) {}
 
   async get(mint: string): Promise<TokenDetail> {
     const cached = this.cache.get(mint);
-    if (cached && Date.now() - cached.ts < this.TTL_MS) return cached.detail;
+    if (cached) return cached;
 
     const inflight = this.inflight.get(mint);
     if (inflight) return inflight;
@@ -65,7 +64,7 @@ export class TokenMetadataService {
       }
     }
     if (!detail) detail = empty(mint);
-    this.cache.set(mint, { detail, ts: Date.now() });
+    this.cache.set(mint, detail);
     return detail;
   }
 

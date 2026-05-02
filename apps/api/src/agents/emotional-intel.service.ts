@@ -74,12 +74,20 @@ export class EmotionalIntelService {
     }
   }
 
+  // Bounded LRU on (user, token) view counts — a chatty user could otherwise
+  // accumulate unbounded entries across hundreds of mints.
   private viewCounts = new Map<string, number>();
+  private readonly VIEW_COUNTS_MAX = 1000;
 
   async trackTokenView(userId: string, tokenAddress: string) {
     const key = `view:${userId}:${tokenAddress}`;
     const count = (this.viewCounts.get(key) ?? 0) + 1;
+    if (this.viewCounts.has(key)) this.viewCounts.delete(key); // bump recency
     this.viewCounts.set(key, count);
+    if (this.viewCounts.size > this.VIEW_COUNTS_MAX) {
+      const oldest = this.viewCounts.keys().next().value as string | undefined;
+      if (oldest) this.viewCounts.delete(oldest);
+    }
     if (count >= 3) {
       await this.evaluateTokenViews(userId, tokenAddress);
     }

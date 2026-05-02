@@ -168,6 +168,20 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         await this.persistToRedis(profileKey, scan);
       }
 
+      // Bound priceRefreshCache so it doesn't grow unboundedly across scans.
+      // Keep only the addresses that appeared in the latest scan + a small
+      // tail of recently-seen tokens (LRU semantics) — anything older is
+      // unlikely to be refreshed and just leaks memory.
+      const REFRESH_CACHE_CAP = 200;
+      if (this.priceRefreshCache.size > REFRESH_CACHE_CAP) {
+        const keep = new Set<string>();
+        for (const list of Object.values(byProfile)) for (const t of list) keep.add(t.address);
+        for (const k of [...this.priceRefreshCache.keys()]) {
+          if (!keep.has(k)) this.priceRefreshCache.delete(k);
+          if (this.priceRefreshCache.size <= REFRESH_CACHE_CAP) break;
+        }
+      }
+
       this.logger.log(
         `Hot scan done: ${candidates.size} candidates, ${enriched.filter((e) => e.dex).length} enriched, ${Date.now() - t0}ms`,
       );
