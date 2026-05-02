@@ -99,7 +99,11 @@ export function useApi<T = any>(
   error: string | null;
   refresh: () => Promise<void>;
 } {
-  const { auth = true, pollMs, ttlMs = 3001, enabled = true } = opts;
+  // 30s default stale window — combined with the api client's ETag cache,
+  // this means cached data renders instantly on back-nav and the
+  // revalidation hop returns 304 (~5-15ms). Pages that need real-time data
+  // (alerts, live trades) override with their own pollMs.
+  const { auth = true, pollMs, ttlMs = 30_000, enabled = true } = opts;
   const { accessToken, hydrated } = useAuth();
   const [, setTick] = useState(0);
   const mounted = useRef(true);

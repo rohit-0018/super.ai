@@ -9,6 +9,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { getNetworkMode } from './common/network-config';
+import { EtagInterceptor } from './common/etag.interceptor';
 
 // teleproto/gramjs holds long-lived MTProto TCP sockets to Telegram DCs. These
 // get reset on idle by Render's NAT or Telegram's edge (NAT timeouts, DC
@@ -56,6 +57,10 @@ async function bootstrap() {
   app.use(helmet());
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
+  // ETag/304 on every GET so the SPA's revalidation hops are cheap (~5-15ms).
+  // Combined with the client's stale-while-revalidate cache (useApi), nav
+  // transitions render instantly and only drop a payload on actual change.
+  app.useGlobalInterceptors(new EtagInterceptor());
 
   // Critical: without this, OnModuleDestroy / OnApplicationShutdown hooks never run
   // on SIGINT/SIGTERM, so BullMQ workers keep the socket bound after Ctrl+C and
