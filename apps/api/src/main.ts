@@ -10,6 +10,25 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { getNetworkMode } from './common/network-config';
 
+// teleproto/gramjs holds long-lived MTProto TCP sockets to Telegram DCs. These
+// get reset on idle by Render's NAT or Telegram's edge (NAT timeouts, DC
+// failover). The library auto-reconnects, but the raw socket error escapes as
+// an "uncaught" event with no app frames in the stack. Swallow it specifically
+// to keep logs readable; everything else propagates normally.
+const isTeleprotoSocketReset = (err: any): boolean => {
+  if (!err || err.code !== 'ECONNRESET') return false;
+  const stack = String(err.stack ?? '');
+  return stack.includes('TCP.onStreamRead') && !stack.includes('apps/api');
+};
+process.on('uncaughtException', (err: any) => {
+  if (isTeleprotoSocketReset(err)) return;
+  Logger.error(`uncaughtException: ${err?.message ?? err}`, err?.stack, 'Bootstrap');
+});
+process.on('unhandledRejection', (reason: any) => {
+  if (isTeleprotoSocketReset(reason)) return;
+  Logger.error(`unhandledRejection: ${reason?.message ?? reason}`, reason?.stack, 'Bootstrap');
+});
+
 async function bootstrap() {
   // Loud boot banner — misconfigured deploys (mainnet + local KMS fallback) should be obvious.
   const mode = getNetworkMode();
