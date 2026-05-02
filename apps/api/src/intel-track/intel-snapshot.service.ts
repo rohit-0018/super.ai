@@ -141,6 +141,76 @@ export class IntelSnapshotService {
   }
 
   /**
+   * Lightweight capture path for callers that don't have a full
+   * TokenAnalysisReport — currently used by the snipe pipeline so it can
+   * record a track-record entry without taking a hard dependency on
+   * TokenAnalysisModule (which would close a circular import). Stays
+   * idempotent on (chain, address) just like capture().
+   *
+   * The snapshot it writes is intentionally thin (no AI fields, empty
+   * report). The IntelRescanWorker will still tick it forward and the
+   * marketing math (peak delta, current delta, sparkline) all keeps
+   * working off the captured priceUsd / marketCapUsd anchor.
+   */
+  async captureMinimal(input: {
+    chain: Chain;
+    address: string;
+    source: IntelSource;
+    priceUsdAtCapture: number;
+    marketCapUsdAtCapture?: number | null;
+    liquidityUsdAtCapture?: number | null;
+    symbol?: string | null;
+    name?: string | null;
+    userId?: string | null;
+  }): Promise<{ id: string; created: boolean } | null> {
+    if (!input.address || !Number.isFinite(input.priceUsdAtCapture) || input.priceUsdAtCapture <= 0) {
+      return null;
+    }
+    const normalizedAddress = input.chain === 'EVM' ? input.address.toLowerCase() : input.address;
+    try {
+      const existing = await this.prisma.intelSnapshot.findUnique({
+        where: { chain_address: { chain: input.chain, address: normalizedAddress } } as any,
+      });
+      if (existing) {
+        await this.prisma.intelSnapshot.update({
+          where: { id: existing.id },
+          data: { reappearedAt: new Date(), reappearedSource: input.source },
+        });
+        return { id: existing.id, created: false };
+      }
+      const created = await this.prisma.intelSnapshot.create({
+        data: {
+          userId: input.userId ?? null,
+          chain: input.chain,
+          address: normalizedAddress,
+          symbol: input.symbol ?? null,
+          name: input.name ?? null,
+          source: input.source,
+          priceUsdAtCapture: input.priceUsdAtCapture,
+          marketCapUsdAtCapture: input.marketCapUsdAtCapture ?? null,
+          liquidityUsdAtCapture: input.liquidityUsdAtCapture ?? null,
+          reportJson: {} as any,
+          sparkline: input.marketCapUsdAtCapture != null ? [Math.round(input.marketCapUsdAtCapture)] : [],
+          currentPriceUsd: input.priceUsdAtCapture,
+          currentMcapUsd: input.marketCapUsdAtCapture ?? null,
+          currentLiquidity: input.liquidityUsdAtCapture ?? null,
+          pumpedHigh: input.marketCapUsdAtCapture ?? null,
+          pumpedHighAt: input.marketCapUsdAtCapture != null ? new Date() : null,
+          drawdownLow: input.marketCapUsdAtCapture ?? null,
+          drawdownLowAt: input.marketCapUsdAtCapture != null ? new Date() : null,
+        },
+      });
+      this.logger.log(
+        `captureMinimal [${input.source}] ${input.symbol ?? normalizedAddress.slice(0, 8)} mcap=${input.marketCapUsdAtCapture ?? '?'}`,
+      );
+      return { id: created.id, created: true };
+    } catch (e: any) {
+      this.logger.warn(`captureMinimal failed for ${input.address}: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Lookup by address — used by Telegram formatter to surface "we called
    * this N days ago at $X, peaked at $Y" badge on user-initiated scans.
    * Returns null if no snapshot exists.

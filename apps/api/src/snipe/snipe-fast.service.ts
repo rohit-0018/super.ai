@@ -8,7 +8,7 @@ import { HeliusService } from './helius.service';
 import { newTraceId } from '../common/trace-context';
 import { TokenMetadataService } from '../market-data/token-metadata.service';
 import { CoinGeckoProvider } from '../market-data/providers/coingecko.provider';
-import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
+import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -64,7 +64,7 @@ export class SnipeFastService {
     @Optional() private ws: RealtimeGateway,
     @Optional() private tokenMeta?: TokenMetadataService,
     @Optional() private coingecko?: CoinGeckoProvider,
-    @Optional() private tokenAnalysis?: TokenAnalysisService,
+    @Optional() private intelTrack?: IntelSnapshotService,
   ) {}
 
   async execute(
@@ -328,14 +328,49 @@ export class SnipeFastService {
             data: { status: 'confirmed' },
           });
           this.ws?.emitToUser(config.userId, 'snipe_update', { txHash: currentSig, status: 'confirmed' });
-          // Track-record capture — fire-and-forget. Real money was just put in,
-          // so this is the highest-signal source for the marketing surface.
-          // Goes through analyzeAddress so the snapshot has the same depth as
-          // any manual scan (AI verdict, holder metrics, social signals).
-          if (this.tokenAnalysis) {
-            this.tokenAnalysis.analyzeAddress(mint, false, 'snipe').catch((e: any) => {
-              this.logger.debug(`[trc=${traceId}] intel-track snipe capture failed: ${e?.message}`);
-            });
+          // Track-record capture — fire-and-forget direct call into IntelTrackModule.
+          // Earlier we routed this through TokenAnalysisModule.analyzeAddress(),
+          // but that closes a circular import (Snipe → TokenAnalysis → TokenIntel
+          // → Agents → ... → Snipe) that even forwardRef can't break. Going
+          // straight to IntelSnapshotService.captureMinimal keeps the dep graph
+          // a DAG and still produces a usable snapshot row — the rescan worker
+          // will tick it forward and the marketing math (peak delta, sparkline)
+          // works off the captured priceUsd anchor.
+          if (this.intelTrack) {
+            (async () => {
+              try {
+                const trade = await this.prisma.snipeTrade.findFirst({
+                  where: { txHash: currentSig },
+                  select: { priceAtBuyUsd: true, mcapAtBuyUsd: true, liquidityAtBuyUsd: true } as any,
+                });
+                const priceAtBuy = (trade as any)?.priceAtBuyUsd ?? null;
+                let priceUsd: number | null = priceAtBuy;
+                let mcapUsd: number | null = (trade as any)?.mcapAtBuyUsd ?? null;
+                let liqUsd: number | null = (trade as any)?.liquidityAtBuyUsd ?? null;
+                // If the buy-time snapshot fields haven't been backfilled yet,
+                // fetch via DexScreener (no key, fast). Skip capture if we can't
+                // anchor a price.
+                if (priceUsd == null && this.tokenMeta) {
+                  const detail = await this.tokenMeta.get(mint);
+                  priceUsd = detail.priceUsd;
+                  mcapUsd = mcapUsd ?? detail.marketCap;
+                  liqUsd = liqUsd ?? detail.liquidity;
+                }
+                if (priceUsd != null && Number.isFinite(priceUsd) && priceUsd > 0) {
+                  await this.intelTrack!.captureMinimal({
+                    chain: 'SOLANA',
+                    address: mint,
+                    source: 'snipe',
+                    priceUsdAtCapture: priceUsd,
+                    marketCapUsdAtCapture: mcapUsd ?? null,
+                    liquidityUsdAtCapture: liqUsd ?? null,
+                    userId: config.userId,
+                  });
+                }
+              } catch (e: any) {
+                this.logger.debug(`[trc=${traceId}] intel-track snipe capture failed: ${e?.message}`);
+              }
+            })();
           }
           return;
         }
