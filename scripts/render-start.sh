@@ -34,6 +34,26 @@ do
     --schema=./prisma/schema.prisma 2>/dev/null || true
 done
 
+# ─── Bootstrap SQL — fail-safe schema reconciliation ───────────────────────
+# Runs raw idempotent ALTER/CREATE statements against the live DB to guarantee
+# every column the codebase reads exists, regardless of what Prisma's migration
+# tracking thinks. This is a belt-and-suspenders layer: even if migrate deploy
+# silently skips a migration (state corruption, checksum mismatch, etc.), the
+# schema is still correct after this step.
+echo "▶ running bootstrap.sql (idempotent schema reconcile)"
+pnpm prisma db execute --file ./prisma/bootstrap.sql --schema ./prisma/schema.prisma \
+  || { echo "✗ bootstrap.sql failed — aborting boot"; exit 1; }
+echo "✓ bootstrap.sql applied"
+
+# Mark the migrations that bootstrap.sql covers as applied, so Prisma's
+# _prisma_migrations table reflects reality and migrate deploy skips them
+# cleanly. --applied no-ops if already marked.
+echo "▶ syncing _prisma_migrations tracking for bootstrap-covered migrations"
+for m in 20260503_provider_config 20260503010000_schema_drift_fix; do
+  pnpm prisma migrate resolve --applied "$m" \
+    --schema=./prisma/schema.prisma 2>/dev/null || true
+done
+
 echo "▶ prisma migrate deploy"
 pnpm prisma migrate deploy --schema=./prisma/schema.prisma
 
