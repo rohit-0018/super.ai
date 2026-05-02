@@ -22,9 +22,10 @@ import { WaybackProvider } from './providers/wayback.provider';
 import { AiReasoner } from './ai-reasoner';
 import { LlmService } from '../ai-agent/llm.service';
 import { TokenIntelModule } from '../token-intel/token-intel.module';
+import { IntelTrackModule } from '../intel-track/intel-track.module';
 
 @Module({
-  imports: [TokenIntelModule],
+  imports: [TokenIntelModule, IntelTrackModule],
   providers: [
     TokenAnalysisService,
     ComparableTokensService,

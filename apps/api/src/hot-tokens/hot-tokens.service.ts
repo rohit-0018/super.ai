@@ -241,7 +241,8 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       try {
         // analyzeAddress runs the full pipeline (market + safety + holders + social + smart-money + AI)
         // and persists to DB with a 12-min TTL. Subsequent clicks serve from that DB cache instantly.
-        await this.tokenAnalysis.analyzeAddress(address);
+        // Pass 'hot_tokens_scan' so the IntelSnapshot row is attributed correctly.
+        await this.tokenAnalysis.analyzeAddress(address, false, 'hot_tokens_scan');
         this.logger.debug(`Pre-warmed analysis for ${address}`);
       } catch (err) {
         this.logger.debug(`Pre-warm skipped for ${address}: ${(err as Error).message}`);

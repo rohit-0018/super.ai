@@ -677,7 +677,8 @@ export class TelegramBot {
 
     try {
       // 2. Run full analysis (in-memory + DB cache → instant if warm; pipeline if cold)
-      const report = await svc.analyzeAddress(address, force);
+      // Source 'telegram_scan' so IntelSnapshot rows are attributed correctly.
+      const report = await svc.analyzeAddress(address, force, 'telegram_scan');
 
       const result = report.kill?.triggered
         ? formatKillReport(report, address, WEB_URL)
@@ -694,7 +695,7 @@ export class TelegramBot {
 
       // 3. Background: pre-warm meme_hunter profile so website link loads instantly
       if (!force) {
-        svc.analyzeWithProfile(address, 'meme_hunter', 'alpha', false, null)
+        svc.analyzeWithProfile(address, 'meme_hunter', 'alpha', false, null, 'telegram_scan')
           .catch(() => {});
       }
 

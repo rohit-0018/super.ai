@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProviderPoolService } from '../provider-pool/provider-pool.service';
 import { BoundedCache } from '../common/bounded-cache';
+import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
 import { GoPlusProvider } from '../token-intel/providers/goplus.provider';
 import { RugCheckProvider } from '../token-intel/providers/rugcheck.provider';
 import { DexScreenerProvider } from './providers/dexscreener.provider';
@@ -87,6 +88,7 @@ export class TokenAnalysisService {
     private wayback: WaybackProvider,
     private aiReasoner: AiReasoner,
     private comparableTokens: ComparableTokensService,
+    private intelTrack: IntelSnapshotService,
   ) {}
 
   async analyzeShort(rawAddress: string): Promise<TokenAnalysisReport> {
@@ -116,11 +118,11 @@ export class TokenAnalysisService {
     return report;
   }
 
-  async analyzeAddress(rawAddress: string, force = false): Promise<TokenAnalysisReport> {
+  async analyzeAddress(rawAddress: string, force = false, captureSource?: 'manual_scan' | 'telegram_scan' | 'hot_tokens_scan' | 'snipe'): Promise<TokenAnalysisReport> {
     const address = (rawAddress ?? '').trim();
     const chain = detectChain(address);
     if (!chain) throw new BadRequestException('Could not detect chain from address format.');
-    return this.analyze(chain, address, force);
+    return this.analyze(chain, address, force, captureSource);
   }
 
   async analyzeWithProfile(
@@ -129,6 +131,7 @@ export class TokenAnalysisService {
     depth: ReportDepth,
     force: boolean,
     portfolioUsd: number | null,
+    captureSource?: 'manual_scan' | 'telegram_scan' | 'hot_tokens_scan' | 'snipe',
   ): Promise<TokenAnalysisReport> {
     const address = (rawAddress ?? '').trim();
     const chain = detectChain(address);
@@ -137,7 +140,7 @@ export class TokenAnalysisService {
     const profileDef = getProfile(profile);
 
     // Get base report (reuses data pipeline cache — market, safety, holders, social, smartMoney)
-    const base = await this.analyze(chain, address, force);
+    const base = await this.analyze(chain, address, force, captureSource);
 
     // Re-run AI with profile-specific persona (per-profile cache in AiReasoner)
     let aiReasoning = base.aiReasoning;
@@ -177,7 +180,12 @@ export class TokenAnalysisService {
     };
   }
 
-  async analyze(chain: Chain, rawAddress: string, force = false): Promise<TokenAnalysisReport> {
+  async analyze(
+    chain: Chain,
+    rawAddress: string,
+    force = false,
+    captureSource: 'manual_scan' | 'telegram_scan' | 'hot_tokens_scan' | 'snipe' = 'manual_scan',
+  ): Promise<TokenAnalysisReport> {
     const address = (rawAddress ?? '').trim();
     if (!address) throw new BadRequestException('address is required');
     if (chain === 'EVM' && !/^0x[a-fA-F0-9]{40}$/.test(address)) throw new BadRequestException('Invalid EVM address');
@@ -219,6 +227,13 @@ export class TokenAnalysisService {
       const report = this.buildReport(meta, safety, runPlaybooks(meta, safety), providers, kill);
       this.cache.set(cacheKey, report);
       await this.persistToDb(chain, normalizedAddress, report);
+      // Capture even kill-switch hits — honest track record includes the bad
+      // calls. Fire-and-forget so analyze() latency isn't affected.
+      this.intelTrack.capture({
+        chain, address: normalizedAddress,
+        symbol: meta.symbol, name: meta.name,
+        source: captureSource, report,
+      }).catch(() => {});
       return report;
     }
 
@@ -249,6 +264,13 @@ export class TokenAnalysisService {
     const report = this.buildReport(meta, safety, playbooks, providers, kill, holderMetrics, socialData, smartMoneyData, aiReasoning);
     this.cache.set(cacheKey, report);
     await this.persistToDb(chain, normalizedAddress, report);
+    // Track-record capture — fire and forget; the service has its own threshold
+    // (INTEL_TRACK_CAPTURE_MIN_AI_SCORE) and idempotency on (chain, address).
+    this.intelTrack.capture({
+      chain, address: normalizedAddress,
+      symbol: meta.symbol, name: meta.name,
+      source: captureSource, report,
+    }).catch(() => {});
     return report;
   }
 
