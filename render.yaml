@@ -55,6 +55,7 @@ services:
     region: oregon
     plan: free
     rootDir: .
+    branch: feat_deployment
     buildCommand: ./scripts/render-build.sh
     startCommand: ./scripts/render-start.sh
     healthCheckPath: /api/health
@@ -243,6 +244,7 @@ services:
     name: qwai-web
     runtime: static
     rootDir: .
+    branch: feat_deployment
     buildCommand: ./scripts/render-web-build.sh
     staticPublishPath: apps/web/out
     pullRequestPreviewsEnabled: false
