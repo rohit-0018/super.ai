@@ -6,6 +6,7 @@
 
 import { InlineKeyboard } from 'grammy';
 import type { TokenAnalysisReport, AiVerdict } from '../token-analysis/token-analysis.types';
+import { fmtPriceUsd } from '../common/format-price';
 
 /* ─── Verdict config ────────────────────────────────────────────────────────── */
 const VERDICT: Record<AiVerdict, { icon: string; label: string }> = {
@@ -27,9 +28,7 @@ function usd(v: number | undefined | null): string {
 
 function price(v: number | undefined | null): string {
   if (v == null) return '–';
-  if (v >= 1)      return `$${v.toFixed(4)}`;
-  if (v >= 0.0001) return `$${v.toFixed(6)}`;
-  return `$${v.toExponential(3)}`;
+  return fmtPriceUsd(v);
 }
 
 function pct(v: number | undefined | null): string {

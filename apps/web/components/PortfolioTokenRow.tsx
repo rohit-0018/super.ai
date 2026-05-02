@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useInView, useTokenDetail, type TokenDetail } from '../lib/useTokenDetail';
 import SellTokenModal from './SellTokenModal';
+import { fmtPriceUsd } from '../lib/format-price';
 
 export interface HoldingRow {
   mint: string;
@@ -34,7 +35,8 @@ function fmtUsdCompact(n: number | null | undefined): string {
 function fmtUsd(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(2)}k`;
-  if (Math.abs(n) < 0.01 && n !== 0) return `$${n.toExponential(2)}`;
+  // Sub-cent values use DexScreener subscript notation — never scientific.
+  if (Math.abs(n) < 0.01 && n !== 0) return fmtPriceUsd(n);
   return `$${n.toFixed(2)}`;
 }
 function fmtAmt(n: number, dp?: number): string {

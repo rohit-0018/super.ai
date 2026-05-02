@@ -10,6 +10,7 @@ import { ApprovalsService } from '../approvals/approvals.service';
 import { SnipeGroupService } from '../snipe/snipe-group.service';
 import { HotTokensService } from '../hot-tokens/hot-tokens.service';
 import { detectChain } from '../token-analysis/chain-detector';
+import { fmtPriceUsd } from '../common/format-price';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import {
   formatScanReport,
@@ -562,11 +563,7 @@ export class TelegramBot {
 
     tokens.forEach((t, i) => {
       const icon    = VERDICT_ICON[t.verdict] ?? '•';
-      const price   = t.priceUsd < 0.0001
-        ? `$${t.priceUsd.toExponential(2)}`
-        : t.priceUsd < 1
-        ? `$${t.priceUsd.toFixed(6)}`
-        : `$${t.priceUsd.toFixed(4)}`;
+      const price   = fmtPriceUsd(t.priceUsd);
       const ch1h    = `${t.priceChange1h >= 0 ? '+' : ''}${t.priceChange1h.toFixed(1)}%`;
       const ch24h   = `${t.priceChange24h >= 0 ? '+' : ''}${t.priceChange24h.toFixed(1)}%`;
       const mcap    = fmtUsd(t.marketCapUsd);

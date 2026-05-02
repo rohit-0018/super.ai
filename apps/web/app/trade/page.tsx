@@ -8,6 +8,7 @@ import TokenIntelCard from '../../components/TokenIntelCard';
 import { Section } from '../../components/ui/Section';
 import { useApi, invalidate } from '../../lib/useApi';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { fmtPriceUsd } from '../../lib/format-price';
 
 type FeedKind = 'manual' | 'agent' | 'snipe' | 'snipe_sell';
 type FeedSide = 'buy' | 'sell';
@@ -48,7 +49,7 @@ const KIND_TONE: Record<FeedKind, string> = {
 function fmtUsd(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return '—';
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(2)}k`;
-  if (Math.abs(n) < 0.01 && n !== 0) return `$${n.toExponential(2)}`;
+  if (Math.abs(n) < 0.01 && n !== 0) return fmtPriceUsd(n);
   return `$${n.toFixed(2)}`;
 }
 

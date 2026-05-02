@@ -1221,10 +1221,19 @@ function ScoreRing({ score, color }: { score: number; color: string }) {
 
 function fmtNum(n: number, maxDec = 2): string {
   if (n === 0) return '0';
+  const sign = n < 0 ? '-' : '';
   const abs = Math.abs(n);
   if (abs >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: maxDec });
   if (abs >= 0.0001) return n.toFixed(6);
-  return n.toExponential(2);
+  // DexScreener subscript notation for tiny numbers — never scientific.
+  const SUBS = ['₀','₁','₂','₃','₄','₅','₆','₇','₈','₉'];
+  const fixed = abs.toFixed(20);
+  const after = fixed.split('.')[1] ?? '';
+  const m = after.match(/^(0+)(\d+?)0*$/);
+  if (!m) return `${sign}${abs.toFixed(8)}`;
+  const extra = Math.max(0, m[1].length - 1);
+  const sub = String(extra).split('').map((d) => SUBS[+d]).join('');
+  return `${sign}0.0${sub}${m[2].slice(0, 4)}`;
 }
 function fmtMag(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;

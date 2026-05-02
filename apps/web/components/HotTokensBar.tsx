@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useHotTokens, type HotToken } from '../lib/useHotTokens';
+import { fmtPriceUsd } from '../lib/format-price';
 
 /* ─── helpers ──────────────────────────────────────────────────────────────── */
 function verdictColor(v: HotToken['verdict']): string {
@@ -32,9 +33,7 @@ function ageLabel(hours: number): string {
 
 function fmtPrice(p: number): string {
   if (p === 0) return '—';
-  if (p >= 1) return `$${p.toFixed(3)}`;
-  if (p >= 0.01) return `$${p.toFixed(5)}`;
-  return `$${p.toExponential(2)}`;
+  return fmtPriceUsd(p);
 }
 
 function fmtChange(pct: number): string {

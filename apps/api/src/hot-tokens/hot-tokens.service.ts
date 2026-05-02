@@ -3,6 +3,7 @@ import IORedis from 'ioredis';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import { getProfile } from '../token-analysis/profile.config';
+import { fmtPriceUsd } from '../common/format-price';
 import type { TradingProfile } from '../token-analysis/profile.config';
 import type {
   AllProfilesScan,
@@ -123,7 +124,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     if (!scan || !scan.tokens.length) return 'No hot tokens currently tracked.';
     const lines = scan.tokens.slice(0, 8).map(
       (t) =>
-        `${t.symbol} (${t.priceUsd < 0.001 ? t.priceUsd.toExponential(2) : `$${t.priceUsd.toFixed(6)}`}) ` +
+        `${t.symbol} (${fmtPriceUsd(t.priceUsd)}) ` +
         `${t.priceChange1h >= 0 ? '+' : ''}${t.priceChange1h.toFixed(1)}% 1h · ` +
         `score ${t.score}/100 · ${t.verdict} · ${t.summary}`,
     );

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api } from '../lib/api';
 import { invalidate } from '../lib/useApi';
+import { fmtPriceUsd } from '../lib/format-price';
 import { Spinner } from './ui/Skeleton';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -348,6 +349,6 @@ function fmtAmount(n: number, decimals: number): string {
 
 function fmtUsd(n: number): string {
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(2)}k`;
-  if (Math.abs(n) < 0.01) return `$${n.toExponential(2)}`;
+  if (Math.abs(n) < 0.01) return fmtPriceUsd(n);
   return `$${n.toFixed(2)}`;
 }

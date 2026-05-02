@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import type { ReactNode } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
+import { fmtPriceUsd } from '../../lib/format-price';
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 type TradingProfile = 'meme_hunter' | 'degen_sniper' | 'swing_trader' | 'gem_hunt' | 'alpha_hunt';
@@ -140,7 +141,11 @@ const PROFILES: Record<TradingProfile, { label: string; tagline: string; color: 
 
 /* ─── Formatters ─────────────────────────────────────────────────────────── */
 const fmtUsd = (n?: number | null) => !n && n !== 0 ? '—' : n >= 1e9 ? `$${(n/1e9).toFixed(2)}B` : n >= 1e6 ? `$${(n/1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n/1e3).toFixed(1)}K` : `$${n.toFixed(2)}`;
-const fmtPrice = (n?: number | null) => !n && n !== 0 ? '—' : n >= 1000 ? `$${n.toLocaleString(undefined,{maximumFractionDigits:0})}` : n >= 1 ? `$${n.toFixed(4)}` : n >= 0.001 ? `$${n.toFixed(6)}` : n >= 0.000001 ? `$${n.toFixed(8)}` : `$${n.toExponential(3)}`;
+const fmtPrice = (n?: number | null) => {
+  if (n == null || (!n && n !== 0)) return '—';
+  if (n >= 1000) return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return fmtPriceUsd(n);
+};
 const fmtPct = (n?: number | null) => n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 const fmtAge = (h?: number | null) => h == null ? '—' : h < 1 ? `${Math.round(h*60)}m` : h < 24 ? `${h.toFixed(1)}h` : `${(h/24).toFixed(1)}d`;
 const fmtTax = (bps?: number | null) => bps == null ? '—' : `${(bps/100).toFixed(1)}%`;

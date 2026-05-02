@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useApi } from '../lib/useApi';
 import { useInView, useTokenDetail } from '../lib/useTokenDetail';
 import { Spinner } from './ui/Skeleton';
+import { fmtPriceUsd } from '../lib/format-price';
 
 export interface ActivityItem {
   kind?: 'buy' | 'sell';
@@ -49,7 +50,7 @@ const LAMPORTS_PER_SOL = 1e9;
 function fmtUsd(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return '—';
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(2)}k`;
-  if (Math.abs(n) > 0 && Math.abs(n) < 0.01) return `$${n.toExponential(2)}`;
+  if (Math.abs(n) > 0 && Math.abs(n) < 0.01) return fmtPriceUsd(n);
   return `$${n.toFixed(2)}`;
 }
 function fmtCompactUsd(n: number | null | undefined): string {
