@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { IntelSnapshotService } from './intel-snapshot.service';
@@ -138,6 +138,17 @@ export class IntelTrackController {
           : null,
       } : null,
     };
+  }
+
+  /**
+   * POST /api/intel-track/backfill
+   * Manual backfill from TokenIntel rows — useful when /intel-track is empty
+   * because earlier deploys missed the auto-backfill window. Idempotent: only
+   * inserts when IntelSnapshot is empty.
+   */
+  @Post('backfill')
+  async backfill() {
+    return this.snapshots.backfillFromTokenIntel();
   }
 
   /**

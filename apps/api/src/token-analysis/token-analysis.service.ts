@@ -233,7 +233,7 @@ export class TokenAnalysisService {
         chain, address: normalizedAddress,
         symbol: meta.symbol, name: meta.name,
         source: captureSource, report,
-      }).catch(() => {});
+      }).catch((e: any) => this.logger.warn(`intel-track capture failed: ${e?.message}`));
       return report;
     }
 
@@ -270,7 +270,7 @@ export class TokenAnalysisService {
       chain, address: normalizedAddress,
       symbol: meta.symbol, name: meta.name,
       source: captureSource, report,
-    }).catch(() => {});
+    }).catch((e: any) => this.logger.warn(`intel-track capture failed: ${e?.message}`));
     return report;
   }
 

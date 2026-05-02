@@ -271,6 +271,83 @@ export class IntelSnapshotService {
     };
   }
 
+  /**
+   * One-shot backfill from the legacy TokenIntel table. We've been writing to
+   * TokenIntel for months — those rows are the actual marketing data we want
+   * on the track-record surface. Without backfill, /intel-track sits empty
+   * until fresh captures from the new hooks start landing, which can take
+   * hours or days depending on traffic.
+   *
+   * Idempotent — only runs when IntelSnapshot is empty. Each TokenIntel row
+   * becomes a snapshot with source='manual_scan' (best approximation; the
+   * legacy data didn't track entry source).
+   */
+  async backfillFromTokenIntel(): Promise<{ created: number; skipped: number; total: number }> {
+    const existing = await this.prisma.intelSnapshot.count();
+    if (existing > 0) {
+      this.logger.log(`backfill skipped — IntelSnapshot already has ${existing} rows`);
+      return { created: 0, skipped: existing, total: existing };
+    }
+
+    const intels = await this.prisma.tokenIntel.findMany({
+      orderBy: { updatedAt: 'desc' },
+      take: 500,
+    });
+    if (intels.length === 0) {
+      this.logger.log('backfill found 0 TokenIntel rows — nothing to seed');
+      return { created: 0, skipped: 0, total: 0 };
+    }
+
+    let created = 0, skipped = 0;
+    for (const t of intels) {
+      const priceUsd = (t as any).priceUsd as number | null;
+      if (!priceUsd || !Number.isFinite(priceUsd) || priceUsd <= 0) { skipped++; continue; }
+      const aiScore = (t as any).aiScore as number | null;
+      const aiVerdict = (t as any).aiVerdict as string | null;
+      const aiSummary = (t as any).aiSummary as string | null;
+      const fullReport = (t as any).fullReport as any;
+      const killTriggered = !!(t as any).killTriggered;
+
+      // Apply same threshold as capture() so backfill respects user prefs.
+      const passes =
+        killTriggered ||
+        (aiScore != null && aiScore >= MIN_AI_SCORE);
+      if (!passes) { skipped++; continue; }
+
+      try {
+        await this.prisma.intelSnapshot.create({
+          data: {
+            chain: t.chain,
+            address: t.address,
+            symbol: t.symbol ?? null,
+            name: t.name ?? null,
+            source: 'manual_scan',
+            capturedAt: t.updatedAt,
+            priceUsdAtCapture: priceUsd,
+            marketCapUsdAtCapture: null, // not stored on TokenIntel
+            liquidityUsdAtCapture: null,
+            reportJson: (fullReport ?? {}) as any,
+            aiScore: aiScore ?? null,
+            aiVerdict: aiVerdict ?? null,
+            aiSummary: aiSummary ?? null,
+            killTriggered,
+            sparkline: [],
+            currentPriceUsd: priceUsd,
+            currentMcapUsd: null,
+            pumpedHigh: null,
+            drawdownLow: null,
+          },
+        });
+        created++;
+      } catch (e: any) {
+        // Unique-constraint hits (chain,address) — already exists, count as skip.
+        skipped++;
+      }
+    }
+    this.logger.log(`backfill complete — created=${created} skipped=${skipped} of ${intels.length} TokenIntel rows`);
+    return { created, skipped, total: intels.length };
+  }
+
   /** Tail the most recent N pruned to short-of-graduated. Used by sidebar rail. */
   async listTop(limit = 5): Promise<Array<{
     id: string;

@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { SPARKLINE_MAX_POINTS } from './intel-snapshot.service';
+import { IntelSnapshotService, SPARKLINE_MAX_POINTS } from './intel-snapshot.service';
 
 const RESCAN_INTERVAL_SEC = parseInt(process.env.INTEL_RESCAN_INTERVAL_SEC ?? '600', 10);
 const RESCAN_BATCH_SIZE = parseInt(process.env.INTEL_RESCAN_BATCH_SIZE ?? '60', 10);
@@ -42,13 +42,25 @@ export class IntelRescanWorker implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private snapshots: IntelSnapshotService,
+  ) {}
 
   onModuleInit() {
     if (process.env.QWAI_ROLE && !['all', 'worker', 'api'].includes(process.env.QWAI_ROLE)) {
       this.logger.log(`QWAI_ROLE=${process.env.QWAI_ROLE} — IntelRescanWorker disabled`);
       return;
     }
+    // One-shot backfill on first boot — populates IntelSnapshot from the
+    // legacy TokenIntel table so /intel-track has data immediately instead
+    // of staying empty until fresh captures land. Idempotent: only fires
+    // when the table is genuinely empty.
+    setTimeout(() => {
+      this.snapshots.backfillFromTokenIntel().catch((e) =>
+        this.logger.warn(`backfill failed: ${e?.message}`),
+      );
+    }, 30_000);
     // First tick after 60s so boot isn't slowed; subsequent every interval.
     setTimeout(() => this.tick(), 60_000);
     this.timer = setInterval(() => this.tick(), RESCAN_INTERVAL_SEC * 1_000);
