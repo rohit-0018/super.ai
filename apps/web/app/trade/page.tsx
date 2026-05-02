@@ -1,12 +1,97 @@
 'use client';
+import { useMemo, useState } from 'react';
 import TradingViewChart from '../../components/TradingViewChart';
 import SwapForm from '../../components/SwapForm';
 import RiskMeter from '../../components/RiskMeter';
 import TokenIntelCard from '../../components/TokenIntelCard';
 import { Section } from '../../components/ui/Section';
-import { Stat, DeltaPill } from '../../components/ui/Stat';
+import { useApi, invalidate } from '../../lib/useApi';
+import { Skeleton } from '../../components/ui/Skeleton';
+
+type FeedKind = 'manual' | 'agent' | 'snipe' | 'snipe_sell';
+type FeedSide = 'buy' | 'sell';
+interface FeedItem {
+  id: string;
+  kind: FeedKind;
+  side: FeedSide;
+  chain: string;
+  mint: string | null;
+  tokenIn: string | null;
+  tokenOut: string | null;
+  amountIn: string | null;
+  amountOut: string | null;
+  priceUsd: number | null;
+  pnlUsd: number | null;
+  mode: string;
+  txHash: string | null;
+  status: string;
+  strategyId: string | null;
+  sourceMsg: string | null;
+  createdAt: string;
+}
+
+const KIND_LABEL: Record<FeedKind, string> = {
+  manual: 'Manual',
+  agent: 'Agent',
+  snipe: 'Snipe',
+  snipe_sell: 'Snipe sell',
+};
+
+const KIND_TONE: Record<FeedKind, string> = {
+  manual: 'var(--accent)',
+  agent: '#a855f7',
+  snipe: '#22c55e',
+  snipe_sell: '#f59e0b',
+};
+
+function fmtUsd(n: number | null): string {
+  if (n == null || !Number.isFinite(n)) return '—';
+  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(2)}k`;
+  if (Math.abs(n) < 0.01 && n !== 0) return `$${n.toExponential(2)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function relTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return 'just now';
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+function shortMint(m: string | null): string {
+  if (!m) return '—';
+  if (m.length <= 14) return m;
+  return `${m.slice(0, 6)}…${m.slice(-4)}`;
+}
 
 export default function TradePage() {
+  const { data: feed, loading } = useApi<FeedItem[]>('/trades/feed');
+  const [filter, setFilter] = useState<'all' | FeedKind>('all');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const filtered = useMemo(() => {
+    if (!Array.isArray(feed)) return [];
+    if (filter === 'all') return feed;
+    return feed.filter((f) => f.kind === filter);
+  }, [feed, filter]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: 0, manual: 0, agent: 0, snipe: 0, snipe_sell: 0 };
+    if (Array.isArray(feed)) {
+      c.all = feed.length;
+      for (const f of feed) c[f.kind] = (c[f.kind] ?? 0) + 1;
+    }
+    return c;
+  }, [feed]);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    invalidate('/trades/feed');
+    await new Promise((r) => setTimeout(r, 500));
+    setRefreshing(false);
+  };
+
   return (
     <div className="page page-wide space-y-4">
       <header className="page-header">
@@ -15,8 +100,16 @@ export default function TradePage() {
           <h1 className="page-title">Trade</h1>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="chip"><span className="live-dot" /> SOL · $142.33</span>
-          <span className="chip chip-warn">paper</span>
+          <span className="chip"><span className="live-dot" /> Live feed</span>
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={refreshing}
+            className="btn btn-sm"
+            style={{ fontSize: 11, padding: '4px 10px', opacity: refreshing ? 0.6 : 1 }}
+          >
+            {refreshing ? '⟳ refreshing…' : '↻ Refresh'}
+          </button>
         </div>
       </header>
 
@@ -34,50 +127,115 @@ export default function TradePage() {
         </div>
       </div>
 
-      {/* Positions summary */}
+      {/* Unified trade feed: manual + agent + snipe (+ snipe_sell). */}
       <Section
-        title="Positions"
-        subtitle="5 open"
+        title="All trades"
+        subtitle={loading ? 'loading…' : `${filtered.length} of ${counts.all} shown`}
         flush
         actions={<a href="/analytics" className="btn btn-sm btn-ghost">Open journal →</a>}
       >
+        {/* Filter chips — switch between kinds without leaving the page. */}
+        <div style={{
+          display: 'flex', gap: 6, padding: '10px 14px', flexWrap: 'wrap',
+          borderBottom: '1px solid var(--border)',
+        }}>
+          {(['all', 'manual', 'agent', 'snipe', 'snipe_sell'] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setFilter(k)}
+              className="chip"
+              style={{
+                cursor: 'pointer',
+                background: filter === k ? 'color-mix(in srgb, var(--accent) 22%, transparent)' : 'var(--surface-2)',
+                borderColor: filter === k ? 'var(--accent)' : 'var(--border)',
+                fontSize: 11,
+              }}
+            >
+              {k === 'all' ? 'All' : KIND_LABEL[k]} <span style={{ opacity: 0.6, marginLeft: 4 }}>{counts[k] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+
         <div className="table-scroll">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Asset</th>
-              <th>Chain</th>
-              <th className="num">Qty</th>
-              <th className="num">Entry</th>
-              <th className="num">Mark</th>
-              <th className="num">Value</th>
-              <th className="num">P&L</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ROWS.map((r) => (
-              <tr key={r.sym}>
-                <td className="font-semibold">{r.sym}</td>
-                <td><span className="chip">{r.chain}</span></td>
-                <td className="num">{r.qty}</td>
-                <td className="num" style={{ color: 'var(--text-2)' }}>{r.entry}</td>
-                <td className="num">{r.mark}</td>
-                <td className="num">{r.value}</td>
-                <td className="num"><DeltaPill tone={r.tone}>{r.pnl}</DeltaPill></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          {loading ? (
+            <div className="space-y-2 p-4">
+              {[...Array(5)].map((_, i) => <Skeleton key={i} h={36} rounded="md" />)}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.4 }}>◎</div>
+              <p className="text-[13px]" style={{ color: 'var(--text-2)' }}>
+                No trades {filter !== 'all' ? `in ${KIND_LABEL[filter]} category` : 'yet'}.
+              </p>
+              <p className="text-[11px] mt-1" style={{ color: 'var(--text-3)' }}>
+                Snipe a token, run an agent, or place a manual swap to populate this feed.
+              </p>
+            </div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Kind</th>
+                  <th>Side</th>
+                  <th>Chain</th>
+                  <th>Token</th>
+                  <th className="num">Amount in</th>
+                  <th className="num">Out</th>
+                  <th className="num">Price</th>
+                  <th className="num">P&amp;L</th>
+                  <th>Status</th>
+                  <th>When</th>
+                  <th>Tx</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r) => {
+                  const tone = KIND_TONE[r.kind];
+                  const sideColor = r.side === 'sell' ? 'var(--bad)' : 'var(--ok)';
+                  const txUrl = r.txHash
+                    ? r.chain === 'SOLANA'
+                      ? `https://solscan.io/tx/${r.txHash}`
+                      : `https://etherscan.io/tx/${r.txHash}`
+                    : null;
+                  return (
+                    <tr key={r.id}>
+                      <td>
+                        <span className="chip" style={{
+                          background: `color-mix(in srgb, ${tone} 18%, transparent)`,
+                          borderColor: `color-mix(in srgb, ${tone} 50%, var(--border))`,
+                          color: tone, fontSize: 10, fontWeight: 600,
+                        }}>{KIND_LABEL[r.kind]}</span>
+                      </td>
+                      <td><span style={{ color: sideColor, fontWeight: 600, fontSize: 12 }}>{r.side.toUpperCase()}</span></td>
+                      <td><span className="chip" style={{ fontSize: 10 }}>{r.chain}</span></td>
+                      <td className="font-mono text-[11px]" title={r.mint ?? ''}>{shortMint(r.mint)}</td>
+                      <td className="num text-[11px]">{r.amountIn ?? '—'}</td>
+                      <td className="num text-[11px]">{r.amountOut ?? '—'}</td>
+                      <td className="num text-[12px]">{fmtUsd(r.priceUsd)}</td>
+                      <td className="num text-[12px]" style={{ color: r.pnlUsd != null ? (r.pnlUsd >= 0 ? 'var(--ok)' : 'var(--bad)') : 'var(--text-3)' }}>
+                        {r.pnlUsd != null ? `${r.pnlUsd >= 0 ? '+' : ''}${fmtUsd(r.pnlUsd)}` : '—'}
+                      </td>
+                      <td>
+                        <span className="chip" style={{
+                          fontSize: 10,
+                          background: r.status === 'confirmed' ? 'color-mix(in srgb, var(--ok) 18%, transparent)' :
+                                       r.status === 'failed' ? 'color-mix(in srgb, var(--bad) 18%, transparent)' :
+                                       'var(--surface-2)',
+                          color: r.status === 'confirmed' ? 'var(--ok)' :
+                                 r.status === 'failed' ? 'var(--bad)' : 'var(--text-2)',
+                        }}>{r.status}</span>
+                      </td>
+                      <td className="text-[11px]" style={{ color: 'var(--text-3)' }}>{relTime(r.createdAt)}</td>
+                      <td>{txUrl ? <a href={txUrl} target="_blank" rel="noopener" className="text-[11px]" style={{ color: 'var(--accent)' }}>view ↗</a> : <span style={{ color: 'var(--text-3)', fontSize: 11 }}>—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       </Section>
     </div>
   );
 }
-
-const ROWS = [
-  { sym: 'SOL', chain: 'Solana', qty: '218.44', entry: '$118.40', mark: '$142.33', value: '$31,087.02', pnl: '+$5,224', tone: 'up' as const },
-  { sym: 'ETH', chain: 'EVM',    qty: '3.182',  entry: '$3,088',  mark: '$3,214',  value: '$10,225.24', pnl: '+$401',   tone: 'up' as const },
-  { sym: 'JUP', chain: 'Solana', qty: '4,202',  entry: '$0.91',   mark: '$0.82',   value: '$3,446.00',  pnl: '-$378',   tone: 'down' as const },
-  { sym: 'WIF', chain: 'Solana', qty: '1,820',  entry: '$2.12',   mark: '$1.94',   value: '$3,530.80',  pnl: '-$327',   tone: 'down' as const },
-  { sym: 'BONK', chain: 'Solana', qty: '9.2M',  entry: '$0.0000219', mark: '$0.0000234', value: '$215.28', pnl: '+$14',  tone: 'up' as const },
-];

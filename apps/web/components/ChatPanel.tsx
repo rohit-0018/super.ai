@@ -95,6 +95,25 @@ export default function ChatPanel() {
 
   useEffect(autoGrow, [input]);
 
+  // Allow other pages to deep-link a question into the chat. The portfolio
+  // "Ask AI" buttons push /chat?prefill=<URL-encoded prompt>; we hydrate the
+  // textarea once on mount, focus it so the user can edit/submit instantly,
+  // and strip the param so a refresh doesn't re-prefill the old prompt.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const prefill = sp.get('prefill');
+      if (prefill) {
+        setInput(prefill);
+        setTimeout(() => taRef.current?.focus(), 30);
+        sp.delete('prefill');
+        const next = window.location.pathname + (sp.toString() ? `?${sp}` : '');
+        window.history.replaceState(null, '', next);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   async function send() {
     const content = input.trim();
     if (!content || streaming) return;

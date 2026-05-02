@@ -11,9 +11,11 @@ import { AiAgentModule } from '../ai-agent/ai-agent.module';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { AgentsModule } from '../agents/agents.module';
 import { SecurityModule } from '../security/security.module';
+import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
   imports: [
+    PrismaModule,
     WalletsModule,
     AiAgentModule,
     GuardrailsModule,

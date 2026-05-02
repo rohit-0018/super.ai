@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useInView, useTokenDetail, type TokenDetail } from '../lib/useTokenDetail';
 import SellTokenModal from './SellTokenModal';
 
@@ -104,8 +105,23 @@ export function PortfolioTokenRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [sellOpen, setSellOpen] = useState(false);
+  const router = useRouter();
   const { ref, inView } = useInView<HTMLDivElement>();
   const { data: detail, loading: detailLoading } = useTokenDetail(h.mint, inView);
+
+  // Hand the holding context to the AI chat so the user can ask "should I sell
+  // this?" without re-typing every metric. The chat page reads ?prefill= from
+  // the URL on mount.
+  const askAi = (action: 'analyze' | 'sell' | 'buy') => {
+    const sym = detail?.symbol ?? h.symbol;
+    const prompt =
+      action === 'sell'
+        ? `Should I sell my ${sym}? I hold ${h.amount.toLocaleString()} ${sym} (mint ${h.mint}), avg cost $${h.entryCostUsd?.toFixed(2) ?? '?'}, current value $${(detail?.priceUsd ?? h.priceUsd ?? 0) * h.amount}. Run a fresh scan and give me a clear recommendation with reasoning.`
+        : action === 'buy'
+        ? `Should I buy more ${sym} (mint ${h.mint})? I currently hold ${h.amount.toLocaleString()} at avg cost $${h.entryCostUsd?.toFixed(2) ?? '?'}. Analyze the current setup and give me a sizing recommendation.`
+        : `Analyze ${sym} (mint ${h.mint}) — I hold ${h.amount.toLocaleString()}, avg cost $${h.entryCostUsd?.toFixed(2) ?? '?'}. Give me a fresh deep-dive: market structure, on-chain risk, recent narrative, and whether I should hold, sell, or add.`;
+    router.push(`/chat?prefill=${encodeURIComponent(prompt)}`);
+  };
 
   // Prefer live Birdeye price (more recent than the bulk fetch in the list).
   const livePrice = detail?.priceUsd ?? h.priceUsd;
@@ -344,7 +360,34 @@ export function PortfolioTokenRow({
               }}
               title={walletChain !== 'SOLANA' ? 'Selling supported on Solana wallets only' : `Sell ${h.symbol}`}
             >
-              Sell {h.symbol}
+              Sell {displaySymbol}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); askAi('analyze'); }}
+              className="btn btn-ghost"
+              style={{ fontSize: 12, padding: '6px 12px', fontWeight: 600 }}
+              title="Ask the AI agent for a fresh analysis with hold/sell/add recommendation"
+            >
+              🤖 Ask AI
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); askAi('sell'); }}
+              className="btn btn-ghost"
+              style={{ fontSize: 11, padding: '6px 10px', color: 'var(--bad)' }}
+              title="Ask AI: should I sell?"
+            >
+              Sell?
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); askAi('buy'); }}
+              className="btn btn-ghost"
+              style={{ fontSize: 11, padding: '6px 10px', color: 'var(--ok)' }}
+              title="Ask AI: should I buy more?"
+            >
+              Buy more?
             </button>
             <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 2px' }} />
             <ExternalLink href={`https://dexscreener.com/solana/${h.mint}`} label="DexScreener" />

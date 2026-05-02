@@ -382,28 +382,69 @@ export class WalletsService {
   private async batchTokenPrices(mints: string[]): Promise<Record<string, number | null>> {
     if (mints.length === 0) return {};
     const birdeyeKey = process.env.BIRDEYE_API_KEY ?? '';
-    if (!birdeyeKey) return Object.fromEntries(mints.map((m) => [m, null]));
+    const result: Record<string, number | null> = Object.fromEntries(mints.map((m) => [m, null]));
 
-    try {
-      // Birdeye multi_price: GET /defi/multi_price?list_address=addr1,addr2,...
-      const url = `https://public-api.birdeye.so/defi/multi_price?list_address=${mints.join(',')}`;
-      const resp = await fetch(url, {
-        headers: { 'X-API-KEY': birdeyeKey },
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (!resp.ok) throw new Error(`Birdeye ${resp.status}`);
-      const data: any = await resp.json();
-      // Response: { data: { [mint]: { value: number, ... } } }
-      const result: Record<string, number | null> = {};
-      for (const mint of mints) {
-        result[mint] = data?.data?.[mint]?.value ?? null;
+    // Birdeye first if we have a key
+    if (birdeyeKey) {
+      try {
+        const url = `https://public-api.birdeye.so/defi/multi_price?list_address=${mints.join(',')}`;
+        const resp = await fetch(url, {
+          headers: { 'X-API-KEY': birdeyeKey },
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (resp.ok) {
+          const data: any = await resp.json();
+          for (const mint of mints) {
+            const v = data?.data?.[mint]?.value;
+            if (typeof v === 'number') result[mint] = v;
+          }
+        }
+      } catch {
+        /* fall through to DexScreener */
       }
-      return result;
-    } catch {
-      // Fallback: known stablecoins only
-      return Object.fromEntries(mints.map((m) => [m, this.SPL_KNOWN[m]?.price ?? null]));
     }
+
+    // DexScreener fallback for any mints we couldn't price.
+    // No key required, accepts comma-separated list of up to 30 token addresses.
+    const missing = mints.filter((m) => result[m] == null);
+    if (missing.length > 0) {
+      try {
+        for (let i = 0; i < missing.length; i += 30) {
+          const batch = missing.slice(i, i + 30);
+          const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${batch.join(',')}`, {
+            signal: AbortSignal.timeout(8_000),
+          });
+          if (!res.ok) continue;
+          const json: any = await res.json();
+          const pairs: any[] = Array.isArray(json?.pairs) ? json.pairs : [];
+          // Group pairs by base mint, keep highest-liquidity per mint.
+          const byMint = new Map<string, any>();
+          for (const p of pairs) {
+            const m = p?.baseToken?.address;
+            if (!m) continue;
+            const cur = byMint.get(m);
+            if (!cur || (p?.liquidity?.usd ?? 0) > (cur?.liquidity?.usd ?? 0)) byMint.set(m, p);
+          }
+          for (const m of batch) {
+            const p = byMint.get(m);
+            const px = Number(p?.priceUsd);
+            if (Number.isFinite(px)) result[m] = px;
+          }
+        }
+      } catch {
+        /* leave nulls */
+      }
+    }
+
+    // Pin known stablecoin prices that providers occasionally miss.
+    for (const m of mints) {
+      if (result[m] == null && this.SPL_KNOWN[m]?.price != null) {
+        result[m] = this.SPL_KNOWN[m]!.price!;
+      }
+    }
+    return result;
   }
+
 
   async create(userId: string, chain: Chain, label?: string) {
     const count = await this.prisma.wallet.count({ where: { userId } });

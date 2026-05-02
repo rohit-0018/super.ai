@@ -15,7 +15,7 @@ export interface TokenDetail {
   volume24hUsd: number | null;
   supply: number | null;
   holders: number | null;
-  source: 'birdeye' | 'unknown';
+  source: 'birdeye' | 'dexscreener' | 'unknown';
   fetchedAt: string;
 }
 
@@ -51,10 +51,30 @@ export class TokenMetadataService {
   }
 
   private async fetch(mint: string): Promise<TokenDetail> {
-    let detail: TokenDetail;
+    // Try Birdeye first if we have a key — it has supply/holders/FDV which
+    // DexScreener does not. If no key, or Birdeye returns nothing useful,
+    // fall back to DexScreener (free, no key, covers price/mcap/liq/vol/24h).
+    let detail = await this.fetchFromBirdeye(mint);
+    if (!detail || detail.priceUsd == null) {
+      const dex = await this.fetchFromDexScreener(mint);
+      if (dex && dex.priceUsd != null) {
+        // Merge: keep birdeye-only fields if we got them, layer DexScreener over the rest.
+        detail = detail
+          ? { ...detail, ...dex, supply: detail.supply ?? dex.supply, holders: detail.holders ?? dex.holders, fdv: detail.fdv ?? dex.fdv, source: 'dexscreener' }
+          : dex;
+      }
+    }
+    if (!detail) detail = empty(mint);
+    this.cache.set(mint, { detail, ts: Date.now() });
+    return detail;
+  }
+
+  private async fetchFromBirdeye(mint: string): Promise<TokenDetail | null> {
+    if (!process.env.BIRDEYE_API_KEY) return null;
     try {
       const overview: any = await this.birdeye.tokenOverview(mint);
-      detail = {
+      if (!overview) return null;
+      return {
         mint,
         name: overview?.name ?? null,
         symbol: overview?.symbol ?? null,
@@ -68,16 +88,52 @@ export class TokenMetadataService {
         volume24hUsd: numOrNull(overview?.v24hUSD ?? overview?.volume24hUSD),
         supply: numOrNull(overview?.supply ?? overview?.totalSupply),
         holders: numOrNull(overview?.holder ?? overview?.holders),
-        source: overview ? 'birdeye' : 'unknown',
+        source: 'birdeye',
         fetchedAt: new Date().toISOString(),
       };
     } catch (err: any) {
-      this.logger.warn(`tokenOverview failed for ${mint}: ${err?.message}`);
-      detail = empty(mint);
+      this.logger.warn(`birdeye tokenOverview failed for ${mint}: ${err?.message}`);
+      return null;
     }
+  }
 
-    this.cache.set(mint, { detail, ts: Date.now() });
-    return detail;
+  /**
+   * Free fallback. DexScreener returns the deepest pair for the mint along
+   * with full market data. No API key required, ~50ms typical.
+   */
+  private async fetchFromDexScreener(mint: string): Promise<TokenDetail | null> {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!res.ok) return null;
+      const json: any = await res.json();
+      const pairs: any[] = Array.isArray(json?.pairs) ? json.pairs : [];
+      if (pairs.length === 0) return null;
+      // Pick the pair with highest liquidity — that's the "real" market.
+      const best = pairs.reduce((a, b) => ((b?.liquidity?.usd ?? 0) > (a?.liquidity?.usd ?? 0) ? b : a));
+      const baseToken = best?.baseToken ?? {};
+      return {
+        mint,
+        name: baseToken?.name ?? null,
+        symbol: baseToken?.symbol ?? null,
+        logoURI: best?.info?.imageUrl ?? null,
+        decimals: null,
+        priceUsd: numOrNull(best?.priceUsd),
+        priceChange24hPct: numOrNull(best?.priceChange?.h24),
+        marketCap: numOrNull(best?.marketCap ?? best?.fdv),
+        fdv: numOrNull(best?.fdv),
+        liquidity: numOrNull(best?.liquidity?.usd),
+        volume24hUsd: numOrNull(best?.volume?.h24),
+        supply: null,
+        holders: null,
+        source: 'dexscreener',
+        fetchedAt: new Date().toISOString(),
+      };
+    } catch (err: any) {
+      this.logger.warn(`dexscreener fallback failed for ${mint}: ${err?.message}`);
+      return null;
+    }
   }
 }
 
