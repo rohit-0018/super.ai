@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Chain } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { TokenAnalysisReport } from '../token-analysis/token-analysis.types';
+import { RealtimeGateway } from '../ws/realtime.gateway';
 
 export type IntelSource = 'hot_tokens_scan' | 'manual_scan' | 'telegram_scan' | 'snipe';
 export type IntelStatus = 'active' | 'retired' | 'rugged' | 'graduated';
@@ -42,7 +43,23 @@ interface CaptureInput {
 export class IntelSnapshotService {
   private readonly logger = new Logger(IntelSnapshotService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Optional() private realtime?: RealtimeGateway,
+  ) {}
+
+  /**
+   * Broadcast a freshly-created capture so the /hot-feed page can prepend a
+   * card with fade-in animation. Optional/best-effort — if the WS isn't up
+   * the capture still succeeds.
+   */
+  private emitCapture(snapshotId: string, source: IntelSource, symbol: string | null, address: string, chain: Chain): void {
+    try {
+      this.realtime?.emitGlobal('intel_capture_new', {
+        id: snapshotId, source, symbol, address, chain, ts: new Date().toISOString(),
+      });
+    } catch { /* swallow — non-critical */ }
+  }
 
   /**
    * Idempotent on (chain, address). Returns the snapshot id (new or existing)
@@ -133,6 +150,7 @@ export class IntelSnapshotService {
         `captured [${source}] ${meta.symbol ?? normalizedAddress.slice(0, 8)} ` +
         `mcap=${meta.marketCapUsd ?? '?'} ai=${aiScore ?? '?'}/100 verdict=${aiVerdict ?? '-'}`,
       );
+      this.emitCapture(created.id, source, meta.symbol ?? null, normalizedAddress, chain);
       return { id: created.id, created: true };
     } catch (e: any) {
       this.logger.warn(`capture failed for ${address}: ${e.message}`);
@@ -203,6 +221,7 @@ export class IntelSnapshotService {
       this.logger.log(
         `captureMinimal [${input.source}] ${input.symbol ?? normalizedAddress.slice(0, 8)} mcap=${input.marketCapUsdAtCapture ?? '?'}`,
       );
+      this.emitCapture(created.id, input.source, input.symbol ?? null, normalizedAddress, input.chain);
       return { id: created.id, created: true };
     } catch (e: any) {
       this.logger.warn(`captureMinimal failed for ${input.address}: ${e.message}`);

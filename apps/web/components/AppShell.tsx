@@ -162,6 +162,7 @@ const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }
   { href: '/agents',    label: 'Agents',    icon: IconAgents },
   { href: '/snipe',     label: 'Sniper',    icon: IconSnipe },
   { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
+  { href: '/hot-feed',  label: 'Hot Feed',  icon: IconFlame },
   { href: '/intel',     label: 'Intel',     icon: IconScan },
   { href: '/intel-track', label: 'Track',   icon: IconTrophy },
   { href: '/wallets',   label: 'Wallets',   icon: IconWallet },
@@ -592,6 +593,13 @@ function IconScan({ size }: { size?: number }) {
     <Svg size={size}>
       <path d="M5 3h3a1 1 0 0 1 0 2H5v3a1 1 0 0 1-2 0V5a2 2 0 0 1 2-2zm14 0a2 2 0 0 1 2 2v3a1 1 0 0 1-2 0V5h-3a1 1 0 0 1 0-2zM4 15a1 1 0 0 1 1 1v3h3a1 1 0 0 1 0 2H5a2 2 0 0 1-2-2v-3a1 1 0 0 1 1-1zm16 0a1 1 0 0 1 1 1v3a2 2 0 0 1-2 2h-3a1 1 0 0 1 0-2h3v-3a1 1 0 0 1 1-1z" />
       <circle cx="12" cy="12" r="3.5" />
+    </Svg>
+  );
+}
+function IconFlame({ size }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M12 2c1 4 4 5 4 9a4 4 0 1 1-8 0c0-2 .8-3 2-4-.5 2 .5 3 1 3 0-3-1-5 1-8zm-3 14a3 3 0 0 0 6 0c0-1.2-.8-2-1.5-2.5.2 1.5-.5 2-1 2 0-1.4-.5-2.5-1.5-3-.5 1-2 2-2 3.5z" />
     </Svg>
   );
 }
