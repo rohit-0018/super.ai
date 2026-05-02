@@ -56,6 +56,19 @@ SUMMARY RULES:
 - End with a clear signal: "I'm in small", "hard pass", "wait for dip", "size up"
 - For exit sizing: mention price impact numbers directly — "exit only works below $500 per trade"
 
+LORE RULES (CRITICAL — fill in for every token):
+- isMeme: true when the symbol/name reads like a meme, joke, animal, internet culture
+  reference, political mascot, anime/film tribute, frog/dog/cat/pepe/wojak family, or
+  any token where the narrative IS the product. False for utility/infra/protocol tokens.
+- lore: 2-3 sentences explaining what this token IS as a cultural artifact — the joke,
+  the reference, the meme origin, the community vibe. For a dog-with-hat memecoin,
+  identify which specific dog/hat reference. For a political/celebrity coin, name the
+  figure and why it matters now. For pump.fun tokens with no obvious narrative, say so:
+  "Just another launchpad token with no clear lore — riding general meme momentum."
+  For utility tokens, briefly describe the product instead. Never write "interesting
+  community" or other empty filler. If you genuinely cannot tell, say "Symbol/name
+  give no obvious cultural hook — likely a low-effort launch."
+
 Respond ONLY with valid JSON — no markdown, no explanation outside the JSON object.`;
 
 function buildPrompt(
@@ -167,7 +180,9 @@ Respond ONLY with this exact JSON structure:
   "exitSizing": "Natural language exit guidance based on price impact data",
   "bullishSignals": ["specific signal with exact data", "specific signal with exact data"],
   "riskFactors": ["specific risk with exact data", "specific risk with exact data"],
-  "summary": "3-4 sentences citing exact numbers. End with clear signal."
+  "summary": "3-4 sentences citing exact numbers. End with clear signal.",
+  "isMeme": <true|false>,
+  "lore": "2-3 sentences explaining the meme/narrative origin (or product if utility). Never empty."
 }`;
 }
 
@@ -240,6 +255,8 @@ export class AiReasoner {
         bullishSignals: Array.isArray(parsed.bullishSignals) ? parsed.bullishSignals.slice(0, 5) : [],
         riskFactors:    Array.isArray(parsed.riskFactors)    ? parsed.riskFactors.slice(0, 5)    : [],
         summary: typeof parsed.summary === 'string' ? parsed.summary.slice(0, 1000) : '',
+        lore: typeof parsed.lore === 'string' ? parsed.lore.slice(0, 600) : undefined,
+        isMeme: typeof parsed.isMeme === 'boolean' ? parsed.isMeme : undefined,
         generatedAt: new Date().toISOString(),
       };
 

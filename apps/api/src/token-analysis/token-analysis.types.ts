@@ -210,6 +210,8 @@ export interface AiReasoning {
   bullishSignals: string[];
   riskFactors: string[];
   summary: string;
+  lore?: string;                // NEW — meme/narrative origin story (2-3 sentences)
+  isMeme?: boolean;             // NEW — flagged when token reads as a meme/cult coin
   generatedAt: string;
 }
 

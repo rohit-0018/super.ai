@@ -498,8 +498,13 @@ export class TelegramBot {
       // Skip explicit commands (handled above)
       if (text.startsWith('/')) return;
 
-      // Private chat: auto-detect CA → scan
+      // Private chat: auto-detect CA → scan.
+      // First try the whole text as an address (paste-only case), then fall back
+      // to extracting an address embedded in natural language like
+      //   "tell me about HfMb...F5p" / "what's HfMb...F5p" / "scan 0x123..."
       if (detectChain(text)) return this.runScan(ctx, text);
+      const embedded = extractAddress(text);
+      if (embedded) return this.runScan(ctx, embedded);
 
       // Hot tokens shortcut — bypass LLM, format directly
       if (this.isHotTokensQuery(text)) {
@@ -713,6 +718,24 @@ export class TelegramBot {
 }
 
 /* ── Module-level helpers ────────────────────────────────────────────────── */
+
+/**
+ * Pull a token contract address out of arbitrary natural-language input.
+ * Matches Solana base58 (32-44 chars, no 0/O/I/l) and EVM hex (0x + 40 hex).
+ * Returns the first valid candidate or null. detectChain re-validates the
+ * winner so junk false-positives never reach the scanner.
+ */
+function extractAddress(text: string): string | null {
+  // EVM first — distinctive prefix means very low false-positive rate
+  const evmMatch = text.match(/0x[a-fA-F0-9]{40}/);
+  if (evmMatch && detectChain(evmMatch[0])) return evmMatch[0];
+  // Solana base58 — split on whitespace and any non-base58 char then test each
+  const candidates = text.split(/[^1-9A-HJ-NP-Za-km-z]+/);
+  for (const c of candidates) {
+    if (c.length >= 32 && c.length <= 44 && detectChain(c)) return c;
+  }
+  return null;
+}
 
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
