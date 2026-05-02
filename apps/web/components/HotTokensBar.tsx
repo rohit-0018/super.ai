@@ -4,6 +4,32 @@ import { useRouter } from 'next/navigation';
 import { useHotTokens, type HotToken } from '../lib/useHotTokens';
 import { fmtPriceUsd } from '../lib/format-price';
 
+/* ─── CopyCA — inline copy button for contract address ──────────────────────── */
+function CopyCA({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const short = `${address.slice(0, 4)}…${address.slice(-4)}`;
+  return (
+    <span
+      title={address}
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(address).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+      style={{
+        fontFamily: 'var(--font-mono)', fontSize: 9, color: copied ? 'var(--ok)' : 'var(--text-3)',
+        background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3,
+        padding: '1px 4px', cursor: 'pointer', letterSpacing: '0.02em', transition: 'color 120ms',
+        userSelect: 'none', flexShrink: 0,
+      }}
+    >
+      {copied ? '✓' : short}
+    </span>
+  );
+}
+
 /* ─── helpers ──────────────────────────────────────────────────────────────── */
 function verdictColor(v: HotToken['verdict']): string {
   switch (v) {
@@ -94,6 +120,7 @@ function TokenChip({ token, onClick }: { token: HotToken; onClick: (t: HotToken)
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.03em' }}>
         {token.symbol}
       </span>
+      <CopyCA address={token.address} />
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-2)' }}>
         {fmtPrice(token.priceUsd)}
       </span>

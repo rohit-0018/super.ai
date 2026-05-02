@@ -11,6 +11,7 @@ import { TickerBar, type TickerItem } from './ui/TickerBar';
 import { HotTokensBar } from './HotTokensBar';
 import AgentLauncher from './AgentLauncher';
 import NotificationBanner from './NotificationBanner';
+import PumpStreakToast from './PumpStreakToast';
 import { IntelTrackRail } from './IntelTrackRail';
 import { useApi } from '../lib/useApi';
 import { api } from '../lib/api';
@@ -34,18 +35,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="shell-outer">
       <Rail pathname={pathname} />
       <div className="shell-main-col flex-1 flex flex-col min-w-0">
         <TopStatusBar />
         <HotTokensBar />
-        <main className="flex-1 min-w-0">{children}</main>
+        <main className="shell-scroll min-w-0">{children}</main>
         <BottomStatusBar />
       </div>
       <IntelTrackDrawer />
       <MobileTabBar pathname={pathname} />
       <AgentLauncher />
       <NotificationBanner />
+      <PumpStreakToast />
     </div>
   );
 }

@@ -3,6 +3,21 @@ import { useState } from 'react';
 import { api } from '../lib/api';
 import { Skeleton, Spinner } from './ui/Skeleton';
 
+function CopyCAIntel({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const short = `${address.slice(0, 6)}…${address.slice(-4)}`;
+  return (
+    <span
+      title={address}
+      onClick={() => { navigator.clipboard.writeText(address).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
+      className="font-mono text-[10px] cursor-pointer select-none"
+      style={{ color: copied ? 'var(--ok)' : 'var(--text-3)', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 5px', display: 'inline-block', marginTop: 2 }}
+    >
+      {copied ? '✓ copied' : short}
+    </span>
+  );
+}
+
 interface IntelResponse {
   chain?: string;
   address?: string;
@@ -101,6 +116,7 @@ export default function TokenIntelCard() {
             <div>
               <div className="text-base font-semibold">{intel.symbol ?? '?'}</div>
               {intel.name && <div className="text-[12px] text-[color:var(--text-3)]">{intel.name}</div>}
+              {intel.address && <CopyCAIntel address={intel.address} />}
             </div>
             {intel.priceUsd != null && (
               <div className="font-mono text-[15px]">${intel.priceUsd.toFixed(6)}</div>

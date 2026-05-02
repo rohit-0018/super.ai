@@ -227,6 +227,7 @@ export function formatScanReport(
 
   /* ── HEADER ─────────────────────────────────────────────────────────────── */
   lines.push(`<b>${symbol}</b>  ${chainIcon}  ${ageStr}${dexLabel ? `  ·  ${dexLabel}` : ''}`);
+  lines.push(`<code>${address}</code>`);
 
   const p  = price(m.priceUsd);
   const h1 = pct(m.priceChange?.h1);

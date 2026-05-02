@@ -5,6 +5,20 @@ import { useApi, invalidate } from '../../lib/useApi';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { fmtUsdCompact } from '../../lib/format-price';
 
+function CopyCA({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const short = `${address.slice(0, 4)}…${address.slice(-4)}`;
+  return (
+    <span
+      title={address}
+      onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(address).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
+      style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: copied ? 'var(--ok)' : 'var(--text-3)', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 5px', cursor: 'pointer', display: 'inline-block', marginTop: 3, userSelect: 'none' }}
+    >
+      {copied ? '✓ copied' : short}
+    </span>
+  );
+}
+
 type Status = 'active' | 'retired' | 'rugged' | 'graduated';
 type Source = 'hot_tokens_scan' | 'manual_scan' | 'telegram_scan' | 'snipe';
 
@@ -287,6 +301,7 @@ function Card({ s }: { s: Snapshot }) {
           {s.name && s.name !== s.symbol && (
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{s.name}</div>
           )}
+          <CopyCA address={s.address} />
         </div>
         <span className="chip" style={{
           background: `color-mix(in srgb, ${tone} 18%, transparent)`,

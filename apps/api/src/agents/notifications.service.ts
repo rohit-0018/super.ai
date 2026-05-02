@@ -92,6 +92,7 @@ export class NotificationsService {
         const symbol = p.symbol ?? p.token ?? '';
         lines.push('');
         lines.push(`${sideIcon} <b>${esc(side)}</b>${symbol ? `  ·  <code>${esc(String(symbol))}</code>` : ''}`);
+        if (p.address ?? p.mint) lines.push(`<code>${esc(String(p.address ?? p.mint))}</code>`);
         if (p.amount != null)  lines.push(`Amount  <b>${fmtNum(p.amount)}</b>`);
         if (p.price != null)   lines.push(`Price   <b>$${fmtNum(p.price)}</b>`);
         if (p.total != null)   lines.push(`Total   <b>$${fmtNum(p.total)}</b>`);
@@ -113,12 +114,14 @@ export class NotificationsService {
         lines.push('');
         lines.push('A trade is waiting for your approval.');
         if (p.side && p.symbol) lines.push(`${p.side === 'buy' ? '📈' : '📉'} <b>${esc(String(p.side).toUpperCase())} ${esc(String(p.symbol))}</b>`);
+        if (p.address ?? p.mint) lines.push(`<code>${esc(String(p.address ?? p.mint))}</code>`);
         if (p.amount) lines.push(`Amount: <b>${fmtNum(p.amount)}</b>`);
         break;
       }
       case 'POSITION_MONITOR':
       case 'RISK_ALERT': {
         if (p.symbol)  lines.push(`\nToken: <code>${esc(String(p.symbol))}</code>`);
+        if (p.address ?? p.mint) lines.push(`<code>${esc(String(p.address ?? p.mint))}</code>`);
         if (p.message) lines.push(`<i>${esc(String(p.message).slice(0, 300))}</i>`);
         break;
       }

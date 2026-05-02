@@ -57,9 +57,11 @@ export class IntelRescanWorker implements OnModuleInit, OnModuleDestroy {
     // of staying empty until fresh captures land. Idempotent: only fires
     // when the table is genuinely empty.
     setTimeout(() => {
-      this.snapshots.backfillFromTokenIntel().catch((e) =>
-        this.logger.warn(`backfill failed: ${e?.message}`),
-      );
+      if (this.snapshots) {
+        this.snapshots.backfillFromTokenIntel().catch((e) =>
+          this.logger.warn(`backfill failed: ${e?.message}`),
+        );
+      }
     }, 30_000);
     // First tick after 60s so boot isn't slowed; subsequent every interval.
     setTimeout(() => this.tick(), 60_000);

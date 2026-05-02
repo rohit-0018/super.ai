@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import IORedis from 'ioredis';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
+import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
 import { getProfile } from '../token-analysis/profile.config';
 import { fmtPriceUsd } from '../common/format-price';
 import type { TradingProfile } from '../token-analysis/profile.config';
@@ -13,8 +14,25 @@ import type {
   HotTokenVerdict,
 } from './hot-tokens.types';
 
-const SCAN_INTERVAL_MS = 10 * 60 * 1_000;
-const REDIS_TTL_SEC = Math.ceil((SCAN_INTERVAL_MS * 1.3) / 1_000); // 13 min — survives one missed cron
+const STREAK_THRESHOLD = parseInt(process.env.HOT_STREAK_THRESHOLD ?? '3', 10);
+// Streaks expire after the max age window so tokens auto-clear when they age out.
+const STREAK_TTL_SEC = Math.ceil(parseFloat(process.env.HOT_TOKEN_MAX_AGE_HOURS ?? '4') * 3600);
+
+interface PumpStreak {
+  address: string;
+  symbol: string;
+  priceUsd: number;
+  priceChange1h: number;
+  score: number;
+  count: number;
+  firstSeenAt: string;
+  profileKey: string;
+}
+
+const streakKey = (address: string) => `qwai:streak:${address}`;
+
+const SCAN_INTERVAL_MS = 60 * 1_000;
+const REDIS_TTL_SEC = Math.ceil((SCAN_INTERVAL_MS * 3) / 1_000); // 3 min — survives two missed ticks
 const MAX_PER_PROFILE = 12;
 const ALL_PROFILES: TradingProfile[] = [
   'meme_hunter', 'degen_sniper', 'swing_trader', 'gem_hunt', 'alpha_hunt',
@@ -64,6 +82,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly realtime: RealtimeGateway,
     private readonly tokenAnalysis: TokenAnalysisService,
+    @Optional() private readonly intelSnapshots: IntelSnapshotService,
   ) {
     this.redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
       maxRetriesPerRequest: 3,
@@ -124,7 +143,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     if (!scan || !scan.tokens.length) return 'No hot tokens currently tracked.';
     const lines = scan.tokens.slice(0, 8).map(
       (t) =>
-        `${t.symbol} (${fmtPriceUsd(t.priceUsd)}) ` +
+        `${t.symbol} [${t.address}] (${fmtPriceUsd(t.priceUsd)}) ` +
         `${t.priceChange1h >= 0 ? '+' : ''}${t.priceChange1h.toFixed(1)}% 1h · ` +
         `score ${t.score}/100 · ${t.verdict} · ${t.summary}`,
     );
@@ -192,6 +211,9 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         nextScanAt,
         scanIntervalMs: SCAN_INTERVAL_MS,
       } as AllProfilesScan);
+
+      // Streak tracking — fire-and-forget so it never blocks the scan.
+      void this.processPumpStreaks(byProfile, scannedAt);
 
       // Pre-warm full analysis for unique hot addresses so clicking any chip is instant.
       // Fire-and-forget — we don't await; a stagger avoids slamming provider rate limits.
@@ -281,20 +303,18 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
 
   private async gatherCandidates(): Promise<Map<string, Candidate>> {
     const map = new Map<string, Candidate>();
-    await Promise.allSettled([
-      this.fetchPumpFun().then((rows) => {
-        for (const r of rows) {
-          const addr = r.mint as string;
-          if (addr && !map.has(addr)) map.set(addr, { address: addr, source: 'pumpfun', pumpFunRaw: r });
-        }
-      }),
-      this.fetchDexBoosts().then((addrs) => {
-        for (const a of addrs) if (!map.has(a)) map.set(a, { address: a, source: 'dexscreener_boost' });
-      }),
-      this.fetchDexProfiles().then((addrs) => {
-        for (const a of addrs) if (!map.has(a)) map.set(a, { address: a, source: 'dexscreener_profile' });
-      }),
+    const [pf, boosts, profiles] = await Promise.all([
+      this.fetchPumpFun(),
+      this.fetchDexBoosts(),
+      this.fetchDexProfiles(),
     ]);
+    for (const r of pf) {
+      const addr = r.mint as string;
+      if (addr && !map.has(addr)) map.set(addr, { address: addr, source: 'pumpfun', pumpFunRaw: r });
+    }
+    for (const a of boosts) if (!map.has(a)) map.set(a, { address: a, source: 'dexscreener_boost' });
+    for (const a of profiles) if (!map.has(a)) map.set(a, { address: a, source: 'dexscreener_profile' });
+    this.logger.log(`Candidates: ${pf.length} pump.fun, ${boosts.length} dex-boosts, ${profiles.length} dex-profiles → ${map.size} unique`);
     return map;
   }
 
@@ -304,11 +324,18 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         `${PUMPFUN_URL}?sort=last_trade_timestamp&order=DESC&limit=25&includeNsfw=false`,
         { signal: AbortSignal.timeout(8_000), headers: { Accept: 'application/json' } },
       );
-      if (!res.ok) return [];
+      if (!res.ok) {
+        this.logger.warn(`pump.fun HTTP ${res.status}`);
+        return [];
+      }
       const data = await res.json();
-      return Array.isArray(data) ? (data as Record<string, unknown>[]).slice(0, 25) : [];
-    } catch {
-      this.logger.warn('pump.fun fetch skipped');
+      if (!Array.isArray(data)) {
+        this.logger.warn(`pump.fun unexpected shape: ${JSON.stringify(data).slice(0, 120)}`);
+        return [];
+      }
+      return (data as Record<string, unknown>[]).slice(0, 25);
+    } catch (err) {
+      this.logger.warn(`pump.fun fetch skipped: ${(err as Error).message}`);
       return [];
     }
   }
@@ -430,6 +457,8 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       if (minLiq && liquidityUsd > 0 && liquidityUsd < minLiq) continue;
       const minAge = profile.killOverrides.minAgeHours;
       if (minAge && pairAgeHours < minAge) continue;
+      const maxAge = profile.killOverrides.maxAgeHours;
+      if (maxAge != null && pairAgeHours > maxAge) continue;
 
       const { score, verdict, summary } = this.computeScore(
         { priceChange1h, priceChange5m, priceChange24h, volume24hUsd, liquidityUsd, pairAgeHours, source },
@@ -506,6 +535,81 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
 
     const summary = [...pos.slice(0, 2), ...neg.slice(0, 1)].join(' · ') || 'on watch';
     return { score: final, verdict, summary };
+  }
+
+  // ── Pump streak tracking ──────────────────────────────────────────────────
+
+  private async processPumpStreaks(
+    byProfile: Record<string, HotToken[]>,
+    scannedAt: string,
+  ): Promise<void> {
+    try {
+      // Collect best token data per address across all profiles.
+      const best = new Map<string, HotToken>();
+      for (const tokens of Object.values(byProfile)) {
+        for (const t of tokens) {
+          const prev = best.get(t.address);
+          if (!prev || t.score > prev.score) best.set(t.address, t);
+        }
+      }
+
+      const winners: PumpStreak[] = [];
+
+      for (const t of best.values()) {
+        const key = streakKey(t.address);
+        let streak: { count: number; firstSeenAt: string; notified: boolean } = {
+          count: 1, firstSeenAt: scannedAt, notified: false,
+        };
+
+        try {
+          const raw = await this.redis.get(key);
+          if (raw) {
+            const prev = JSON.parse(raw);
+            streak = { ...prev, count: (prev.count ?? 0) + 1 };
+          }
+        } catch { /* Redis miss is fine */ }
+
+        await this.redis.setex(key, STREAK_TTL_SEC, JSON.stringify(streak)).catch(() => {});
+
+        if (streak.count >= STREAK_THRESHOLD && !streak.notified) {
+          // Mark notified so we only alert once per streak run
+          streak.notified = true;
+          await this.redis.setex(key, STREAK_TTL_SEC, JSON.stringify(streak)).catch(() => {});
+
+          winners.push({
+            address: t.address,
+            symbol: t.symbol,
+            priceUsd: t.priceUsd,
+            priceChange1h: t.priceChange1h,
+            score: t.score,
+            count: streak.count,
+            firstSeenAt: streak.firstSeenAt,
+            profileKey: t.profileKey,
+          });
+
+          // Auto-capture to IntelSnapshot (minimal, no full AI report needed)
+          if (this.intelSnapshots && t.priceUsd > 0) {
+            this.intelSnapshots.captureMinimal({
+              chain: 'SOLANA',
+              address: t.address,
+              source: 'hot_tokens_scan',
+              priceUsdAtCapture: t.priceUsd,
+              marketCapUsdAtCapture: t.marketCapUsd > 0 ? t.marketCapUsd : null,
+              liquidityUsdAtCapture: t.liquidityUsd > 0 ? t.liquidityUsd : null,
+              symbol: t.symbol,
+              name: t.name,
+            }).catch((e) => this.logger.warn(`streak capture failed: ${e?.message}`));
+          }
+        }
+      }
+
+      if (winners.length > 0) {
+        this.logger.log(`Pump streaks hit threshold: ${winners.map((w) => w.symbol).join(', ')}`);
+        this.realtime.emitGlobal('pump_streak', { winners, scannedAt });
+      }
+    } catch (err) {
+      this.logger.warn(`processPumpStreaks error: ${(err as Error).message}`);
+    }
   }
 
   private chunk<T>(arr: T[], size: number): T[][] {

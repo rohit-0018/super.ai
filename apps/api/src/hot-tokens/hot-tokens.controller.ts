@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Post, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { HotTokensService } from './hot-tokens.service';
 
@@ -18,6 +18,13 @@ export class HotTokensController {
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Get('all')
   getAllProfiles() {
-    return this.svc.getAllLatest() ?? { byProfile: {}, scannedAt: null, nextScanAt: null, scanIntervalMs: 600_000 };
+    return this.svc.getAllLatest() ?? { byProfile: {}, scannedAt: null, nextScanAt: null, scanIntervalMs: 60_000 };
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('scan')
+  async triggerScan() {
+    void this.svc.scan();
+    return { triggered: true, ts: new Date().toISOString() };
   }
 }

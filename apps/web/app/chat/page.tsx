@@ -2,7 +2,7 @@ import ChatPanel from '../../components/ChatPanel';
 
 export default function ChatPage() {
   return (
-    <div className="page page-narrow" style={{ paddingTop: 12, paddingBottom: 12 }}>
+    <div className="page-fill" style={{ maxWidth: 720, margin: '0 auto', width: '100%', padding: '12px 16px' }}>
       <ChatPanel />
     </div>
   );

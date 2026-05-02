@@ -130,6 +130,22 @@ interface HistoryEntry {
   profile?: string;
 }
 
+/* ─── Copy-CA chip ───────────────────────────────────────────────────────── */
+function IntelCopyCA({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const short = `${address.slice(0, 6)}…${address.slice(-4)}`;
+  return (
+    <span
+      title={address}
+      onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(address).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); }); }}
+      className="chip"
+      style={{ fontFamily: 'var(--font-mono)', fontSize: 11, cursor: 'pointer', color: copied ? 'var(--ok)' : 'var(--text-3)', userSelect: 'none' }}
+    >
+      {copied ? '✓ copied' : short}
+    </span>
+  );
+}
+
 /* ─── Profile definitions (client-side mirror) ───────────────────────────── */
 const PROFILES: Record<TradingProfile, { label: string; tagline: string; color: string; icon: string }> = {
   meme_hunter:  { label: 'Meme Hunter',  tagline: 'Fresh launches · pump.fun · 2–10x in hours',    color: '#f59e0b', icon: '🎯' },
@@ -390,6 +406,7 @@ function TokenHeader({ report, onReanalyze, busy, profile }: { report: Report; o
           {meta.symbol ?? meta.address.slice(0,8)}
         </span>
         {meta.name && meta.name !== meta.symbol && <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-3)' }}>{meta.name}</span>}
+        <IntelCopyCA address={meta.address} />
         <span className="chip" style={{ fontSize: 11, fontWeight: 700 }}>{meta.chain}</span>
         {meta.dex && <span className="chip chip-accent" style={{ fontSize: 11, fontWeight: 700 }}>{meta.dex}</span>}
         {meta.pairAgeHours != null && <span className="chip" style={{ fontSize: 11 }}>⏰ {fmtAge(meta.pairAgeHours)}</span>}

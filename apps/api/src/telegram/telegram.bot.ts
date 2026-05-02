@@ -102,7 +102,7 @@ export class TelegramBot {
       const svc = this.getHotTokens();
       if (svc) {
         const tokens = svc.getHotTokensForAgent('meme_hunter');
-        if (tokens) hotContext = `\n\n<b>Live hot tokens right now:</b>\n${tokens}`;
+        if (tokens) hotContext = `\n\nLIVE HOT TOKENS RIGHT NOW (use this data when the user asks about hot or trending tokens — format your reply with HTML tags):\n${tokens}`;
       }
     } catch { /* */ }
 
@@ -570,7 +570,8 @@ export class TelegramBot {
       const vol     = fmtUsd(t.volume24hUsd);
 
       lines.push(`${i + 1}. ${icon} <b>${esc(t.symbol)}</b>  ·  ${esc(price)}`);
-      lines.push(`   <code>${t.address.slice(0, 8)}…${t.address.slice(-4)}</code>  ·  Score <b>${t.score}/100</b>`);
+      lines.push(`   <code>${t.address}</code>`);
+      lines.push(`   Score <b>${t.score}/100</b>  ·  ${t.verdict}`);
       lines.push(`   ${ch1h} 1h  ·  ${ch24h} 24h  ·  MCap ${mcap}  ·  Vol ${vol}`);
       if (t.summary) lines.push(`   <i>${esc(t.summary.slice(0, 80))}</i>`);
       lines.push('');

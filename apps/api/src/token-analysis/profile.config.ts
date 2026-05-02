@@ -18,6 +18,7 @@ export interface ProfileWeights {
 export interface ProfileKillOverrides {
   minLiquidityUsd?: number;
   minAgeHours?: number;
+  maxAgeHours?: number;
   maxBundledSupplyPct?: number;
   maxRugScore?: number;
 }
@@ -49,7 +50,7 @@ export const PROFILES: Record<TradingProfile, ProfileDefinition> = {
     tagline: 'Fresh launches · pump.fun · 2–10x in hours',
     color: '#f59e0b',
     weights: { safety: 25, distribution: 32, market: 25, social: 13, macro: 5 },
-    killOverrides: { minLiquidityUsd: 8_000, maxBundledSupplyPct: 25, maxRugScore: 75 },
+    killOverrides: { minLiquidityUsd: 8_000, maxBundledSupplyPct: 25, maxRugScore: 75, maxAgeHours: parseFloat(process.env.HOT_TOKEN_MAX_AGE_HOURS ?? '4') },
     strategy: {
       holdRange: '30min – 4hr',
       stopLossPct: 20,
@@ -72,7 +73,7 @@ activity) matters more here than for other profiles.`,
     tagline: 'Bonding curve · ultra-early · sub-30min holds',
     color: '#ef4444',
     weights: { safety: 18, distribution: 28, market: 32, social: 12, macro: 10 },
-    killOverrides: { minLiquidityUsd: 3_000, maxBundledSupplyPct: 15, maxRugScore: 65 },
+    killOverrides: { minLiquidityUsd: 3_000, maxBundledSupplyPct: 15, maxRugScore: 65, maxAgeHours: parseFloat(process.env.HOT_TOKEN_MAX_AGE_HOURS ?? '4') },
     strategy: {
       holdRange: '5min – 30min',
       stopLossPct: 25,
