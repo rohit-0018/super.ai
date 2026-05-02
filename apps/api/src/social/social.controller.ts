@@ -18,7 +18,22 @@ class ReferralDto { @IsString() code!: string; }
 export class SocialController {
   constructor(private svc: SocialService) {}
 
+  @UseGuards(JwtAuthGuard)
   @Get('leaderboard') leaderboard() { return this.svc.leaderboard(); }
+
+  /** Read your own opt-in status + handle (auth required). */
+  @UseGuards(JwtAuthGuard)
+  @Get('leaderboard/me')
+  myLeaderboard(@Req() req: any) {
+    return this.svc.getLeaderboardOptIn(req.user.userId);
+  }
+
+  /** Toggle leaderboard appearance. POST { optIn: boolean }. */
+  @UseGuards(JwtAuthGuard)
+  @Post('leaderboard/opt-in')
+  toggleLeaderboard(@Req() req: any, @Body() body: { optIn: boolean }) {
+    return this.svc.setLeaderboardOptIn(req.user.userId, !!body?.optIn);
+  }
 
   @UseGuards(JwtAuthGuard)
   @Post('copy/:wallet')

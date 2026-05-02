@@ -1,9 +1,9 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Stat } from '../../components/ui/Stat';
 import { ShortcutTile } from '../../components/ShortcutTile';
 import { InsightCard } from '../../components/InsightCard';
-import { useApi } from '../../lib/useApi';
+import { useApi, invalidate } from '../../lib/useApi';
 import { matchesCategory, type InsightCategory, type TradeInsight, type RiskInsight, type Insight } from '../../lib/insights-mock';
 
 /* ── API response shapes ── */
@@ -55,6 +55,13 @@ const CATEGORIES: { key: InsightCategory; label: string }[] = [
   { key: 'alerts',   label: 'Alerts' },
 ];
 
+const DASHBOARD_KEYS = [
+  '/analytics/performance',
+  '/analytics/replay',
+  '/alerts?limit=20',
+  '/agents',
+] as const;
+
 export default function Dashboard() {
   const [cat, setCat] = useState<InsightCategory>('all');
 
@@ -62,6 +69,27 @@ export default function Dashboard() {
   const { data: trades } = useApi<TradeRow[]>('/analytics/replay');
   const { data: alerts } = useApi<AlertRow[]>('/alerts?limit=20');
   const { data: agents } = useApi<AgentRow[]>('/agents');
+
+  // Refresh control + 5-min auto-refresh. Dashboard data drifts fast (alerts,
+  // trades, P&L), so the floor here is tighter than portfolio's 1h.
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshAt, setLastRefreshAt] = useState<number>(Date.now());
+  const refresh = async () => {
+    setRefreshing(true);
+    DASHBOARD_KEYS.forEach((k) => invalidate(k));
+    await new Promise((r) => setTimeout(r, 500));
+    setLastRefreshAt(Date.now());
+    setRefreshing(false);
+  };
+  useEffect(() => {
+    const id = setInterval(() => {
+      DASHBOARD_KEYS.forEach((k) => invalidate(k));
+      setLastRefreshAt(Date.now());
+    }, 5 * 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const minutes = Math.floor((Date.now() - lastRefreshAt) / 60_000);
+  const lastLabel = minutes < 1 ? 'just now' : `${minutes}m ago`;
 
   const runningCount = useMemo(
     () => agents?.filter((a) => a.status === 'RUNNING').length ?? 0,
@@ -119,7 +147,13 @@ export default function Dashboard() {
 
   return (
     <div className="page space-y-4 md:space-y-5">
-      <PortfolioStrip perf={perf} runningAgents={runningCount} />
+      <PortfolioStrip
+        perf={perf}
+        runningAgents={runningCount}
+        onRefresh={refresh}
+        refreshing={refreshing}
+        lastLabel={lastLabel}
+      />
       <ShortcutGrid runningAgents={runningCount} />
 
       <section className="section">
@@ -163,7 +197,19 @@ export default function Dashboard() {
 
 /* ---------- Portfolio strip ---------- */
 
-function PortfolioStrip({ perf, runningAgents }: { perf: PerfData | undefined; runningAgents: number }) {
+function PortfolioStrip({
+  perf,
+  runningAgents,
+  onRefresh,
+  refreshing,
+  lastLabel,
+}: {
+  perf: PerfData | undefined;
+  runningAgents: number;
+  onRefresh: () => void;
+  refreshing: boolean;
+  lastLabel: string;
+}) {
   const loading = perf === undefined;
   const pnl     = loading ? '—' : fmtUsd(perf.totalPnl);
   const pnlTone = !loading && perf.totalPnl < 0 ? 'down' : 'up';
@@ -180,7 +226,18 @@ function PortfolioStrip({ perf, runningAgents }: { perf: PerfData | undefined; r
             What your agent has been doing for you
           </span>
         </div>
-        <div className="section-actions">
+        <div className="section-actions" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>Updated {lastLabel}</span>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="btn btn-sm"
+            style={{ fontSize: 11, padding: '4px 10px', opacity: refreshing ? 0.6 : 1 }}
+            title="Re-fetch latest dashboard data"
+          >
+            {refreshing ? '⟳ refreshing…' : '↻ Refresh'}
+          </button>
           <span className="chip"><span className="live-dot" /> live</span>
         </div>
       </header>

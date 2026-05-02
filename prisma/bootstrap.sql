@@ -32,6 +32,14 @@ CREATE INDEX        IF NOT EXISTS "ProviderConfig_dataGroup_priority_idx" ON "Pr
 -- ── SnipeTrade missing columns ───────────────────────────────────────────────
 ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "sellAttempts" INTEGER NOT NULL DEFAULT 0;
 
+-- ── User leaderboard privacy controls ────────────────────────────────────────
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "leaderboardOptIn"  BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "leaderboardHandle" TEXT;
+DO $$ BEGIN
+  CREATE UNIQUE INDEX "User_leaderboardHandle_key" ON "User"("leaderboardHandle");
+EXCEPTION WHEN duplicate_table THEN NULL;
+END; $$;
+
 -- ── TokenIntel intelligence-layer columns ────────────────────────────────────
 ALTER TABLE "TokenIntel" ADD COLUMN IF NOT EXISTS "aiScore"        INTEGER;
 ALTER TABLE "TokenIntel" ADD COLUMN IF NOT EXISTS "aiVerdict"      TEXT;

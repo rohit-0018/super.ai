@@ -159,6 +159,11 @@ model User {
   emotionalState    Json?
   notificationPrefs Json?
   paperMode         Boolean @default(false)
+  // Public leaderboard privacy controls. Default OFF — users must explicitly
+  // opt in. The handle is generated once per user and stored stably so the
+  // public surface never reveals the cuid even by prefix.
+  leaderboardOptIn  Boolean @default(false)
+  leaderboardHandle String? @unique
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
