@@ -1,5 +1,6 @@
 'use client';
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import TradingViewChart from '../../components/TradingViewChart';
 import SwapForm from '../../components/SwapForm';
 import RiskMeter from '../../components/RiskMeter';
@@ -69,6 +70,30 @@ export default function TradePage() {
   const { data: feed, loading } = useApi<FeedItem[]>('/trades/feed');
   const [filter, setFilter] = useState<'all' | FeedKind>('all');
   const [refreshing, setRefreshing] = useState(false);
+  const router = useRouter();
+
+  // Build a context-rich prompt for the AI agent based on this trade's
+  // direction, kind, and on-chain context, then deep-link into the chat.
+  // The chat panel reads ?prefill= on mount, hydrates the textarea, focuses,
+  // and strips the param from the URL.
+  const askAi = (r: FeedItem) => {
+    const tokenLabel = r.mint ? shortMint(r.mint) : (r.side === 'sell' ? r.tokenIn : r.tokenOut) ?? 'this token';
+    const mintHint = r.mint ? ` (mint ${r.mint})` : '';
+    const when = relTime(r.createdAt);
+    const priceHint = r.priceUsd != null ? ` at ${fmtUsd(r.priceUsd)}` : '';
+    const pnlHint = r.pnlUsd != null ? ` Realized P&L on this trade: ${r.pnlUsd >= 0 ? '+' : ''}${fmtUsd(r.pnlUsd)}.` : '';
+    const kindLabel =
+      r.kind === 'agent' ? 'an agent-driven trade'
+      : r.kind === 'snipe' ? 'a Telegram-group snipe'
+      : r.kind === 'snipe_sell' ? 'an auto-sell exit from a snipe'
+      : 'a manual trade';
+
+    const action = r.side === 'buy'
+      ? `I bought ${tokenLabel}${mintHint}${priceHint} ${when} via ${kindLabel}.${pnlHint} Should I hold, add more, or sell now? Run a fresh deep scan and give me a clear recommendation with reasoning, citing current safety, distribution, market quality, and narrative.`
+      : `I sold ${tokenLabel}${mintHint}${priceHint} ${when} via ${kindLabel}.${pnlHint} Was this exit good given the current state? Run a fresh scan and tell me whether the price action since exit confirms the decision or whether I should reconsider re-entering.`;
+
+    router.push(`/chat?prefill=${encodeURIComponent(action)}`);
+  };
 
   const filtered = useMemo(() => {
     if (!Array.isArray(feed)) return [];
@@ -187,6 +212,7 @@ export default function TradePage() {
                   <th>Status</th>
                   <th>When</th>
                   <th>Tx</th>
+                  <th>Ask AI</th>
                 </tr>
               </thead>
               <tbody>
@@ -228,6 +254,25 @@ export default function TradePage() {
                       </td>
                       <td className="text-[11px]" style={{ color: 'var(--text-3)' }}>{relTime(r.createdAt)}</td>
                       <td>{txUrl ? <a href={txUrl} target="_blank" rel="noopener" className="text-[11px]" style={{ color: 'var(--accent)' }}>view ↗</a> : <span style={{ color: 'var(--text-3)', fontSize: 11 }}>—</span>}</td>
+                      <td>
+                        <button
+                          type="button"
+                          onClick={() => askAi(r)}
+                          className="btn btn-ghost"
+                          disabled={!r.mint}
+                          style={{
+                            fontSize: 11,
+                            padding: '4px 10px',
+                            opacity: r.mint ? 1 : 0.4,
+                            cursor: r.mint ? 'pointer' : 'not-allowed',
+                          }}
+                          title={r.mint
+                            ? `Ask AI for a fresh take on this ${r.side}`
+                            : 'No mint address on this row'}
+                        >
+                          🤖 Ask
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
