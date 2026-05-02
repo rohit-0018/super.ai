@@ -163,7 +163,7 @@ const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }
   { href: '/snipe',     label: 'Sniper',    icon: IconSnipe },
   { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
   { href: '/intel',     label: 'Intel',     icon: IconScan },
-  { href: '/intel-track', label: 'Track',   icon: IconScan },
+  { href: '/intel-track', label: 'Track',   icon: IconTrophy },
   { href: '/wallets',   label: 'Wallets',   icon: IconWallet },
   { href: '/chat',      label: 'Chat',      icon: IconChat },
   { href: '/analytics', label: 'Analytics', icon: IconAnalytics },
@@ -469,17 +469,25 @@ export function QwaiMark({ size = 26 }: { size?: number }) {
   );
 }
 
+/**
+ * Solid-filled icon system. Tabler/Heroicons-solid weight — no thin strokes,
+ * no border-only outlines. Each glyph is a single filled path (or composition)
+ * using fill="currentColor" so the rail's active state colours flow through.
+ *
+ * Why filled over outline: a high-density rail of 14 icons with thin strokes
+ * reads as visual noise; filled glyphs are unambiguously legible at 18px and
+ * look intentional next to the loud accent active-state pill.
+ */
 function Svg({ children, size = 18 }: { children: ReactNode; size?: number }) {
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      fill="currentColor"
+      stroke="none"
+      aria-hidden="true"
+      focusable="false"
     >
       {children}
     </svg>
@@ -489,130 +497,117 @@ function Svg({ children, size = 18 }: { children: ReactNode; size?: number }) {
 function IconDashboard({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <rect x="3" y="3" width="7" height="9" rx="1.5" />
-      <rect x="14" y="3" width="7" height="5" rx="1.5" />
-      <rect x="14" y="12" width="7" height="9" rx="1.5" />
-      <rect x="3" y="16" width="7" height="5" rx="1.5" />
+      <path d="M3 3h7v9H3z" />
+      <path d="M14 3h7v5h-7z" />
+      <path d="M14 12h7v9h-7z" />
+      <path d="M3 16h7v5H3z" />
     </Svg>
   );
 }
 function IconWallet({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <rect x="3" y="6" width="18" height="13" rx="2" />
-      <path d="M16 12h3" />
-      <path d="M3 10h18" />
+      <path d="M3 6a2 2 0 0 1 2-2h13a1 1 0 0 1 1 1v2H5a1 1 0 0 0 0 2h15a1 1 0 0 1 1 1v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6zm14 8a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z" />
     </Svg>
   );
 }
 function IconChat({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <path d="M21 12a8 8 0 0 1-11.3 7.3L4 21l1.7-5.7A8 8 0 1 1 21 12z" />
+      <path d="M3 11.5C3 6.8 7 3 12 3s9 3.8 9 8.5-4 8.5-9 8.5c-1 0-2-.2-3-.5L4.7 21a.5.5 0 0 1-.7-.6l1-3.6c-1.3-1.5-2-3.3-2-5.3z" />
     </Svg>
   );
 }
 function IconAnalytics({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <path d="M3 20h18" />
-      <path d="M6 16V9" />
-      <path d="M11 16V5" />
-      <path d="M16 16v-4" />
-      <path d="M21 16V8" />
+      <path d="M3 20a1 1 0 0 1 1-1h17a1 1 0 0 1 0 2H4a1 1 0 0 1-1-1z" />
+      <path d="M5 9h2v8H5zm5-5h2v13h-2zm5 6h2v7h-2zm5-3h2v10h-2z" />
     </Svg>
   );
 }
 function IconSocial({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <circle cx="9" cy="7" r="3" />
+      <circle cx="8.5" cy="7" r="3" />
       <circle cx="17" cy="17" r="3" />
-      <path d="M6 14c-1.7 0-3 1.3-3 3v3h8" />
-      <path d="M14 6c1.7 0 3 1.3 3 3v3" />
+      <path d="M3 19c0-3 2.5-5 5.5-5h.5l5 5H3.5a.5.5 0 0 1-.5-.5V19zm10.5-9h.5l5 5h-.5C15.5 15 13 13 13 10z" />
     </Svg>
   );
 }
 function IconSettings({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h0a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+      <path d="M19.5 12c0-.5 0-.9-.1-1.4l2-1.5-2-3.5-2.4.8c-.7-.6-1.5-1-2.4-1.4L14 2.5h-4l-.6 2.5c-.9.4-1.7.8-2.4 1.4l-2.4-.8-2 3.5 2 1.5c-.1.5-.1.9-.1 1.4s0 .9.1 1.4l-2 1.5 2 3.5 2.4-.8c.7.6 1.5 1 2.4 1.4l.6 2.5h4l.6-2.5c.9-.4 1.7-.8 2.4-1.4l2.4.8 2-3.5-2-1.5c.1-.5.1-.9.1-1.4zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8z" />
     </Svg>
   );
 }
 function IconDesign({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 3v9l6 3" />
+      <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 11h6v-2h-6V5h-2v8h8z" opacity="0" />
+      <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm5 11h-6V6h2v5h4z" />
     </Svg>
   );
 }
 function IconSearch({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
+      <path d="M11 4a7 7 0 1 0 4.4 12.4l3.4 3.4a1 1 0 0 0 1.4-1.4l-3.4-3.4A7 7 0 0 0 11 4zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10z" />
     </Svg>
   );
 }
 function IconTrade({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <path d="M3 17l6-6 4 4 8-8" />
-      <path d="M21 7h-5" />
-      <path d="M21 7v5" />
+      <path d="M21 7a1 1 0 0 0-1-1h-5a1 1 0 0 0 0 2h2.6l-5.6 5.6-3.3-3.3a1 1 0 0 0-1.4 0l-6 6a1 1 0 0 0 1.4 1.4L8 12.4l3.3 3.3a1 1 0 0 0 1.4 0L19 9.4V12a1 1 0 0 0 2 0z" />
     </Svg>
   );
 }
 function IconSnipe({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+      <path d="M13 2 3.4 13.5a.5.5 0 0 0 .4.8H11l-1 7.4a.5.5 0 0 0 .9.3l9.7-11.5a.5.5 0 0 0-.4-.8H14l1-7.4a.5.5 0 0 0-.9-.3z" />
     </Svg>
   );
 }
 function IconAgents({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <circle cx="12" cy="8" r="3" />
-      <path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6" />
-      <path d="M12 2v2" />
-      <path d="M4 8h2" />
-      <path d="M18 8h2" />
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M12 13c-3.9 0-7 2.5-7 6 0 .6.4 1 1 1h12c.6 0 1-.4 1-1 0-3.5-3.1-6-7-6z" />
+      <path d="M11 2h2v2.5h-2zM3.5 7.5h2.5v2H3.5zM18 7.5h2.5v2H18z" />
     </Svg>
   );
 }
 function IconGem({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <path d="M6 3h12l3 6-9 12L3 9z" />
-      <path d="M3 9h18" />
+      <path d="M6 3h12l3 6-9 12L3 9zm0 6h12L12 16z" />
     </Svg>
   );
 }
 function IconScan({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <path d="M3 7V5a2 2 0 0 1 2-2h2" />
-      <path d="M17 3h2a2 2 0 0 1 2 2v2" />
-      <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
-      <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 5v2" />
-      <path d="M12 17v2" />
-      <path d="M5 12h2" />
-      <path d="M17 12h2" />
+      <path d="M5 3h3a1 1 0 0 1 0 2H5v3a1 1 0 0 1-2 0V5a2 2 0 0 1 2-2zm14 0a2 2 0 0 1 2 2v3a1 1 0 0 1-2 0V5h-3a1 1 0 0 1 0-2zM4 15a1 1 0 0 1 1 1v3h3a1 1 0 0 1 0 2H5a2 2 0 0 1-2-2v-3a1 1 0 0 1 1-1zm16 0a1 1 0 0 1 1 1v3a2 2 0 0 1-2 2h-3a1 1 0 0 1 0-2h3v-3a1 1 0 0 1 1-1z" />
+      <circle cx="12" cy="12" r="3.5" />
+    </Svg>
+  );
+}
+function IconTrophy({ size }: { size?: number }) {
+  return (
+    <Svg size={size}>
+      <path d="M7 4h10v2h3a1 1 0 0 1 1 1v2a4 4 0 0 1-4 4 6 6 0 0 1-4 3v2h3a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1v-1a1 1 0 0 1 1-1h3v-2a6 6 0 0 1-4-3 4 4 0 0 1-4-4V7a1 1 0 0 1 1-1h3V4zm0 4H5v1a2 2 0 0 0 2 2zm10 3a2 2 0 0 0 2-2V8h-2z" />
     </Svg>
   );
 }
 function IconPortfolio({ size }: { size?: number }) {
   return (
     <Svg size={size}>
-      <rect x="3" y="14" width="4" height="7" rx="1" />
-      <rect x="10" y="9" width="4" height="12" rx="1" />
-      <rect x="17" y="3" width="4" height="18" rx="1" />
+      <rect x="3" y="13" width="5" height="8" rx="1" />
+      <rect x="9.5" y="8" width="5" height="13" rx="1" />
+      <rect x="16" y="3" width="5" height="18" rx="1" />
     </Svg>
   );
 }
