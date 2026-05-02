@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { LlmService } from '../ai-agent/llm.service';
 import type {
   AiReasoning,
@@ -191,8 +191,13 @@ export class AiReasoner {
   private readonly logger = new Logger(AiReasoner.name);
   private readonly cache = new Map<string, { result: AiReasoning; ts: number }>();
 
-  constructor(private readonly llm: LlmService) {
-    if (!llm.isConfigured) {
+  // Explicit @Inject(LlmService) — without it, reflect-metadata can hand
+  // Nest `undefined` if module load order has ai-reasoner.ts evaluating
+  // before llm.service.ts is fully exported. The crash signature is
+  // "Cannot read properties of undefined (reading 'isConfigured')" right
+  // here in the constructor.
+  constructor(@Inject(LlmService) private readonly llm: LlmService) {
+    if (!llm || !llm.isConfigured) {
       this.logger.warn('No LLM provider configured — AI reasoning disabled. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.');
     } else {
       this.logger.log(`AI reasoning active via ${llm.activeProvider}`);
