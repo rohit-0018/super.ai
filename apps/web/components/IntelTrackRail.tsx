@@ -43,7 +43,7 @@ export function IntelTrackRail() {
       {items.map((it) => (
         <Link
           key={it.id}
-          href={`/intel-track/${it.id}`}
+          href={`/intel-track/detail?id=${it.id}`}
           style={{
             textDecoration: 'none', color: 'inherit',
             border: '1px solid var(--border)',

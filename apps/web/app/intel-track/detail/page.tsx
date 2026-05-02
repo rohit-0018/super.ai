@@ -1,6 +1,6 @@
 'use client';
-import { useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useApi } from '../../../lib/useApi';
 import { Skeleton } from '../../../components/ui/Skeleton';
@@ -54,12 +54,22 @@ function relTime(iso: string): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
-export default function IntelTrackDetailPage() {
-  const params = useParams();
+function IntelTrackDetailInner() {
+  const searchParams = useSearchParams();
   const router = useRouter();
-  const id = String(params?.id ?? '');
-  const { data, loading } = useApi<Detail>(`/intel-track/${id}`);
+  const id = searchParams?.get('id') ?? '';
+  const { data, loading } = useApi<Detail>(id ? `/intel-track/${id}` : '', { enabled: !!id });
   const [stake, setStake] = useState<number>(1000);
+
+  if (!id) {
+    return (
+      <div className="page">
+        <p className="text-[14px]" style={{ color: 'var(--text-2)' }}>
+          Missing snapshot id. <Link href="/intel-track" style={{ color: 'var(--accent)' }}>Back to track record</Link>.
+        </p>
+      </div>
+    );
+  }
 
   if (loading || !data) {
     return (
@@ -219,6 +229,22 @@ export default function IntelTrackDetailPage() {
         </a>
       </div>
     </div>
+  );
+}
+
+export default function IntelTrackDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="page space-y-4">
+          <Skeleton h={28} w={200} />
+          <Skeleton h={120} rounded="md" />
+          <Skeleton h={200} rounded="md" />
+        </div>
+      }
+    >
+      <IntelTrackDetailInner />
+    </Suspense>
   );
 }
 

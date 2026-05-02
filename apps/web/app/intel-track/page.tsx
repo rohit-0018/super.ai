@@ -241,7 +241,7 @@ function Card({ s }: { s: Snapshot }) {
   const tone = STATUS_TONE[s.status];
   return (
     <Link
-      href={`/intel-track/${s.id}`}
+      href={`/intel-track/detail?id=${s.id}`}
       style={{
         textDecoration: 'none', color: 'inherit',
         border: '1px solid var(--border)', borderRadius: 10,
