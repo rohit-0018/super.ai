@@ -70,11 +70,16 @@ function relTime(iso: string): string {
 export default function IntelTrackPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | Status>('all');
   const [sourceFilter, setSourceFilter] = useState<'all' | Source>('all');
+  const [showFresh, setShowFresh] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const queryStatus = statusFilter === 'all' ? 'active,graduated' : statusFilter;
   const querySource = sourceFilter === 'all' ? '' : `&source=${sourceFilter}`;
-  const path = `/intel-track?status=${queryStatus}${querySource}&take=120&sort=pumpedHigh`;
+  // Hide entries that haven't moved at all yet — a capture from 1m ago with
+  // no peak delta is noise, not a track record. Users can toggle "Show fresh"
+  // to see them while they warm up.
+  const minDelta = showFresh ? '' : '&minDelta=5';
+  const path = `/intel-track?status=${queryStatus}${querySource}${minDelta}&take=120&sort=pumpedHigh`;
 
   const { data: rows, loading } = useApi<Snapshot[]>(path);
   const { data: stats } = useApi<Stats>('/intel-track/stats');
@@ -141,6 +146,21 @@ export default function IntelTrackPage() {
           value={sourceFilter}
           onChange={(v) => setSourceFilter(v as any)}
         />
+        <label style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          fontSize: 11, color: 'var(--text-2)', cursor: 'pointer',
+          padding: '4px 10px', borderRadius: 999,
+          background: showFresh ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'var(--surface-2)',
+          border: `1px solid ${showFresh ? 'var(--accent)' : 'var(--border)'}`,
+        }}>
+          <input
+            type="checkbox"
+            checked={showFresh}
+            onChange={(e) => setShowFresh(e.target.checked)}
+            style={{ accentColor: 'var(--accent)', margin: 0 }}
+          />
+          Show fresh (no peak yet)
+        </label>
       </div>
 
       {loading ? (
@@ -148,8 +168,16 @@ export default function IntelTrackPage() {
           {[...Array(8)].map((_, i) => <Skeleton key={i} h={200} rounded="md" />)}
         </div>
       ) : items.length === 0 ? (
-        <div className="panel" style={{ padding: 32, textAlign: 'center' }}>
-          <p className="text-[14px]" style={{ color: 'var(--text-2)' }}>No track-record entries match these filters.</p>
+        <div className="panel" style={{ padding: '32px 24px', textAlign: 'center' }}>
+          <div style={{ fontSize: 32, marginBottom: 10, opacity: 0.4 }}>📭</div>
+          <p className="text-[14px] font-semibold" style={{ color: 'var(--text-2)' }}>
+            {showFresh ? 'No track-record entries yet.' : 'Nothing meaningful to show yet.'}
+          </p>
+          <p className="text-[12px] mt-2" style={{ color: 'var(--text-3)', maxWidth: 480, margin: '8px auto 0' }}>
+            {showFresh
+              ? 'Captures appear here as the bot scans tokens. Peak deltas develop over hours, not minutes.'
+              : 'Recent captures haven\'t moved enough yet to be marketing-grade. Toggle "Show fresh" above to view warming-up entries.'}
+          </p>
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>

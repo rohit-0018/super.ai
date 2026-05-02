@@ -362,17 +362,28 @@ export class IntelSnapshotService {
     sparkline: number[];
     status: string;
   }>> {
+    // Pull a wider set than `limit` and post-filter for ≥5% peak delta —
+    // entries that haven't moved are noise, not track record. Returning
+    // them on the sidebar rail makes the marketing surface look sad.
     const rows = await this.prisma.intelSnapshot.findMany({
       where: { status: { in: ['active', 'graduated'] } },
       orderBy: { pumpedHigh: 'desc' },
-      take: limit,
+      take: Math.max(limit * 5, 20),
       select: {
         id: true, chain: true, address: true, symbol: true,
         capturedAt: true, marketCapUsdAtCapture: true,
         pumpedHigh: true, currentMcapUsd: true, sparkline: true, status: true,
       },
     });
-    return rows.map((r) => {
+    const filtered: typeof rows = [];
+    for (const r of rows) {
+      const base = r.marketCapUsdAtCapture;
+      const peak = r.pumpedHigh;
+      const deltaPct = base && peak && base > 0 ? ((peak - base) / base) * 100 : 0;
+      if (deltaPct >= 5) filtered.push(r);
+      if (filtered.length >= limit) break;
+    }
+    return filtered.map((r) => {
       const base = r.marketCapUsdAtCapture;
       const peak = r.pumpedHigh;
       const deltaPct = base && peak && base > 0 ? ((peak - base) / base) * 100 : null;
