@@ -19,7 +19,7 @@ function TelegramLinkInner() {
   // right bot regardless of which token is configured on the API.
   useEffect(() => {
     api.get<{ username: string | null }>('/telegram/me')
-      .then((res) => setBotUsername(res?.username ?? null))
+      .then((res) => setBotUsername(res?.data?.username ?? null))
       .catch(() => setBotUsername(null));
   }, []);
 
