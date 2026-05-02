@@ -80,6 +80,17 @@ Single schema for the whole app; enums include `Chain`, `OrderType`, `OrderStatu
 
 Render Blueprint (`render.yaml`): managed Postgres + managed Redis + one Node web service (`qwai-api`) + one static site (`qwai-web`). Everything is free-plan, so there's **no `preDeployCommand`** — migrations run at startup instead.
 
+### Deploying from Claude Code
+
+`scripts/deploy.sh` wraps the Render API so deploys can be triggered without leaving the terminal. **Always ask the user before triggering** — the script shows which service(s) you're about to deploy. Workflow:
+
+1. Inspect the diff to figure out scope: backend (`apps/api/**`, `prisma/**`, `scripts/render-*.sh`, `render.yaml`) → `api`; frontend (`apps/web/**`) → `web`; both if both touched.
+2. Tell the user what you'd deploy and why ("touched apps/api/src/telegram/* — deploy api?").
+3. On approval, run `./scripts/deploy.sh trigger <api|web|both>` and capture the deploy ID.
+4. Run `./scripts/deploy.sh watch <deployId>` to follow the build → live transition; report the terminal status.
+
+Setup is one-time: user creates a Render API key (Dashboard → Account → API Keys), exports `RENDER_API_KEY` (or adds to `.env`), then runs `./scripts/deploy.sh init` to auto-discover service IDs into `.render.json` (gitignored). Other commands: `list`, `status [api|web]` for read-only queries — safe to run without approval.
+
 - `scripts/render-build.sh` — installs pnpm user-local (corepack can't write to `/usr/bin` on Render), forces `NODE_ENV=development` so devDeps install, validates + generates Prisma, builds `@super-ai/security`, then `@qwai/api`. Falls back to `--no-frozen-lockfile` if the lockfile drifts.
 - `scripts/render-start.sh` — runs `prisma migrate deploy`, then a **drift check** (`prisma migrate diff --exit-code`) that fails the boot if `schema.prisma` declares fields not covered by any migration. Optionally seeds if `SEED_DB_ON_DEPLOY=true`. Then execs `node apps/api/dist/main.js`.
 

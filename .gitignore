@@ -22,3 +22,6 @@ docs
 .gstack
 test-results
 data/
+
+# Render deploy helper — local service-ID map (no secrets, but per-contributor)
+.render.json
