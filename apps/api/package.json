@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nest start --watch --preserveWatchOutput",
     "dev:worker": "QWAI_ROLE=worker tsx watch src/worker.ts",
+    "prebuild": "prisma generate --schema=../../prisma/schema.prisma",
     "build": "nest build",
     "start": "node dist/main.js",
     "worker": "node dist/worker.js",

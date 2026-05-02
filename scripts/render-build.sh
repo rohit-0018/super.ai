@@ -32,6 +32,9 @@ echo "▶ prisma validate (fail fast on syntax errors)"
 NODE_ENV=development pnpm prisma validate --schema=./prisma/schema.prisma
 
 echo "▶ prisma generate"
+# Belt: writes to root node_modules/.prisma/client. Suspenders: apps/api's
+# prebuild script also runs prisma generate so any stale state inside the
+# package gets refreshed before nest build tsc-compiles imports.
 NODE_ENV=development pnpm prisma generate --schema=./prisma/schema.prisma
 
 echo "▶ build @super-ai/security"
