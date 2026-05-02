@@ -178,6 +178,26 @@ services:
       - key: HOT_TOKENS_FAST_SCAN
         value: "false"
 
+      # ── Intel Track Record ───────────────────────────────────────
+      # Controls the periodic re-scan of every captured token. Lower
+      # interval = fresher data + more DexScreener calls. Default 10min
+      # is fine for free plan (~1k calls/day, well under any limit).
+      - key: INTEL_RESCAN_INTERVAL_SEC
+        value: "600"
+      - key: INTEL_RESCAN_BATCH_SIZE
+        value: "60"
+      - key: INTEL_RESCAN_MAX_AGE_DAYS
+        value: "30"
+      # When true, retired/rugged snapshots older than MAX_AGE_DAYS are
+      # hard-deleted on every tick. Graduated trophies (10x+) are NEVER
+      # auto-purged regardless of this flag.
+      - key: INTEL_TRACK_AUTO_PURGE
+        value: "false"
+      # Minimum AI score to capture a snapshot (snipes + kill-triggers
+      # always captured regardless of this floor).
+      - key: INTEL_TRACK_CAPTURE_MIN_AI_SCORE
+        value: "60"
+
       # ── Intel Cache Tuning ───────────────────────────────────────
       # In-memory TTL (seconds). 60 = 1 min freshness per request.
       - key: INTEL_CACHE_TTL_SEC
