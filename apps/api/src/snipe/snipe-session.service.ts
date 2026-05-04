@@ -55,7 +55,11 @@ export class SnipeSessionService implements OnModuleDestroy {
   private readonly GROUP_CACHE_TTL = 30_000; // 30 s
 
   // address → last-seen timestamp (dedup across all users)
+  // Hard-capped: high-volume groups can push hundreds of unique addresses/min,
+  // faster than the 5-min TTL sweep can age them out. Insertion-order Map +
+  // delete-oldest keeps memory bounded.
   private seen = new Map<string, number>();
+  private readonly SEEN_MAX_ENTRIES = 5_000;
 
   private cleanupInterval: NodeJS.Timeout;
 
@@ -148,7 +152,13 @@ export class SnipeSessionService implements OnModuleDestroy {
     const key = `${userId}:${address}`;
     const last = this.seen.get(key);
     if (last !== undefined && Date.now() - last < windowMs) return true;
+    // Re-insert to refresh insertion order; evict oldest when over cap.
+    this.seen.delete(key);
     this.seen.set(key, Date.now());
+    if (this.seen.size > this.SEEN_MAX_ENTRIES) {
+      const oldest = this.seen.keys().next().value;
+      if (oldest !== undefined) this.seen.delete(oldest);
+    }
     return false;
   }
 

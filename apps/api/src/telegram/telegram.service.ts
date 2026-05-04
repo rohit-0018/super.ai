@@ -112,6 +112,7 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
 
   private webhookUrl: string | null = null;
   private webhookHealRunning = false;
+  private webhookHealerInterval: NodeJS.Timeout | null = null;
 
   async startBot(token: string): Promise<void> {
     if (this.started) return;
@@ -158,7 +159,8 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
    * instead of only via the Telegram API.
    */
   private startWebhookHealer(): void {
-    setInterval(async () => {
+    if (this.webhookHealerInterval) return;
+    this.webhookHealerInterval = setInterval(async () => {
       if (this.webhookHealRunning) return;
       this.webhookHealRunning = true;
       try {
@@ -186,6 +188,10 @@ export class TelegramService implements OnModuleInit, OnApplicationShutdown {
 
   async stopBot(): Promise<void> {
     if (!this.started) return;
+    if (this.webhookHealerInterval) {
+      clearInterval(this.webhookHealerInterval);
+      this.webhookHealerInterval = null;
+    }
     try {
       const bot = this.tgBot.bot;
       if (bot) {

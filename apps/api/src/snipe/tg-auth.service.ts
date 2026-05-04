@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { TelegramClient } from 'teleproto';
 import { StringSession } from 'teleproto/sessions';
 import { Api } from 'teleproto/tl';
@@ -38,12 +38,48 @@ interface QrAuth {
 }
 
 @Injectable()
-export class TgAuthService {
+export class TgAuthService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TgAuthService.name);
   private pending  = new Map<string, PendingAuth>();
   private qrAuths  = new Map<string, QrAuth>();
+  private sweepInterval: NodeJS.Timeout | null = null;
 
   constructor(private userbot: TgUserbotService) {}
+
+  onModuleInit() {
+    // Sweep abandoned login flows every 5 min so leaked TelegramClient
+    // instances from network timeouts / users closing the QR tab don't pile up.
+    this.sweepInterval = setInterval(() => this.sweepStale(), 5 * 60_000);
+  }
+
+  async onModuleDestroy() {
+    if (this.sweepInterval) clearInterval(this.sweepInterval);
+    for (const userId of [...this.qrAuths.keys()]) this.cleanupQrAuth(userId);
+    for (const userId of [...this.pending.keys()]) this.cleanupPending(userId);
+  }
+
+  private sweepStale() {
+    const now = Date.now();
+    let qrDropped = 0;
+    let pendingDropped = 0;
+    for (const [userId, state] of this.qrAuths) {
+      // Drop completed entries, hard errors, or QR that expired >5 min ago.
+      const expired = state.qrExpiresAt > 0 && now > state.qrExpiresAt + 5 * 60_000;
+      if (state.done || state.error || expired) {
+        this.cleanupQrAuth(userId);
+        qrDropped++;
+      }
+    }
+    for (const [userId, state] of this.pending) {
+      if (state.expiresAt < now) {
+        this.cleanupPending(userId);
+        pendingDropped++;
+      }
+    }
+    if (qrDropped || pendingDropped) {
+      this.logger.debug(`tg-auth sweep: qr=${qrDropped} pending=${pendingDropped}`);
+    }
+  }
 
   // ── QR code login (preferred) ──────────────────────────────────────────────
 
