@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useApi, invalidate } from '../../lib/useApi';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { fmtUsdCompact } from '../../lib/format-price';
+import { useTokenPool } from '../../lib/TokenPoolContext';
 
 function CopyCA({ address }: { address: string }) {
   const [copied, setCopied] = useState(false);
@@ -280,6 +281,14 @@ function FilterChips({ label, options, value, onChange }: {
 }
 
 function Card({ s }: { s: Snapshot }) {
+  const pool = useTokenPool();
+  const live = pool[s.address];
+  const currentMcap = live?.marketCapUsd ?? s.currentMcapUsd;
+  const currentDelta =
+    live && s.marketCapUsdAtCapture
+      ? ((live.marketCapUsd - s.marketCapUsdAtCapture) / s.marketCapUsdAtCapture) * 100
+      : s.currentDeltaPct;
+
   const tone = STATUS_TONE[s.status];
   return (
     <Link
@@ -321,7 +330,7 @@ function Card({ s }: { s: Snapshot }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
         <Field label="Entry" value={fmtUsdCompact(s.marketCapUsdAtCapture)} />
         <Field label="Peak" value={fmtUsdCompact(s.pumpedHigh)} delta={s.peakDeltaPct} />
-        <Field label="Now" value={fmtUsdCompact(s.currentMcapUsd)} delta={s.currentDeltaPct} />
+        <Field label="Now" value={fmtUsdCompact(currentMcap)} delta={currentDelta} />
       </div>
 
       <Sparkline values={s.sparkline ?? []} delta={s.peakDeltaPct ?? 0} />

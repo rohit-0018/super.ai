@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { useApi } from '../lib/useApi';
 import { fmtUsdCompact } from '../lib/format-price';
+import { useTokenPool } from '../lib/TokenPoolContext';
 
 interface RailItem {
   id: string;
@@ -24,6 +25,7 @@ interface RailItem {
  */
 export function IntelTrackRail() {
   const { data, loading } = useApi<RailItem[]>('/intel-track/top?limit=5', { pollMs: 60_000 });
+  const pool = useTokenPool();
   const items = Array.isArray(data) ? data : [];
   if (!loading && items.length === 0) return null;
 
@@ -40,38 +42,46 @@ export function IntelTrackRail() {
         </Link>
       </div>
 
-      {items.map((it) => (
-        <Link
-          key={it.id}
-          href={`/intel-track/detail?id=${it.id}`}
-          style={{
-            textDecoration: 'none', color: 'inherit',
-            border: '1px solid var(--border)',
-            borderRadius: 8, padding: '8px 10px',
-            background: 'var(--surface-1)',
-            display: 'flex', flexDirection: 'column', gap: 4,
-            transition: 'background 0.12s ease',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 700 }}>
-              {it.status === 'graduated' ? '🚀 ' : ''}{it.symbol ?? it.address.slice(0, 6)}
-            </span>
-            <span style={{
-              fontSize: 11, fontWeight: 700,
-              color: it.deltaPct == null ? 'var(--text-3)' : it.deltaPct >= 0 ? 'var(--ok)' : 'var(--bad)',
-            }}>
-              {it.deltaPct != null ? `${it.deltaPct >= 0 ? '+' : ''}${it.deltaPct.toFixed(0)}%` : '—'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
-              {fmtUsdCompact(it.mcapAtCapture)} → {fmtUsdCompact(it.pumpedHigh)}
-            </span>
-          </div>
-          <Sparkline values={it.sparkline ?? []} delta={it.deltaPct ?? 0} />
-        </Link>
-      ))}
+      {items.map((it) => {
+        const live = pool[it.address];
+        const currentMcap = live?.marketCapUsd ?? it.currentMcapUsd;
+        const deltaPct =
+          live && it.mcapAtCapture
+            ? ((live.marketCapUsd - it.mcapAtCapture) / it.mcapAtCapture) * 100
+            : it.deltaPct;
+        return (
+          <Link
+            key={it.id}
+            href={`/intel-track/detail?id=${it.id}`}
+            style={{
+              textDecoration: 'none', color: 'inherit',
+              border: '1px solid var(--border)',
+              borderRadius: 8, padding: '8px 10px',
+              background: 'var(--surface-1)',
+              display: 'flex', flexDirection: 'column', gap: 4,
+              transition: 'background 0.12s ease',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>
+                {it.status === 'graduated' ? '🚀 ' : ''}{it.symbol ?? it.address.slice(0, 6)}
+              </span>
+              <span style={{
+                fontSize: 11, fontWeight: 700,
+                color: deltaPct == null ? 'var(--text-3)' : deltaPct >= 0 ? 'var(--ok)' : 'var(--bad)',
+              }}>
+                {deltaPct != null ? `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(0)}%` : '—'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                {fmtUsdCompact(it.mcapAtCapture)} → {fmtUsdCompact(currentMcap)}
+              </span>
+            </div>
+            <Sparkline values={it.sparkline ?? []} delta={deltaPct ?? 0} />
+          </Link>
+        );
+      })}
     </aside>
   );
 }

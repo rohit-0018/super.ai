@@ -4,6 +4,7 @@ import { RealtimeGateway } from '../ws/realtime.gateway';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
 import { SignalPipelineService } from './signal-pipeline.service';
+import { TokenPoolService } from './token-pool.service';
 import { getProfile } from '../token-analysis/profile.config';
 import { fmtPriceUsd } from '../common/format-price';
 import type { TradingProfile } from '../token-analysis/profile.config';
@@ -85,6 +86,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     private readonly tokenAnalysis: TokenAnalysisService,
     @Optional() private readonly intelSnapshots: IntelSnapshotService,
     @Optional() private readonly signalPipeline: SignalPipelineService,
+    @Optional() private readonly tokenPool: TokenPoolService,
   ) {
     this.redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
       maxRetriesPerRequest: 3,
@@ -183,7 +185,11 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
 
         // Update in-memory cache
         this.scanCache.set(profileKey, { scan, ts: Date.now() });
-        for (const t of tokens) this.priceRefreshCache.set(t.address, t);
+        for (const t of tokens) {
+          this.priceRefreshCache.set(t.address, t);
+          // Register into the central token pool so all UI cards share one data source
+          this.tokenPool?.register(t.address, { symbol: t.symbol, source: t.source, capturedAt: t.scannedAt });
+        }
 
         // Persist to Redis — survives restarts, cleared when next scan writes fresh data
         await this.persistToRedis(profileKey, scan);

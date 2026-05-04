@@ -7,6 +7,7 @@ import { useRealtime } from '../../lib/useRealtime';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { fmtUsdCompact } from '../../lib/format-price';
 import { SignalResult } from '../../components/SignalBanner';
+import { useTokenPool } from '../../lib/TokenPoolContext';
 
 function CopyCA({ address }: { address: string }) {
   const [copied, setCopied] = useState(false);
@@ -399,6 +400,16 @@ function SectionHeader({ label, color }: { label: string; color: string }) {
 
 /* ── Card ──────────────────────────────────────────────────────── */
 function FeedCard({ s, extra }: { s: FeedItem; extra?: SignalExtra }) {
+  const pool = useTokenPool();
+  const live = pool[s.address];
+
+  // Prefer pool live data; fall back to DB snapshot values
+  const currentMcap = live?.marketCapUsd ?? s.currentMcapUsd;
+  const currentDelta =
+    live && s.marketCapUsdAtCapture
+      ? ((live.marketCapUsd - s.marketCapUsdAtCapture) / s.marketCapUsdAtCapture) * 100
+      : s.currentDeltaPct;
+
   const tone = SOURCE_TONE[s.source] ?? 'var(--accent)';
   const statusTone = STATUS_TONE[s.status] ?? 'var(--text-3)';
   const peak = s.peakDeltaPct;
@@ -408,12 +419,12 @@ function FeedCard({ s, extra }: { s: FeedItem; extra?: SignalExtra }) {
   const analyzed = s.aiVerdict != null;
 
   const tickRef = useRef<HTMLSpanElement>(null);
-  const lastCurrent = useRef<number | null>(s.currentMcapUsd);
-  // Subtle flash on mcap tick — picks up live updates from the rescan worker
+  const lastCurrent = useRef<number | null>(currentMcap);
+  // Flash "Now" value when pool pushes a fresher price
   useEffect(() => {
-    if (s.currentMcapUsd == null || lastCurrent.current === s.currentMcapUsd) return;
+    if (currentMcap == null || lastCurrent.current === currentMcap) return;
     const node = tickRef.current;
-    lastCurrent.current = s.currentMcapUsd;
+    lastCurrent.current = currentMcap;
     if (!node) return;
     node.style.transition = 'none';
     node.style.color = 'var(--accent)';
@@ -421,7 +432,7 @@ function FeedCard({ s, extra }: { s: FeedItem; extra?: SignalExtra }) {
       node.style.transition = 'color 800ms ease';
       node.style.color = '';
     });
-  }, [s.currentMcapUsd]);
+  }, [currentMcap]);
 
   return (
     <Link
@@ -578,16 +589,14 @@ function FeedCard({ s, extra }: { s: FeedItem; extra?: SignalExtra }) {
         </span>
       </div>
 
-      {/* Three-stat row */}
+      {/* Three-stat row — "Now" always reads from the shared token pool */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
         <Stat label="Entry" value={fmtUsdCompact(s.marketCapUsdAtCapture)} />
         <Stat label="Peak" value={fmtUsdCompact(s.pumpedHigh)} delta={peak} />
         <Stat
           label="Now"
-          value={
-            <span ref={tickRef as any}>{fmtUsdCompact(s.currentMcapUsd)}</span>
-          }
-          delta={s.currentDeltaPct}
+          value={<span ref={tickRef as any}>{fmtUsdCompact(currentMcap)}</span>}
+          delta={currentDelta}
         />
       </div>
 

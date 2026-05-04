@@ -18,6 +18,7 @@ import { IntelTrackRail } from './IntelTrackRail';
 import { useRealtime } from '../lib/useRealtime';
 import { useApi } from '../lib/useApi';
 import { api } from '../lib/api';
+import { TokenPoolProvider } from '../lib/TokenPoolContext';
 
 /**
  * AppShell — pro-terminal shell for qwai.
@@ -38,6 +39,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
+    <TokenPoolProvider>
     <SignalQueueProvider>
       {({ signalOpen, setSignalOpen, strongBuyCount }) => (
         <div className="shell-outer">
@@ -58,6 +60,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
       )}
     </SignalQueueProvider>
+    </TokenPoolProvider>
   );
 }
 

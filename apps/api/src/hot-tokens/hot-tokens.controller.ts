@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, NotFoundException, Post, Query, Req, Optional, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Query, Req, Optional, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionService } from '../execution/execution.service';
 import { HotTokensService } from './hot-tokens.service';
 import { SignalPipelineService } from './signal-pipeline.service';
+import { TokenPoolService } from './token-pool.service';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const AUTO_BUY_ENABLED = process.env.SIGNAL_AUTO_BUY_ENABLED !== 'false';
@@ -24,6 +25,7 @@ export class HotTokensController {
     @Optional() private readonly pipeline: SignalPipelineService,
     @Optional() private readonly exec: ExecutionService,
     private readonly prisma: PrismaService,
+    @Optional() private readonly pool: TokenPoolService,
   ) {}
 
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
@@ -54,6 +56,32 @@ export class HotTokensController {
   @Post('scan')
   async triggerScan() {
     void this.svc.scan();
+    return { triggered: true, ts: new Date().toISOString() };
+  }
+
+  /** GET /api/hot-tokens/pool — single source of truth for all tracked token live prices */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('pool')
+  getPool() {
+    return this.pool?.getSnapshot() ?? { entries: {}, refreshedAt: null, activeCount: 0, archivedCount: 0 };
+  }
+
+  /** POST /api/hot-tokens/pool/archive/:address — stop refreshing a stale token */
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Post('pool/archive/:address')
+  archiveToken(@Param('address') address: string) {
+    if (!address) throw new BadRequestException('address required');
+    this.pool?.archiveAddress(address);
+    return { ok: true, address };
+  }
+
+  /** POST /api/hot-tokens/pool/refresh — force an immediate pool refresh */
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('pool/refresh')
+  async triggerPoolRefresh() {
+    void this.pool?.refresh();
     return { triggered: true, ts: new Date().toISOString() };
   }
 
