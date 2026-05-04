@@ -1,7 +1,7 @@
 # QWAI — Your Personal AI Trading Agent
 
 QWAI is a personal AI trading agent for crypto markets. Web dashboard + Telegram bot share one AI brain. Built per the 6-week milestone plan in `QWAI Milestones.pdf` (see `docs/REQUIREMENTS.md`).
-
+d 
 ## Monorepo
 
 ```
