@@ -180,6 +180,7 @@ export class HotTokensController {
       notionalUsd: dto.amountUsd,
       slippageBps: DEFAULT_SLIPPAGE_BPS,
       strategyId: 'signal_auto_buy',
+      applyDynamicSizing: true,
     });
 
     return { ok: true, ...result };

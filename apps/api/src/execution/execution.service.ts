@@ -40,6 +40,13 @@ export interface SwapInput {
   convictionBreakdown?: Record<string, unknown>;
   /** Optional — if absent, falls back to ambient AsyncLocalStorage traceId. */
   traceId?: string;
+  /**
+   * When true, notionalUsd is treated as a ceiling and dynamically scaled down
+   * based on AI score and risk factors from VerdictHistory.
+   * Set by autonomous-trader and signal-auto-buy paths; NOT set for manual trades
+   * (so the user's explicit amount is always respected).
+   */
+  applyDynamicSizing?: boolean;
 }
 
 export interface SwapResult {
@@ -88,6 +95,25 @@ export class ExecutionService {
       }
     }
     if (!input.amountIn) throw new BadRequestException({ message: 'amountIn must not be empty', traceId: trace });
+
+    // ── Dynamic position sizing (autonomous/signal-buy paths only) ────────────
+    if (input.applyDynamicSizing && input.notionalUsd > 0) {
+      const originalNotional = input.notionalUsd;
+      input.notionalUsd = await this.computeDynamicSize(input.tokenOut, originalNotional, input.riskFlags ?? []);
+      if (input.notionalUsd !== originalNotional) {
+        this.logger.log(
+          `[trc=${trace}] Dynamic sizing: ${input.tokenOut.slice(0, 8)}… ` +
+          `$${originalNotional.toFixed(2)} → $${input.notionalUsd.toFixed(2)} ` +
+          `(${((input.notionalUsd / originalNotional) * 100).toFixed(0)}%)`,
+        );
+        // Recompute amountIn to match the scaled notional (SOLANA only; EVM callers provide amountIn)
+        if (input.chain === 'SOLANA' && !input.amountIn) {
+          const solUsd = await this.jup.getSolPriceUsd();
+          input.amountIn = Math.round((input.notionalUsd / solUsd) * 1e9).toString();
+        }
+      }
+    }
+
     // ── Security layer: audit, compliance, and risk checks ──
     await this.securityAudit.log('SWAP_INITIATED', {
       userId: input.userId,
@@ -524,6 +550,50 @@ export class ExecutionService {
         return process.env.BASE_RPC_URL ?? 'https://mainnet.base.org';
       default:
         return getEvmRpcUrl();
+    }
+  }
+
+  /**
+   * Computes a dynamically sized notional USD amount based on the latest AI score
+   * from VerdictHistory and any risk flags passed by the caller.
+   *
+   * Score bands:     90-100 → 1.0x  |  80-89 → 0.7x  |  70-79 → 0.5x  |  <70 → 0.3x
+   * Risk adjustments (multiplicative, stack independently):
+   *   HONEYPOT flag  → 0.5x
+   *   Pair age <1h   → 0.7x  (detected via riskFlags: 'newToken')
+   *
+   * The result is clamped to [10% of ceiling, ceiling] so we never
+   * send a dust trade or exceed the user's configured per-trade limit.
+   */
+  private async computeDynamicSize(token: string, ceiling: number, riskFlags: string[]): Promise<number> {
+    try {
+      const verdict = await this.prisma.verdictHistory.findFirst({
+        where:   { address: token },
+        orderBy: { analyzedAt: 'desc' },
+        select:  { aiScore: true, riskFactors: true },
+      });
+
+      const score = verdict?.aiScore ?? 0;
+
+      // Score multiplier
+      let mult = 0.3;
+      if (score >= 90) mult = 1.0;
+      else if (score >= 80) mult = 0.7;
+      else if (score >= 70) mult = 0.5;
+
+      // Risk adjustments
+      if (riskFlags.includes('HONEYPOT')) mult *= 0.5;
+      if (riskFlags.includes('newToken') || riskFlags.includes('NEW_TOKEN')) mult *= 0.7;
+
+      // Check riskFactors from VerdictHistory for additional signals
+      const factors = Array.isArray(verdict?.riskFactors) ? (verdict!.riskFactors as string[]) : [];
+      if (factors.some((f) => /low.?liquidity|thin.?liq/i.test(f))) mult *= 0.7;
+
+      const sized = ceiling * mult;
+      const floor = ceiling * 0.10; // never send less than 10% of the intended allocation
+      return Math.max(floor, Math.min(ceiling, sized));
+    } catch {
+      return ceiling; // on any error, fall back to full allocation
     }
   }
 
