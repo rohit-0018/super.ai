@@ -112,6 +112,33 @@ export class HotTokensController {
   }
 
   /**
+   * GET /api/hot-tokens/verdicts/:address
+   * Full verdict history for a token — newest first.
+   * Powers score-over-time charts and exit-engine thesis-break detection.
+   */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('verdicts/:address')
+  async getVerdictHistory(
+    @Param('address') address: string,
+    @Query('limit') limit?: string,
+  ) {
+    const take = Math.min(parseInt(limit ?? '50', 10), 200);
+    const rows = await this.prisma.verdictHistory.findMany({
+      where: { address },
+      orderBy: { analyzedAt: 'desc' },
+      take,
+      select: {
+        id: true, analyzedAt: true, aiScore: true, aiVerdict: true,
+        priceUsd: true, marketCapUsd: true,
+        t1Pct: true, t2Pct: true, stopLossPct: true, riskReward: true,
+        aiSummary: true, bullishSignals: true, riskFactors: true,
+        source: true, profileKey: true, latencyMs: true,
+      },
+    });
+    return { address, count: rows.length, history: rows };
+  }
+
+  /**
    * POST /api/hot-tokens/signal-buy
    * Auto-buy endpoint called by the SignalBanner when autoBuy=true.
    * Picks the user's first Solana wallet and executes a SOL → token swap.

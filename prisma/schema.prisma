@@ -845,6 +845,40 @@ model IntelRescan {
   @@index([snapshotId, ts])
 }
 
+// ── Verdict History ───────────────────────────────────────────────────────────
+// One row per completed AI analysis, written by SignalPipelineService.
+// Survives restarts (unlike the in-memory results map) and powers:
+//   • startup hydration — last verdict per token loaded immediately
+//   • exit engine thesis-break — score degradation detected across rows
+//   • performance analytics — win-rate per score tier, source, profile
+model VerdictHistory {
+  id             String   @id @default(cuid())
+  address        String
+  chain          Chain    @default(SOLANA)
+  symbol         String?
+  name           String?
+  analyzedAt     DateTime @default(now())
+  aiScore        Int
+  aiVerdict      String
+  priceUsd       Float
+  marketCapUsd   Float?
+  t1Pct          Float?
+  t2Pct          Float?
+  stopLossPct    Float?
+  riskReward     Float?
+  aiSummary      String?
+  bullishSignals Json     @default("[]")
+  riskFactors    Json     @default("[]")
+  // 'scanner_auto' | 'page_load_batch' | 'manual_request'
+  source         String   @default("scanner_auto")
+  profileKey     String?
+  latencyMs      Int?
+
+  @@index([address, analyzedAt])
+  @@index([aiScore, analyzedAt])
+  @@index([analyzedAt])
+}
+
 // ── Provider Rate-Limit Registry ─────────────────────────────────────────────
 // Static config per external API provider. Dynamic state (counters, cooldowns)
 // lives in Redis (key prefix rl:). This table is the source-of-truth for limits
