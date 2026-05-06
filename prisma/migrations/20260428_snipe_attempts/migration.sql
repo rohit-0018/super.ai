@@ -1,2 +1,5 @@
--- Track how many broadcast attempts were made for each snipe (including slippage retries)
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "attempts" INTEGER NOT NULL DEFAULT 1;
+-- NO-OP STUB.
+-- The actual ALTER TABLE has moved to 20260429a_snipe_attempts (which runs
+-- AFTER 20260429_snipe_tables creates the SnipeTrade table). This stub stays
+-- so existing prisma migration tracking rows reference a real folder.
+SELECT 1;

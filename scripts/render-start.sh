@@ -41,8 +41,12 @@ if [[ "$FRESH_DB" -eq 0 ]]; then
     20260425_intent_memory \
     20260427_conversational_memory \
     20260428_episodic_memory \
+    20260428_snipe_attempts \
     20260429_conviction_personalization \
+    20260429_snipe_buy_snapshot \
     20260429_snipe_tables \
+    20260429a_snipe_attempts \
+    20260429b_snipe_buy_snapshot \
     20260430_snipe_trade_error_msg \
     20260430_phone_auth \
     20260502_alert_read_at \
