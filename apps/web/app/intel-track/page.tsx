@@ -57,11 +57,31 @@ interface SignalExtra {
   holdRange?: string;
 }
 
+interface ExitNotification {
+  token:           string;
+  reason:          string;
+  sellNotionalUsd: string;
+  isFullExit:      boolean;
+  ts:              string;
+}
+
+interface SignalOverview {
+  totalSignals:   number;
+  winRate:        number;
+  avgPeakDelta:   number;
+  avgScore:       number;
+  realizedPnl:    number;
+  openPositions:  number;
+  analyzedTokens: number;
+  bestCall:       { symbol: string | null; peakDelta: number } | null;
+}
+
 export default function IntelTrackPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | Status>('all');
   const [sourceFilter, setSourceFilter] = useState<'all' | Source>('all');
   const [showFresh, setShowFresh] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [exitNotes, setExitNotes] = useState<ExitNotification[]>([]);
 
   const queryStatus = statusFilter === 'all' ? 'active,graduated' : statusFilter;
   const querySource = sourceFilter === 'all' ? '' : `&source=${sourceFilter}`;
@@ -71,6 +91,7 @@ export default function IntelTrackPage() {
   const { data: rows, loading } = useApi<Snapshot[]>(path);
   const { data: stats } = useApi<Stats>('/intel-track/stats');
   const { data: cachedSignals } = useApi<SignalResult[]>('/hot-tokens/signals', { ttlMs: 60_000 });
+  const { data: signalOverviewData } = useApi<SignalOverview>('/analytics/signals/overview', { ttlMs: 120_000 });
 
   // Overlay: address → signal data received after page load
   const [signalOverlay, setSignalOverlay] = useState<Record<string, { score: number; verdict: string }>>({});
@@ -111,6 +132,12 @@ export default function IntelTrackPage() {
     }));
   }, []);
   useRealtime('signal_analysis', onSignalAnalysis);
+
+  // Exit engine notifications
+  useRealtime('trade_exit', useCallback((note: ExitNotification) => {
+    setExitNotes((prev) => [note, ...prev].slice(0, 5));
+    setTimeout(() => setExitNotes((prev) => prev.filter((n) => n.ts !== note.ts)), 8_000);
+  }, []));
 
   // Enqueue unanalyzed cards for background AI analysis once rows load
   useEffect(() => {
@@ -160,7 +187,36 @@ export default function IntelTrackPage() {
         </div>
       </header>
 
-      {stats && <StatsHero stats={stats} />}
+      {stats && <StatsHero stats={stats} overview={signalOverviewData ?? null} />}
+
+      {/* Exit engine toast notifications */}
+      {exitNotes.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {exitNotes.map((n) => (
+            <div key={n.ts} style={{
+              padding: '8px 14px', borderRadius: 8,
+              background: n.isFullExit
+                ? 'color-mix(in srgb, var(--ok) 12%, var(--surface-2))'
+                : 'color-mix(in srgb, var(--accent) 10%, var(--surface-2))',
+              border: `1px solid ${n.isFullExit ? 'color-mix(in srgb, var(--ok) 30%, var(--border))' : 'var(--border)'}`,
+              display: 'flex', alignItems: 'center', gap: 10, fontSize: 12,
+            }}>
+              <span style={{ fontSize: 16 }}>{n.isFullExit ? '✅' : '📤'}</span>
+              <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+                {n.token.slice(0, 8)}…
+              </span>
+              <span style={{ color: 'var(--text-2)' }}>
+                {n.reason.replace(/_/g, ' ')} · ${n.sellNotionalUsd}
+              </span>
+              {n.isFullExit && (
+                <span style={{ marginLeft: 'auto', color: 'var(--ok)', fontWeight: 700, fontSize: 11 }}>
+                  FULL EXIT
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <FilterChips
@@ -229,10 +285,11 @@ export default function IntelTrackPage() {
   );
 }
 
-function StatsHero({ stats }: { stats: Stats }) {
+function StatsHero({ stats, overview }: { stats: Stats; overview: SignalOverview | null }) {
   return (
     <section className="section" style={{ padding: '14px 18px' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16 }}>
+      {/* Row 1: capture stats */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 16, marginBottom: 14 }}>
         <Stat label="Captures total" value={stats.totalSnapshots.toString()} />
         <Stat label="Graduated 10x+" value={stats.graduated.toString()} tone="up" />
         <Stat label="Active" value={stats.active.toString()} />
@@ -243,14 +300,60 @@ function StatsHero({ stats }: { stats: Stats }) {
         />
         <Stat label="Rugged" value={stats.rugged.toString()} tone="down" muted />
       </div>
+
+      {/* Row 2: AI signal analytics */}
+      {overview && (
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
+          gap: 12, paddingTop: 12,
+          borderTop: '1px solid var(--border)',
+        }}>
+          <Stat
+            label="Win rate (2x+)"
+            value={`${(overview.winRate * 100).toFixed(0)}%`}
+            tone={overview.winRate >= 0.5 ? 'up' : overview.winRate >= 0.3 ? undefined : 'down'}
+          />
+          <Stat
+            label="Avg AI score"
+            value={overview.avgScore.toString()}
+            tone={overview.avgScore >= 70 ? 'up' : undefined}
+          />
+          <Stat
+            label="Analyzed tokens"
+            value={overview.analyzedTokens.toString()}
+          />
+          <Stat
+            label="Open positions"
+            value={overview.openPositions.toString()}
+          />
+          {overview.realizedPnl !== 0 && (
+            <Stat
+              label="Realized P&L"
+              value={`${overview.realizedPnl >= 0 ? '+' : ''}$${Math.abs(overview.realizedPnl).toFixed(0)}`}
+              tone={overview.realizedPnl >= 0 ? 'up' : 'down'}
+            />
+          )}
+        </div>
+      )}
+
       {stats.bestCall && (
-        <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 8 }}>
-          <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Biggest call: </span>
-          <span style={{ fontWeight: 700 }}>{stats.bestCall.symbol ?? 'unknown'}</span>
+        <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Best call:</span>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>{stats.bestCall.symbol ?? 'unknown'}</span>
           {stats.bestCall.deltaPct != null && (
-            <span style={{ marginLeft: 8, color: 'var(--ok)', fontWeight: 700 }}>
+            <span style={{ color: 'var(--ok)', fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: 13 }}>
               +{stats.bestCall.deltaPct.toFixed(0)}%
             </span>
+          )}
+          {overview?.bestCall && overview.bestCall.symbol !== stats.bestCall.symbol && (
+            <>
+              <span style={{ color: 'var(--border)', marginLeft: 8 }}>·</span>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 4 }}>AI best:</span>
+              <span style={{ fontWeight: 700, fontSize: 12 }}>{overview.bestCall.symbol}</span>
+              <span style={{ color: 'var(--ok)', fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                +{overview.bestCall.peakDelta}%
+              </span>
+            </>
           )}
         </div>
       )}
