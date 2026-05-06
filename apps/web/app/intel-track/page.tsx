@@ -1,24 +1,12 @@
 'use client';
-import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../../lib/api';
 import { useApi, invalidate } from '../../lib/useApi';
+import { useRealtime } from '../../lib/useRealtime';
 import { Skeleton } from '../../components/ui/Skeleton';
-import { fmtUsdCompact } from '../../lib/format-price';
 import { useTokenPool } from '../../lib/TokenPoolContext';
-
-function CopyCA({ address }: { address: string }) {
-  const [copied, setCopied] = useState(false);
-  const short = `${address.slice(0, 4)}…${address.slice(-4)}`;
-  return (
-    <span
-      title={address}
-      onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(address).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
-      style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: copied ? 'var(--ok)' : 'var(--text-3)', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 5px', cursor: 'pointer', display: 'inline-block', marginTop: 3, userSelect: 'none' }}
-    >
-      {copied ? '✓ copied' : short}
-    </span>
-  );
-}
+import { TokenCard } from '../../components/TokenCard';
+import { SignalResult } from '../../components/SignalBanner';
 
 type Status = 'active' | 'retired' | 'rugged' | 'graduated';
 type Source = 'hot_tokens_scan' | 'manual_scan' | 'telegram_scan' | 'snipe';
@@ -60,26 +48,13 @@ interface Stats {
   bestCall: { symbol: string | null; deltaPct: number | null } | null;
 }
 
-const SOURCE_LABEL: Record<Source, string> = {
-  hot_tokens_scan: 'Hot scan',
-  manual_scan: 'Manual',
-  telegram_scan: 'Telegram',
-  snipe: 'Snipe',
-};
-
-const STATUS_TONE: Record<Status, string> = {
-  active: 'var(--accent)',
-  graduated: 'var(--ok)',
-  retired: 'var(--text-3)',
-  rugged: 'var(--bad)',
-};
-
-function relTime(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return 'just now';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / 86_400_000)}d ago`;
+interface SignalExtra {
+  t1Pct?: number;
+  t2Pct?: number;
+  stopLossPct?: number;
+  riskReward?: number;
+  aiSummary?: string | null;
+  holdRange?: string;
 }
 
 export default function IntelTrackPage() {
@@ -90,25 +65,76 @@ export default function IntelTrackPage() {
 
   const queryStatus = statusFilter === 'all' ? 'active,graduated' : statusFilter;
   const querySource = sourceFilter === 'all' ? '' : `&source=${sourceFilter}`;
-  // Hide entries that haven't moved at all yet — a capture from 1m ago with
-  // no peak delta is noise, not a track record. Users can toggle "Show fresh"
-  // to see them while they warm up.
   const minDelta = showFresh ? '' : '&minDelta=5';
-  const path = `/intel-track?status=${queryStatus}${querySource}${minDelta}&take=120&sort=pumpedHigh`;
+  const path = `/intel-track?status=${queryStatus}${querySource}${minDelta}&take=120&sort=recent`;
 
   const { data: rows, loading } = useApi<Snapshot[]>(path);
   const { data: stats } = useApi<Stats>('/intel-track/stats');
+  const { data: cachedSignals } = useApi<SignalResult[]>('/hot-tokens/signals', { ttlMs: 60_000 });
+
+  // Overlay: address → signal data received after page load
+  const [signalOverlay, setSignalOverlay] = useState<Record<string, { score: number; verdict: string }>>({});
+  const [signalExtras, setSignalExtras]   = useState<Record<string, SignalExtra>>({});
+  const [analysisTriggered, setAnalysisTriggered] = useState(false);
+  const enqueuedRef = useRef(false);
+
+  const baseItems = useMemo(() => Array.isArray(rows) ? rows : [], [rows]);
+
+  // Merge DB rows with any signal overlay received via WS or hydration
+  const items = useMemo(() =>
+    baseItems.map((s) => {
+      const ov = signalOverlay[s.address];
+      return ov && !s.aiVerdict ? { ...s, aiScore: ov.score, aiVerdict: ov.verdict } : s;
+    }),
+  [baseItems, signalOverlay]);
+
+  // Hydrate from pipeline's in-memory results on page load
+  useEffect(() => {
+    if (!Array.isArray(cachedSignals) || !cachedSignals.length) return;
+    const overlay: Record<string, { score: number; verdict: string }> = {};
+    const extras: Record<string, SignalExtra> = {};
+    for (const s of cachedSignals) {
+      overlay[s.address] = { score: s.score, verdict: s.verdict };
+      extras[s.address]  = { t1Pct: s.t1Pct, t2Pct: s.t2Pct, stopLossPct: s.stopLossPct, riskReward: s.riskReward, aiSummary: s.aiSummary, holdRange: s.holdRange };
+    }
+    setSignalOverlay((prev) => ({ ...overlay, ...prev }));
+    setSignalExtras((prev) => ({ ...extras, ...prev }));
+  }, [cachedSignals]);
+
+  // Live updates — pipeline emits this whenever a token finishes analysis
+  const onSignalAnalysis = useCallback((result: SignalResult) => {
+    if (!result?.address) return;
+    setSignalOverlay((prev) => ({ ...prev, [result.address]: { score: result.score, verdict: result.verdict } }));
+    setSignalExtras((prev) => ({
+      ...prev,
+      [result.address]: { t1Pct: result.t1Pct, t2Pct: result.t2Pct, stopLossPct: result.stopLossPct, riskReward: result.riskReward, aiSummary: result.aiSummary, holdRange: result.holdRange },
+    }));
+  }, []);
+  useRealtime('signal_analysis', onSignalAnalysis);
+
+  // Enqueue unanalyzed cards for background AI analysis once rows load
+  useEffect(() => {
+    if (!baseItems.length || enqueuedRef.current) return;
+    enqueuedRef.current = true;
+    const toAnalyze = baseItems
+      .filter((i) => !i.aiVerdict)
+      .slice(0, 20)
+      .map((i) => ({ address: i.address, symbol: i.symbol ?? i.address.slice(0, 6), profileKey: i.profileKey ?? 'meme_hunter' }));
+    if (!toAnalyze.length) return;
+    api.post('/hot-tokens/signals/analyze', { items: toAnalyze })
+      .then(() => setAnalysisTriggered(true))
+      .catch(() => {});
+  }, [baseItems]);
 
   const refresh = async () => {
     setRefreshing(true);
+    enqueuedRef.current = false; // allow re-enqueue after manual refresh
     invalidate(path);
     invalidate('/intel-track/stats');
     invalidate('/intel-track/top?limit=5');
     await new Promise((r) => setTimeout(r, 500));
     setRefreshing(false);
   };
-
-  const items = useMemo(() => Array.isArray(rows) ? rows : [], [rows]);
 
   return (
     <div className="page space-y-4">
@@ -196,7 +222,7 @@ export default function IntelTrackPage() {
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-          {items.map((s) => <Card key={s.id} s={s} />)}
+          {items.map((s) => <Card key={s.id} s={s} extra={signalExtras[s.address]} pendingAnalysis={analysisTriggered} />)}
         </div>
       )}
     </div>
@@ -280,105 +306,44 @@ function FilterChips({ label, options, value, onChange }: {
   );
 }
 
-function Card({ s }: { s: Snapshot }) {
-  const pool = useTokenPool();
-  const live = pool[s.address];
-  const currentMcap = live?.marketCapUsd ?? s.currentMcapUsd;
+/* ── Card: thin wrapper that resolves pool data then delegates to TokenCard ── */
+function Card({ s, extra, pendingAnalysis }: { s: Snapshot; extra?: SignalExtra; pendingAnalysis: boolean }) {
+  const pool  = useTokenPool();
+  const live  = pool[s.address];
+  const currentMcap  = live?.marketCapUsd ?? s.currentMcapUsd;
   const currentDelta =
     live && s.marketCapUsdAtCapture
       ? ((live.marketCapUsd - s.marketCapUsdAtCapture) / s.marketCapUsdAtCapture) * 100
       : s.currentDeltaPct;
 
-  const tone = STATUS_TONE[s.status];
+  // Show Analyzing… spinner for unanalyzed cards once batch analysis is triggered
+  const isFresh = pendingAnalysis && !s.aiVerdict ? false : undefined;
+
   return (
-    <Link
+    <TokenCard
       href={`/intel-track/detail?id=${s.id}`}
-      style={{
-        textDecoration: 'none', color: 'inherit',
-        border: '1px solid var(--border)', borderRadius: 10,
-        padding: '14px 16px', background: 'var(--surface-1)',
-        display: 'flex', flexDirection: 'column', gap: 10,
-        transition: 'border-color 0.12s ease, transform 0.12s ease',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>
-            {s.status === 'graduated' && '🚀 '}
-            {s.symbol ?? s.address.slice(0, 6)}
-          </div>
-          {s.name && s.name !== s.symbol && (
-            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{s.name}</div>
-          )}
-          <CopyCA address={s.address} />
-        </div>
-        <span className="chip" style={{
-          background: `color-mix(in srgb, ${tone} 18%, transparent)`,
-          borderColor: `color-mix(in srgb, ${tone} 40%, var(--border))`,
-          color: tone, fontSize: 10, fontWeight: 600,
-        }}>
-          {s.status}
-        </span>
-      </div>
-
-      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-        {SOURCE_LABEL[s.source] ?? s.source}{s.profileKey ? ` · ${s.profileKey}` : ''}
-        {' · '}captured {relTime(s.capturedAt)}
-        {s.aiScore != null && ` · AI ${s.aiScore}/100`}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-        <Field label="Entry" value={fmtUsdCompact(s.marketCapUsdAtCapture)} />
-        <Field label="Peak" value={fmtUsdCompact(s.pumpedHigh)} delta={s.peakDeltaPct} />
-        <Field label="Now" value={fmtUsdCompact(currentMcap)} delta={currentDelta} />
-      </div>
-
-      <Sparkline values={s.sparkline ?? []} delta={s.peakDeltaPct ?? 0} />
-
-      {s.reappearedAt && (
-        <div style={{ fontSize: 10, color: 'var(--accent)' }}>
-          ↺ re-appeared {relTime(s.reappearedAt)} ({s.reappearedSource})
-        </div>
-      )}
-    </Link>
-  );
-}
-
-function Field({ label, value, delta }: { label: string; value: string; delta?: number | null }) {
-  const color = delta == null ? 'var(--text-1)' : delta >= 0 ? 'var(--ok)' : 'var(--bad)';
-  return (
-    <div>
-      <div style={{ fontSize: 9, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-        {label}
-      </div>
-      <div className="font-mono" style={{ fontSize: 12, fontWeight: 600, color }}>
-        {value}
-      </div>
-      {delta != null && (
-        <div style={{ fontSize: 10, fontWeight: 600, color }}>
-          {delta >= 0 ? '+' : ''}{delta.toFixed(0)}%
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Sparkline({ values, delta }: { values: number[]; delta: number }) {
-  if (!values?.length) return <div style={{ height: 32 }} />;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const w = 200;
-  const h = 32;
-  const points = values.map((v, i) => {
-    const x = (i / Math.max(values.length - 1, 1)) * w;
-    const y = h - ((v - min) / range) * h;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const stroke = delta >= 0 ? 'var(--ok)' : 'var(--bad)';
-  return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden>
-      <polyline points={points} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
+      address={s.address}
+      symbol={s.symbol}
+      name={s.name}
+      chain="SOLANA"
+      status={s.status}
+      source={s.source}
+      capturedAt={s.capturedAt}
+      profileKey={s.profileKey}
+      marketCapAtCapture={s.marketCapUsdAtCapture}
+      pumpedHigh={s.pumpedHigh}
+      currentMcap={currentMcap}
+      peakDelta={s.peakDeltaPct}
+      currentDelta={currentDelta}
+      sparkline={s.sparkline ?? []}
+      aiScore={s.aiScore}
+      aiVerdict={s.aiVerdict}
+      aiSummary={s.aiSummary ?? extra?.aiSummary}
+      t1Pct={extra?.t1Pct}
+      riskReward={extra?.riskReward}
+      isFresh={isFresh}
+      reappearedAt={s.reappearedAt}
+      reappearedSource={s.reappearedSource}
+    />
   );
 }

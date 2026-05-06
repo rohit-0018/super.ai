@@ -1,9 +1,11 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useRealtime, emitLocal } from '../lib/useRealtime';
-import { useApi } from '../lib/useApi';
+import { useApi, invalidate } from '../lib/useApi';
 import { fmtPriceUsd } from '../lib/format-price';
 import type { SignalResult } from './SignalBanner';
+import { QuickBuyModal } from './QuickBuyModal';
+import { BullBearIndicator } from './TokenCard';
 
 const VERDICT_COLOR: Record<string, string> = {
   STRONG_BUY: '#22c55e',
@@ -54,6 +56,11 @@ export default function SignalQueuePanel({ open, onClose }: { open: boolean; onC
   const [results, setResults] = useState<SignalResult[]>([]);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const { data: fetched } = useApi<SignalResult[]>('/hot-tokens/signals', { pollMs: open ? 5_000 : 0 });
+
+  // Fetch immediately on open so the panel isn't empty for the first 5 seconds
+  useEffect(() => {
+    if (open) invalidate('/hot-tokens/signals');
+  }, [open]);
 
   useEffect(() => {
     if (fetched) setResults(fetched);
@@ -241,55 +248,109 @@ function SectionLabel({ children }: { children: string }) {
 function ResultRow({ result }: { result: SignalResult }) {
   const color = VERDICT_COLOR[result.verdict] ?? '#8a8fa3';
   const ago   = getAgo(result.analyzedAt);
+  const [copied, setCopied] = useState(false);
+  const [buyOpen, setBuyOpen] = useState(false);
+
+  function copyCA(e: React.MouseEvent) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(result.address).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
 
   return (
-    <div style={{
-      padding: '7px 14px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      borderBottom: '1px solid color-mix(in srgb, var(--border) 50%, transparent)',
-      cursor: 'default',
-      transition: 'background 120ms',
-    }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
-      onMouseLeave={(e) => (e.currentTarget.style.background = '')}
-    >
-      {/* Score circle */}
+    <>
       <div style={{
-        width: 34, height: 34, borderRadius: '50%', flexShrink: 0,
-        border: `2px solid ${color}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: `color-mix(in srgb, ${color} 10%, transparent)`,
-      }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 800, color }}>
-          {result.score}
-        </span>
+        padding: '7px 10px 7px 14px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        borderBottom: '1px solid color-mix(in srgb, var(--border) 50%, transparent)',
+        cursor: 'default',
+        transition: 'background 120ms',
+      }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = '')}
+      >
+        {/* Score circle */}
+        <div style={{
+          width: 34, height: 34, borderRadius: '50%', flexShrink: 0,
+          border: `2px solid ${color}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: `color-mix(in srgb, ${color} 10%, transparent)`,
+        }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 800, color }}>
+            {result.score}
+          </span>
+        </div>
+
+        {/* Info */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+              {result.symbol}
+            </span>
+            <BullBearIndicator verdict={result.verdict} score={result.score} />
+            <span style={{ fontSize: 9, fontWeight: 600, color, letterSpacing: '0.06em' }}>
+              {VERDICT_LABEL[result.verdict]}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-3)' }}>
+              {fmtPriceUsd(result.priceUsd)}
+            </span>
+            {result.t1Pct != null && (
+              <span style={{ fontSize: 9, color: 'var(--ok)', fontFamily: 'var(--font-mono)' }}>
+                T1 +{result.t1Pct.toFixed(0)}%
+              </span>
+            )}
+            <span style={{ fontSize: 9, color: 'var(--text-3)', marginLeft: 'auto' }}>{ago}</span>
+          </div>
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+          <button
+            onClick={(e) => { e.stopPropagation(); setBuyOpen(true); }}
+            title="Quick snipe buy this token"
+            style={{
+              padding: '3px 7px', borderRadius: 5, cursor: 'pointer',
+              background: 'color-mix(in srgb, var(--ok) 12%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--ok) 28%, var(--border))',
+              color: 'var(--ok)', fontSize: 10, fontWeight: 700,
+              display: 'inline-flex', alignItems: 'center',
+            }}
+          >
+            ⚡
+          </button>
+          <button
+            onClick={copyCA}
+            title={copied ? 'Copied!' : 'Copy contract address'}
+            style={{
+              padding: '3px 7px', borderRadius: 5, cursor: 'pointer',
+              background: copied ? 'color-mix(in srgb, var(--ok) 12%, transparent)' : 'var(--surface-2)',
+              border: `1px solid ${copied ? 'color-mix(in srgb, var(--ok) 28%, var(--border))' : 'var(--border)'}`,
+              color: copied ? 'var(--ok)' : 'var(--text-3)', fontSize: 10, fontWeight: 600,
+              display: 'inline-flex', alignItems: 'center',
+              transition: 'all 150ms',
+            }}
+          >
+            {copied ? '✓' : '⎘'}
+          </button>
+        </div>
       </div>
 
-      {/* Info */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
-            {result.symbol}
-          </span>
-          <span style={{ fontSize: 9, fontWeight: 600, color, letterSpacing: '0.06em' }}>
-            {VERDICT_LABEL[result.verdict]}
-          </span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-3)' }}>
-            {fmtPriceUsd(result.priceUsd)}
-          </span>
-          {result.t1Pct != null && (
-            <span style={{ fontSize: 9, color: 'var(--ok)', fontFamily: 'var(--font-mono)' }}>
-              T1 +{result.t1Pct.toFixed(0)}%
-            </span>
-          )}
-          <span style={{ fontSize: 9, color: 'var(--text-3)', marginLeft: 'auto' }}>{ago}</span>
-        </div>
-      </div>
-    </div>
+      {buyOpen && (
+        <QuickBuyModal
+          address={result.address}
+          symbol={result.symbol}
+          chain="SOLANA"
+          mode="buy"
+          onClose={() => setBuyOpen(false)}
+        />
+      )}
+    </>
   );
 }
 

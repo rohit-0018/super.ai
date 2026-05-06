@@ -7,6 +7,7 @@ import type { AiVerdict } from '../token-analysis/token-analysis.types';
 // ── env config ────────────────────────────────────────────────────────────────
 const PIPELINE_ENABLED     = process.env.SIGNAL_PIPELINE_ENABLED !== 'false';
 const PIPELINE_DELAY_MS    = parseInt(process.env.PIPELINE_DELAY_MS    ?? '2500',  10);
+const BATCH_DELAY_MS       = parseInt(process.env.BATCH_PIPELINE_DELAY_MS ?? '800', 10);
 const STRONG_BUY_THRESHOLD = parseInt(process.env.STRONG_BUY_THRESHOLD ?? '78',    10);
 const ANALYSIS_TTL_MS      = parseInt(process.env.PIPELINE_CACHE_MIN   ?? '10',    10) * 60_000;
 const MAX_QUEUE             = 25;
@@ -47,6 +48,8 @@ interface QueueItem {
   symbol:         string;
   heuristicScore: number;
   profileKey:     string;
+  /** true = frontend-requested; use shorter inter-item delay */
+  fastPath?:      boolean;
 }
 
 @Injectable()
@@ -117,6 +120,35 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
     if (!this.processing) void this.processLoop();
   }
 
+  /**
+   * Lightweight enqueue for addresses requested directly by the frontend
+   * (e.g. hot-feed page load — analyze cards that have no verdict yet).
+   * Items already in the done-cache are silently skipped.
+   */
+  enqueueBatch(items: Array<{ address: string; symbol: string; profileKey?: string }>): number {
+    if (!PIPELINE_ENABLED || !items.length) return 0;
+
+    const now = Date.now();
+    for (const [addr, exp] of this.doneCache) {
+      if (exp < now) this.doneCache.delete(addr);
+    }
+
+    const fresh: QueueItem[] = [];
+    for (const i of items) {
+      if (this.doneCache.has(i.address) || this.results.has(i.address)) continue;
+      fresh.push({ address: i.address, symbol: i.symbol, heuristicScore: 50, profileKey: i.profileKey ?? 'meme_hunter', fastPath: true });
+    }
+    if (!fresh.length) return 0;
+
+    const freshAddrs = new Set(fresh.map((f) => f.address));
+    this.queue = this.queue.filter((q) => !freshAddrs.has(q.address));
+    this.queue = [...this.queue, ...fresh].slice(0, MAX_QUEUE);
+
+    this.logger.log(`Batch enqueue: +${fresh.length} from frontend`);
+    if (!this.processing) void this.processLoop();
+    return fresh.length;
+  }
+
   /** All signal results (for REST /hot-tokens/signals and reconnect hydration). */
   getAll(): SignalResult[] {
     return [...this.results.values()].sort((a, b) => b.score - a.score);
@@ -136,7 +168,7 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
       const item = this.queue.shift()!;
       await this.analyzeOne(item);
       if (this.queue.length > 0 && !this.destroyed) {
-        await this.sleep(PIPELINE_DELAY_MS);
+        await this.sleep(item.fastPath ? BATCH_DELAY_MS : PIPELINE_DELAY_MS);
       }
     }
 

@@ -1,6 +1,7 @@
 import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Query, Req, Optional, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsArray, IsNumber, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionService } from '../execution/execution.service';
@@ -11,6 +12,19 @@ import { TokenPoolService } from './token-pool.service';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const AUTO_BUY_ENABLED = process.env.SIGNAL_AUTO_BUY_ENABLED !== 'false';
 const DEFAULT_SLIPPAGE_BPS = 300;
+
+class AnalyzeItemDto {
+  @IsString() address!: string;
+  @IsString() symbol!: string;
+  @IsOptional() @IsString() profileKey?: string;
+}
+
+class AnalyzeBatchDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AnalyzeItemDto)
+  items!: AnalyzeItemDto[];
+}
 
 class SignalBuyDto {
   @IsString() address!: string;
@@ -50,6 +64,18 @@ export class HotTokensController {
     const all = this.pipeline?.getAll() ?? [];
     const threshold = minScore ? parseInt(minScore, 10) : 0;
     return threshold > 0 ? all.filter((r) => r.score >= threshold) : all;
+  }
+
+  /**
+   * POST /api/hot-tokens/signals/analyze
+   * Frontend sends unanalyzed card addresses; we enqueue them in the pipeline.
+   * Results arrive via the `signal_analysis` WS event — no polling needed.
+   */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('signals/analyze')
+  analyzeAddresses(@Body() dto: AnalyzeBatchDto) {
+    const queued = this.pipeline?.enqueueBatch(dto.items) ?? 0;
+    return { queued };
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
