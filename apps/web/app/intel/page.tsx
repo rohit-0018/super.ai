@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
 import { fmtPriceUsd } from '../../lib/format-price';
+import { BullBearIndicator } from '../../components/TokenCard';
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 type TradingProfile = 'meme_hunter' | 'degen_sniper' | 'swing_trader' | 'gem_hunt' | 'alpha_hunt';
@@ -448,6 +449,96 @@ function TokenHeader({ report, onReanalyze, busy, profile }: { report: Report; o
   );
 }
 
+/* ─── Quick Analysis card (Tier 1 — always shown first) ─────────────────── */
+function QuickAnalysisCard({ report }: { report: Report }) {
+  const overall = computeOverall(report);
+  const ai      = report.aiReasoning;
+  const color   = vc(overall.verdict);
+  const bullish = ai?.bullishSignals.slice(0, 3) ?? [];
+  const risks   = ai?.riskFactors.slice(0, 3)   ?? [];
+
+  return (
+    <div
+      style={{
+        background: `color-mix(in srgb, ${color} 6%, var(--surface))`,
+        border:     `1px solid color-mix(in srgb, ${color} 40%, var(--border))`,
+        borderRadius: 14,
+        boxShadow: 'inset 0 1px 0 var(--highlight)',
+        overflow: 'hidden',
+      }}
+      className="fade-in"
+    >
+      {/* Score ring + verdict + bull/bear + summary */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 20, padding: '18px 22px' }}>
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <ScoreRing score={overall.score} size={76} strokeW={8} />
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 900, color, lineHeight: 1 }}>
+              {overall.score}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 22, fontWeight: 900,
+              color, letterSpacing: '0.01em', lineHeight: 1,
+            }}>
+              {vl(overall.verdict)}
+            </span>
+            <BullBearIndicator verdict={overall.verdict} score={overall.score} size="md" />
+          </div>
+          {ai?.summary ? (
+            <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)', margin: 0, lineHeight: 1.65, maxWidth: 560 }}>
+              {ai.summary}
+            </p>
+          ) : (
+            <p style={{ fontSize: 12, color: 'var(--text-3)', margin: 0, fontStyle: 'italic' }}>
+              Quick scan — no AI summary available. Switch to Alpha or Dossier depth for full AI reasoning.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Bullish / Risk quick bullets */}
+      {(bullish.length > 0 || risks.length > 0) && (
+        <div style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr',
+          borderTop: `1px solid color-mix(in srgb, ${color} 15%, var(--border))`,
+        }}>
+          <div style={{ padding: '10px 20px', borderRight: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--ok)', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 7 }}>
+              Bullish signals
+            </div>
+            {bullish.length === 0
+              ? <div style={{ fontSize: 11, color: 'var(--text-3)' }}>None identified</div>
+              : bullish.map((s, i) => (
+                <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11, fontWeight: 500, color: 'var(--text-2)', marginBottom: 4, lineHeight: 1.45 }}>
+                  <span style={{ color: 'var(--ok)', fontWeight: 800, flexShrink: 0 }}>↑</span>
+                  {s}
+                </div>
+              ))}
+          </div>
+          <div style={{ padding: '10px 20px' }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--bad)', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 7 }}>
+              Risk factors
+            </div>
+            {risks.length === 0
+              ? <div style={{ fontSize: 11, color: 'var(--text-3)' }}>None identified</div>
+              : risks.map((s, i) => (
+                <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11, fontWeight: 500, color: 'var(--text-2)', marginBottom: 4, lineHeight: 1.45 }}>
+                  <span style={{ color: 'var(--bad)', fontWeight: 800, flexShrink: 0 }}>↓</span>
+                  {s}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Overall verdict card ───────────────────────────────────────────────── */
 function OverallVerdictCard({ report, profile }: { report: Report; profile: TradingProfile }) {
   const overall = computeOverall(report);
@@ -488,10 +579,13 @@ function OverallVerdictCard({ report, profile }: { report: Report; profile: Trad
 
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 5 }}>
-            {overall.source === 'ai' ? `🤖 ${profileMeta.label} Analysis` : '📊 Playbook Score'}
+            {overall.source === 'ai' ? `${profileMeta.label} AI Analysis` : 'Playbook Score'}
           </div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 34, fontWeight: 900, color, lineHeight: 1, letterSpacing: '0.01em' }}>
-            {vl(overall.verdict)}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 34, fontWeight: 900, color, lineHeight: 1, letterSpacing: '0.01em' }}>
+              {vl(overall.verdict)}
+            </span>
+            <BullBearIndicator verdict={overall.verdict} score={overall.score} size="md" />
           </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
             {safeOk ? <span style={{ fontSize: 11, fontWeight: 600, color: '#4ade80' }}>🛡️ Safety OK</span>
@@ -1119,13 +1213,30 @@ function ReportView({ report, onReanalyze, busy, profile, depth }: {
   report: Report; onReanalyze: () => void; busy: boolean; profile: TradingProfile; depth: ReportDepth;
 }) {
   const strategy = report.tradingStrategy;
-  const isQuick = depth === 'quick' || !report.aiReasoning;
+  const isQuick  = depth === 'quick' || !report.aiReasoning;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} className="fade-in">
       <TokenHeader report={report} onReanalyze={onReanalyze} busy={busy} profile={profile} />
-      <OverallVerdictCard report={report} profile={profile} />
+
+      {/* ── Tier 1: Quick Analysis ─────────────────────────────────────── */}
+      <QuickAnalysisCard report={report} />
       {strategy && <TradingStrategyCard strategy={strategy} profile={profile} />}
+
+      {/* ── Tier 2 divider ─────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '6px 0 2px' }}>
+        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase',
+          color: 'var(--text-3)', padding: '0 2px', flexShrink: 0,
+        }}>
+          Full Analysis
+        </span>
+        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+      </div>
+
+      {/* ── Tier 2: Full Breakdown ─────────────────────────────────────── */}
+      <OverallVerdictCard report={report} profile={profile} />
       {!isQuick && <AIBreakdownCard report={report} />}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <SafetyCard report={report} />

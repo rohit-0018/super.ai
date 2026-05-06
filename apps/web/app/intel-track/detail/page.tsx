@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useApi } from '../../../lib/useApi';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { fmtUsdCompact, fmtPriceUsd } from '../../../lib/format-price';
+import { BullBearIndicator, VERDICT_COLOR, VERDICT_LABEL } from '../../../components/TokenCard';
 
 interface Tick {
   ts: string;
@@ -198,18 +199,61 @@ function IntelTrackDetailInner() {
         </section>
       )}
 
-      {data.aiSummary && (
-        <section className="section" style={{ padding: '14px 18px' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>
-            What we said {relTime(data.capturedAt)}
-          </div>
-          <div style={{ fontSize: 13 }}>
-            <span className="chip" style={{ marginRight: 8, fontSize: 10 }}>{data.aiVerdict}</span>
-            <span style={{ color: 'var(--text-3)' }}>AI {data.aiScore}/100</span>
-          </div>
-          <p style={{ marginTop: 8, fontSize: 13, color: 'var(--text-2)' }}>{data.aiSummary}</p>
-        </section>
-      )}
+      {/* ── Quick Analysis card ── */}
+      {data.aiVerdict && (() => {
+        const vColor = VERDICT_COLOR[data.aiVerdict] ?? 'var(--accent)';
+        return (
+          <section style={{
+            background: `color-mix(in srgb, ${vColor} 7%, var(--surface))`,
+            border: `1px solid color-mix(in srgb, ${vColor} 38%, var(--border))`,
+            borderRadius: 12,
+            boxShadow: 'inset 0 1px 0 var(--highlight)',
+            overflow: 'hidden',
+          }}>
+            {/* Score + verdict + bull/bear */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px' }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
+                border: `2.5px solid ${vColor}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: `color-mix(in srgb, ${vColor} 12%, transparent)`,
+              }}>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 900,
+                  color: vColor, lineHeight: 1,
+                }}>
+                  {data.aiScore ?? '?'}
+                </span>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3, flexWrap: 'wrap' }}>
+                  <span style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 900,
+                    color: vColor, lineHeight: 1,
+                  }}>
+                    {VERDICT_LABEL[data.aiVerdict] ?? data.aiVerdict}
+                  </span>
+                  <BullBearIndicator verdict={data.aiVerdict} score={data.aiScore} size="md" />
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                  Called {relTime(data.capturedAt)} · {data.source}
+                </div>
+              </div>
+            </div>
+            {/* Summary */}
+            {data.aiSummary && (
+              <div style={{
+                padding: '10px 18px 14px',
+                borderTop: `1px solid color-mix(in srgb, ${vColor} 14%, var(--border))`,
+              }}>
+                <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)', margin: 0, lineHeight: 1.65 }}>
+                  {data.aiSummary}
+                </p>
+              </div>
+            )}
+          </section>
+        );
+      })()}
 
       {data.reappearedAt && (
         <section className="section" style={{ padding: '12px 16px', background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-1))' }}>

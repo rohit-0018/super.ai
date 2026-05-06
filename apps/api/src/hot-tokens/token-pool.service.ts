@@ -93,6 +93,12 @@ export class TokenPoolService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /** Returns the live entry for a single address, or null if unknown/archived. */
+  getLive(address: string): (PoolMeta & Partial<PoolLiveData>) | null {
+    const e = this.registry.get(address);
+    return (e && !e.archived) ? e : null;
+  }
+
   archiveAddress(address: string) {
     const e = this.registry.get(address);
     if (e) e.archived = true;

@@ -39,6 +39,19 @@ export class JupiterClient {
     );
   }
 
+  async getSolPriceUsd(): Promise<number> {
+    if (this.base === 'MOCK') return 150;
+    try {
+      const resp = await http.get<{ solana?: { usd?: number } }>(
+        'https://api.coingecko.com/api/v3/simple/price',
+        { timeoutMs: 5_000, params: { ids: 'solana', vs_currencies: 'usd' } },
+      );
+      return resp?.solana?.usd ?? 150;
+    } catch {
+      return 150;
+    }
+  }
+
   async swapTx(quote: JupQuote, userPublicKey: string, useJito = true) {
     if (this.base === 'MOCK') {
       this.logger.debug(`[testnet] Mock Jupiter swap — returning devnet SOL transfer`);

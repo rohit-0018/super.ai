@@ -13,7 +13,7 @@
   --topbar-h:        44px;
   --hotbar-h:        44px;
   --bottombar-h:     28px;
-  --rail-w:          56px;
+  --rail-w:          80px;
   --tabbar-h:        56px;
   /* Total chrome height (top+hotbar+bottom) used by page-fill layouts */
   --chrome-h:        calc(var(--topbar-h) + var(--hotbar-h) + var(--bottombar-h));
@@ -583,52 +583,92 @@ body { position: relative; overflow: hidden; }
     }
   }
 
-  /* ---------- Rail (left icon sidebar) ---------- */
+  /* ---------- Rail (left icon sidebar — 80px with icon+label) ---------- */
   .rail {
-    width: var(--rail-w, 56px);
+    width: var(--rail-w, 80px);
     flex-shrink: 0;
     background: var(--bg-2);
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    align-items: center;
-    padding: 10px 0;
-    gap: 2px;
+    align-items: stretch;
+    padding: 8px 6px 10px;
+    gap: 1px;
     height: 100vh;
     overflow-y: auto;
     overflow-x: hidden;
     scrollbar-width: none;
     z-index: 30;
-    /* Sticky within the shell-outer which is already 100vh, so this is
-       effectively fixed without breaking the flex layout. */
     position: sticky;
     top: 0;
   }
   .rail::-webkit-scrollbar { display: none; }
   .rail-brand {
-    width: 40px; height: 40px; border-radius: 10px;
     display: flex; align-items: center; justify-content: center;
-    margin-bottom: 10px;
+    height: 40px; border-radius: 10px;
+    margin-bottom: 6px; flex-shrink: 0;
   }
+  /* Icon + label stacked */
   .rail-item {
-    width: 40px; height: 40px;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 10px;
+    width: 100%;
+    padding: 6px 4px 5px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    border-radius: 9px;
     color: var(--text-3);
     transition: color 120ms ease, background 120ms ease;
     position: relative;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    text-decoration: none;
   }
-  .rail-item:hover { color: var(--text); background: var(--surface-hover); }
+  .rail-item:hover { color: var(--text-2); background: var(--surface-hover); }
   .rail-item.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); }
   .rail-item.active::before {
     content: '';
     position: absolute;
-    left: -12px; top: 8px; bottom: 8px;
+    left: -6px; top: 8px; bottom: 8px;
     width: 2px;
     background: var(--accent);
     border-radius: 0 2px 2px 0;
   }
-  .rail-spacer { flex: 1; }
+  /* Short label below icon */
+  .rail-label {
+    font-size: 8.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1;
+    text-align: center;
+    color: inherit;
+    font-family: var(--font-sans);
+    white-space: nowrap;
+    overflow: hidden;
+    max-width: 68px;
+    text-overflow: ellipsis;
+  }
+  /* Category eyebrow divider */
+  .rail-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-top: 4px;
+  }
+  .rail-group-label {
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    text-align: center;
+    padding: 5px 0 2px;
+    opacity: 0.5;
+    font-family: var(--font-mono);
+  }
+  .rail-spacer { flex: 1; min-height: 4px; }
 
   /* ---------- Statusbar ---------- */
   .statusbar {
@@ -1215,6 +1255,17 @@ body { position: relative; overflow: hidden; }
   from { opacity:0; transform: translateX(24px) translateY(8px) scale(0.96); }
   to   { opacity:1; transform: translateX(0)    translateY(0)   scale(1); }
 }
+/* ── TokenCard animations ─────────────────────────────────────────────── */
+@keyframes token-card-in {
+  from { opacity: 0; transform: translateY(-12px) scale(0.97); filter: blur(2px); }
+  to   { opacity: 1; transform: none; filter: none; }
+}
+@keyframes token-card-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent), 0 8px 28px -10px rgba(0,0,0,0.5); }
+  50%       { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent), 0 8px 28px -10px rgba(0,0,0,0.5); }
+}
+@keyframes token-card-spin { to { transform: rotate(360deg); } }
+
 @keyframes snipe-toast-progress {
   from { transform: scaleX(1); }
   to   { transform: scaleX(0); }

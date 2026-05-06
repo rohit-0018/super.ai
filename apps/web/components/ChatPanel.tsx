@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useApi, mutate } from '../lib/useApi';
+import { QuickBuyModal } from './QuickBuyModal';
 
 interface Msg {
   role: 'user' | 'assistant';
@@ -73,6 +74,7 @@ export default function ChatPanel() {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [snipeModal, setSnipeModal] = useState<{ mode: 'buy' | 'sell' } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -254,7 +256,33 @@ export default function ChatPanel() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSnipeModal({ mode: 'buy' })}
+            className="btn btn-sm"
+            style={{
+              background: 'color-mix(in srgb, var(--ok) 14%, transparent)',
+              borderColor: 'color-mix(in srgb, var(--ok) 30%, var(--border))',
+              color: 'var(--ok)', fontWeight: 700, fontSize: 11,
+            }}
+            title="Quick snipe buy any token"
+          >
+            ⚡ Buy
+          </button>
+          <button
+            type="button"
+            onClick={() => setSnipeModal({ mode: 'sell' })}
+            className="btn btn-sm"
+            style={{
+              background: 'color-mix(in srgb, var(--bad) 10%, transparent)',
+              borderColor: 'color-mix(in srgb, var(--bad) 25%, var(--border))',
+              color: 'var(--bad)', fontWeight: 700, fontSize: 11,
+            }}
+            title="Quick snipe sell any token"
+          >
+            💰 Sell
+          </button>
           {msgs.length > 0 && (
             <button
               onClick={clearChat}
@@ -267,6 +295,13 @@ export default function ChatPanel() {
           )}
         </div>
       </div>
+
+      {snipeModal && (
+        <QuickBuyModal
+          mode={snipeModal.mode}
+          onClose={() => setSnipeModal(null)}
+        />
+      )}
 
       {/* Messages */}
       <div

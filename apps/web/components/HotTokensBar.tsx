@@ -1,8 +1,9 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useHotTokens, type HotToken } from '../lib/useHotTokens';
 import { fmtPriceUsd } from '../lib/format-price';
+import { QuickBuyModal } from './QuickBuyModal';
 
 /* ─── CopyCA — inline copy button for contract address ──────────────────────── */
 function CopyCA({ address }: { address: string }) {
@@ -90,53 +91,79 @@ function Countdown({ nextScanAt }: { nextScanAt: string | null }) {
 
 /* ─── Individual chip — button so click always fires, even inside marquee ───── */
 function TokenChip({ token, onClick }: { token: HotToken; onClick: (t: HotToken) => void }) {
+  const [buyOpen, setBuyOpen] = useState(false);
   const col = verdictColor(token.verdict);
   const isBullish = token.verdict === 'STRONG_BUY' || token.verdict === 'BUY';
   const changeUp = token.priceChange1h >= 0;
 
   return (
-    <button
-      onClick={() => onClick(token)}
-      title={`Open ${token.symbol} analysis`}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0,
-        background: isBullish ? `${col}10` : 'var(--surface-2)',
-        border: `1px solid ${isBullish ? `${col}30` : 'var(--border)'}`,
-        borderRadius: 8, padding: '4px 9px', cursor: 'pointer',
-        boxShadow: `inset 0 1px 0 var(--highlight)${isBullish ? `, 0 0 8px ${col}14` : ''}`,
-        transition: 'border-color 120ms, background 120ms',
-        outline: 'none', whiteSpace: 'nowrap',
-      }}
-      onMouseEnter={e => {
-        e.currentTarget.style.borderColor = col;
-        e.currentTarget.style.background = `${col}20`;
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.borderColor = isBullish ? `${col}30` : 'var(--border)';
-        e.currentTarget.style.background = isBullish ? `${col}10` : 'var(--surface-2)';
-      }}
-    >
-      <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: col, boxShadow: isBullish ? `0 0 5px ${col}` : undefined }} />
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.03em' }}>
-        {token.symbol}
-      </span>
-      <CopyCA address={token.address} />
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-2)' }}>
-        {fmtPrice(token.priceUsd)}
-      </span>
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: changeUp ? 'var(--ok)' : 'var(--bad)', minWidth: 42, textAlign: 'right' }}>
-        {fmtChange(token.priceChange1h)}
-      </span>
-      <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-        {ageLabel(token.pairAgeHours)}
-      </span>
-      <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: col, fontFamily: 'var(--font-mono)', background: `${col}18`, borderRadius: 4, padding: '1px 4px' }}>
-        {verdictLabel(token.verdict)}
-      </span>
-      <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-        {token.score}
-      </span>
-    </button>
+    <>
+      <div
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0,
+          background: isBullish ? `${col}10` : 'var(--surface-2)',
+          border: `1px solid ${isBullish ? `${col}30` : 'var(--border)'}`,
+          borderRadius: 8, padding: '4px 6px 4px 9px',
+          boxShadow: `inset 0 1px 0 var(--highlight)${isBullish ? `, 0 0 8px ${col}14` : ''}`,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <button
+          onClick={() => onClick(token)}
+          title={`Open ${token.symbol} analysis`}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            background: 'none', border: 'none', cursor: 'pointer', outline: 'none', padding: 0,
+          }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: col, boxShadow: isBullish ? `0 0 5px ${col}` : undefined }} />
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.03em' }}>
+            {token.symbol}
+          </span>
+          <CopyCA address={token.address} />
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-2)' }}>
+            {fmtPrice(token.priceUsd)}
+          </span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: changeUp ? 'var(--ok)' : 'var(--bad)', minWidth: 42, textAlign: 'right' }}>
+            {fmtChange(token.priceChange1h)}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+            {ageLabel(token.pairAgeHours)}
+          </span>
+          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: col, fontFamily: 'var(--font-mono)', background: `${col}18`, borderRadius: 4, padding: '1px 4px' }}>
+            {verdictLabel(token.verdict)}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+            {token.score}
+          </span>
+        </button>
+        {/* Quick buy button inline in the chip */}
+        <button
+          onClick={(e) => { e.stopPropagation(); setBuyOpen(true); }}
+          title={`Quick buy ${token.symbol}`}
+          style={{
+            display: 'inline-flex', alignItems: 'center',
+            padding: '2px 6px', marginLeft: 3, borderRadius: 5, cursor: 'pointer',
+            background: 'color-mix(in srgb, var(--ok) 15%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--ok) 35%, var(--border))',
+            color: 'var(--ok)', fontSize: 10, fontWeight: 700,
+            transition: 'background 100ms',
+          }}
+        >
+          ⚡
+        </button>
+      </div>
+
+      {buyOpen && (
+        <QuickBuyModal
+          address={token.address}
+          symbol={token.symbol}
+          chain="SOLANA"
+          mode="buy"
+          onClose={() => setBuyOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -199,7 +226,11 @@ export function HotTokensBar() {
 
   const profile      = scan?.profileKey ?? 'meme_hunter';
   const profileLabel = PROFILE_LABELS[profile] ?? profile.toUpperCase();
-  const tokens       = scan?.tokens ?? [];
+  // Sort newest-first so the freshest tokens appear at the start of the marquee
+  const tokens = useMemo(() => {
+    const t = scan?.tokens ?? [];
+    return [...t].sort((a, b) => new Date(b.scannedAt).getTime() - new Date(a.scannedAt).getTime());
+  }, [scan?.tokens]);
   const hasTokens    = tokens.length > 0;
 
   function openAnalysis(token: HotToken) {

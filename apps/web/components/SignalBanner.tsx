@@ -5,6 +5,8 @@ import { useRealtime } from '../lib/useRealtime';
 import { useBannerSettings } from '../lib/useBannerSettings';
 import { fmtPriceUsd } from '../lib/format-price';
 import { api } from '../lib/api';
+import { QuickBuyModal } from './QuickBuyModal';
+import { BullBearIndicator } from './TokenCard';
 
 export interface SignalResult {
   address:        string;
@@ -152,6 +154,16 @@ function BannerCard({ entry, settings, onDismiss, onBuy, onAnalyze }: CardProps)
   const { signal, exiting, autoBought } = entry;
   const color = VERDICT_COLOR[signal.verdict] ?? '#8a8fa3';
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [buyOpen, setBuyOpen] = useState(false);
+
+  function copyCA(e: React.MouseEvent) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(signal.address).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
 
   return (
     <>
@@ -194,19 +206,21 @@ function BannerCard({ entry, settings, onDismiss, onBuy, onAnalyze }: CardProps)
             justifyContent: 'center',
             alignItems: 'center',
             height: '100%',
-            minWidth: 100,
-            gap: 2,
+            minWidth: 110,
+            gap: 3,
           }}>
             <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color, textTransform: 'uppercase' }}>
               {VERDICT_LABEL[signal.verdict]}
             </span>
-            <span style={{
-              fontFamily: 'var(--font-mono)', fontSize: 17, fontWeight: 700, color,
-              textShadow: `0 0 12px color-mix(in srgb, ${color} 50%, transparent)`,
-            }}>
-              {signal.score}
-              <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-3)' }}>/100</span>
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 17, fontWeight: 700, color,
+              }}>
+                {signal.score}
+                <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-3)' }}>/100</span>
+              </span>
+              <BullBearIndicator verdict={signal.verdict} score={signal.score} />
+            </div>
           </div>
 
           {/* Token info */}
@@ -238,12 +252,13 @@ function BannerCard({ entry, settings, onDismiss, onBuy, onAnalyze }: CardProps)
           <ExitTargets signal={signal} color={color} />
 
           {/* Actions */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '0 10px', flexShrink: 0 }}>
             <button
               onClick={() => setExpanded((v) => !v)}
+              title={expanded ? 'Show less' : 'Show more detail'}
               style={{
                 background: 'var(--surface-2)', border: '1px solid var(--border)',
-                borderRadius: 6, padding: '4px 8px', fontSize: 10, color: 'var(--text-2)',
+                borderRadius: 5, padding: '3px 7px', fontSize: 10, color: 'var(--text-2)',
                 cursor: 'pointer', letterSpacing: '0.04em',
               }}
             >
@@ -251,41 +266,60 @@ function BannerCard({ entry, settings, onDismiss, onBuy, onAnalyze }: CardProps)
             </button>
             <button
               onClick={onAnalyze}
+              title="Open full analysis"
               style={{
                 background: 'var(--surface-2)', border: '1px solid var(--border)',
-                borderRadius: 6, padding: '4px 10px', fontSize: 11, color: 'var(--text)',
+                borderRadius: 5, padding: '3px 8px', fontSize: 10, color: 'var(--text)',
                 cursor: 'pointer', fontWeight: 500,
               }}
             >
               Analyze
             </button>
+            {/* Copy CA */}
+            <button
+              onClick={copyCA}
+              title={copied ? 'Copied!' : 'Copy contract address'}
+              style={{
+                background: copied ? 'color-mix(in srgb, var(--ok) 12%, transparent)' : 'var(--surface-2)',
+                border: `1px solid ${copied ? 'color-mix(in srgb, var(--ok) 28%, var(--border))' : 'var(--border)'}`,
+                borderRadius: 5, padding: '3px 7px', fontSize: 10,
+                color: copied ? 'var(--ok)' : 'var(--text-3)',
+                cursor: 'pointer', fontWeight: 600, transition: 'all 150ms',
+              }}
+            >
+              {copied ? '✓' : '⎘'}
+            </button>
+            {/* Buy */}
             {autoBought ? (
               <div style={{
                 background: `color-mix(in srgb, ${color} 15%, var(--surface-2))`,
                 border: `1px solid ${color}`,
-                borderRadius: 6, padding: '4px 14px', fontSize: 11, color,
+                borderRadius: 5, padding: '3px 10px', fontSize: 10, color,
                 fontWeight: 700, letterSpacing: '0.04em',
               }}>
-                ⚡ BOUGHT ${settings.positionSizeUsd}
+                ⚡ BOUGHT
               </div>
             ) : (
               <button
-                onClick={onBuy}
+                onClick={() => setBuyOpen(true)}
+                title={`Quick snipe buy $${settings.positionSizeUsd}`}
                 style={{
                   background: color, border: `1px solid ${color}`,
-                  borderRadius: 6, padding: '4px 14px', fontSize: 12, color: '#fff',
+                  borderRadius: 5, padding: '3px 10px', fontSize: 11, color: '#fff',
                   cursor: 'pointer', fontWeight: 700, letterSpacing: '0.03em',
-                  boxShadow: `0 0 12px color-mix(in srgb, ${color} 35%, transparent)`,
+                  boxShadow: `0 0 10px color-mix(in srgb, ${color} 30%, transparent)`,
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
                 }}
               >
-                BUY ${settings.positionSizeUsd}
+                ⚡ Buy
               </button>
             )}
             <button
               onClick={onDismiss}
+              title="Dismiss"
               style={{
                 background: 'transparent', border: 'none', color: 'var(--text-3)',
-                cursor: 'pointer', padding: '4px 6px', fontSize: 14, lineHeight: 1,
+                cursor: 'pointer', padding: '3px 5px', fontSize: 14, lineHeight: 1,
               }}
             >
               ×
@@ -335,6 +369,16 @@ function BannerCard({ entry, settings, onDismiss, onBuy, onAnalyze }: CardProps)
           </div>
         )}
       </div>
+
+      {buyOpen && (
+        <QuickBuyModal
+          address={signal.address}
+          symbol={signal.symbol}
+          chain="SOLANA"
+          mode="buy"
+          onClose={() => setBuyOpen(false)}
+        />
+      )}
     </>
   );
 }

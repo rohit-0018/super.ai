@@ -326,9 +326,19 @@ model Trade {
   episode    TradeEpisode?
   convictionBreakdown Json?
   convictionVersion   Int?
+  // ── Exit engine fields ────────────────────────────────────────────────────
+  entryMcapUsd          Float?    // mcap at buy time (for tier multiplier)
+  highestMcapSeen       Float?    // peak mcap observed since entry (trailing stop anchor)
+  lastSignificantMoveAt DateTime? // last time mcap moved >10% (time-stop detection)
+  tiersExecuted         Json?     // e.g. [0, 1] — which take-profit tiers have fired
+  exitReason            String?   // 'tier_0'|'tier_1'|'tier_2'|'trailing_stop'|'time_stop'|'thesis_break'|'manual'
+  exitAt                DateTime?
+  realizedPnl           Float?    // USD profit/loss realised at exit
+  holdDurationSec       Int?      // seconds from buy to full exit
   @@index([userId, createdAt])
   @@index([userId, strategyId])
   @@index([traceId])
+  @@index([exitAt])               // exit engine scans open trades efficiently
 }
 
 // L5 — per-user ConvictionEngine weight personalization. Sum should stay at

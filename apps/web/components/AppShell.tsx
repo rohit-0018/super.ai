@@ -194,81 +194,112 @@ function SignalQueueProvider({
 /* Rail                                                         */
 /* ============================================================ */
 
-const RAIL_ITEMS: { href: string; label: string; icon: (props: { size?: number }) => JSX.Element }[] = [
-  { href: '/dashboard', label: 'Dashboard', icon: IconDashboard },
-  { href: '/trade',     label: 'Trade',     icon: IconTrade },
-  { href: '/agents',    label: 'Agents',    icon: IconAgents },
-  { href: '/snipe',     label: 'Sniper',    icon: IconSnipe },
-  { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
-  { href: '/hot-feed',  label: 'Hot Feed',  icon: IconFlame },
-  { href: '/intel',     label: 'Intel',     icon: IconScan },
-  { href: '/intel-track', label: 'Track',   icon: IconTrophy },
-  { href: '/wallets',   label: 'Wallets',   icon: IconWallet },
-  { href: '/chat',      label: 'Chat',      icon: IconChat },
-  { href: '/analytics', label: 'Analytics', icon: IconAnalytics },
-  { href: '/social',    label: 'Social',    icon: IconSocial },
+type RailItem = { href: string; label: string; icon: (props: { size?: number }) => JSX.Element };
+type RailGroup = { category: string; items: RailItem[] };
+
+const RAIL_GROUPS: RailGroup[] = [
+  {
+    category: 'Feed',
+    items: [
+      { href: '/hot-feed',    label: 'Hot Feed', icon: IconFlame    },
+      { href: '/intel',       label: 'Analyze',  icon: IconScan     },
+      { href: '/intel-track', label: 'Track',    icon: IconTrophy   },
+    ],
+  },
+  {
+    category: 'Trade',
+    items: [
+      { href: '/trade',     label: 'Trade',     icon: IconTrade     },
+      { href: '/snipe',     label: 'Sniper',    icon: IconSnipe     },
+      { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
+    ],
+  },
+  {
+    category: 'Tools',
+    items: [
+      { href: '/agents',    label: 'Agents',    icon: IconAgents    },
+      { href: '/chat',      label: 'Chat',      icon: IconChat      },
+      { href: '/wallets',   label: 'Wallets',   icon: IconWallet    },
+      { href: '/analytics', label: 'Analytics', icon: IconAnalytics },
+      { href: '/social',    label: 'Social',    icon: IconSocial    },
+    ],
+  },
 ];
 
 function Rail({ pathname, onSignalToggle, signalCount }: { pathname: string; onSignalToggle: () => void; signalCount: number }) {
   return (
     <aside className="rail">
+      {/* Brand */}
       <Link href="/" className="rail-brand" aria-label="QWAI home">
-        <QwaiMark size={26} />
+        <QwaiMark size={24} />
       </Link>
 
-      {/* Signal queue toggle — top of rail, always visible */}
+      {/* Dashboard — top of rail before categories */}
+      <Link
+        href="/dashboard"
+        className={`rail-item ${pathname.startsWith('/dashboard') ? 'active' : ''}`}
+        aria-label="Dashboard"
+      >
+        <IconDashboard size={16} />
+        <span className="rail-label">Home</span>
+      </Link>
+
+      {/* Signal queue toggle */}
       <button
         onClick={onSignalToggle}
         className="rail-item"
         aria-label="Signal queue"
-        title="Signal Queue"
-        style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', width: '100%' }}
+        style={{ position: 'relative' }}
       >
-        <IconSignal size={18} />
-        {signalCount > 0 && (
-          <span style={{
-            position: 'absolute', top: 6, right: 6,
-            width: 14, height: 14, borderRadius: '50%',
-            background: '#22c55e', color: '#fff',
-            fontSize: 8, fontWeight: 800,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 0 6px #22c55e',
-          }}>
-            {signalCount > 9 ? '9+' : signalCount}
-          </span>
-        )}
+        <div style={{ position: 'relative' }}>
+          <IconSignal size={16} />
+          {signalCount > 0 && (
+            <span style={{
+              position: 'absolute', top: -4, right: -6,
+              width: 13, height: 13, borderRadius: '50%',
+              background: 'var(--ok)', color: '#fff',
+              fontSize: 7, fontWeight: 800,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              {signalCount > 9 ? '9+' : signalCount}
+            </span>
+          )}
+        </div>
+        <span className="rail-label" style={{ color: signalCount > 0 ? 'var(--ok)' : undefined }}>
+          Signals
+        </span>
       </button>
 
-      {RAIL_ITEMS.map(({ href, label, icon: Icon }) => {
-        const active = pathname.startsWith(href);
-        return (
-          <Link
-            key={href}
-            href={href}
-            className={`rail-item ${active ? 'active' : ''}`}
-            aria-label={label}
-            title={label}
-          >
-            <Icon size={18} />
-          </Link>
-        );
-      })}
+      {/* Category groups */}
+      {RAIL_GROUPS.map((group) => (
+        <div key={group.category} className="rail-group">
+          <div className="rail-group-label">{group.category}</div>
+          {group.items.map(({ href, label, icon: Icon }) => {
+            const active = pathname.startsWith(href);
+            return (
+              <Link
+                key={href}
+                href={href}
+                className={`rail-item ${active ? 'active' : ''}`}
+                aria-label={label}
+              >
+                <Icon size={16} />
+                <span className="rail-label">{label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      ))}
+
       <div className="rail-spacer" />
+
       <Link
         href="/settings"
         className={`rail-item ${pathname.startsWith('/settings') ? 'active' : ''}`}
         aria-label="Settings"
-        title="Settings"
       >
-        <IconSettings size={18} />
-      </Link>
-      <Link
-        href="/design"
-        className={`rail-item ${pathname.startsWith('/design') ? 'active' : ''}`}
-        aria-label="Design kit"
-        title="Design kit"
-      >
-        <IconDesign size={18} />
+        <IconSettings size={16} />
+        <span className="rail-label">Settings</span>
       </Link>
     </aside>
   );
