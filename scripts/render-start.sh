@@ -14,49 +14,36 @@ fi
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
 export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
-# ─── Detect fresh DB ──────────────────────────────────────────────────────
-# On a brand-new Render postgres, the `_prisma_migrations` table doesn't exist
-# yet. We use this signal to skip the resolve loops (which require that table)
-# — migrate deploy below will create the schema from zero.
-FRESH_DB=0
-if ! pnpm prisma migrate status --schema=./prisma/schema.prisma >/dev/null 2>&1; then
-  # status exits non-zero for fresh DB OR for pending migrations. Distinguish by
-  # inspecting the table directly via prisma db execute (works on any state).
-  cat > /tmp/fresh-check.sql <<'SQL'
-SELECT 1 FROM information_schema.tables WHERE table_name = '_prisma_migrations' LIMIT 1;
-SQL
-  if ! pnpm prisma db execute --file /tmp/fresh-check.sql --schema ./prisma/schema.prisma 2>/dev/null | grep -q 1; then
-    FRESH_DB=1
-    echo "▶ fresh database detected — skipping migration-resolve loops"
-  fi
-fi
-
-if [[ "$FRESH_DB" -eq 0 ]]; then
-  echo "▶ resolving any previously-failed migrations"
-  # Safe to call even if not stuck (no-ops). Skipped on fresh DB because the
-  # _prisma_migrations table doesn't exist yet.
-  for migration in \
-    20260424041722_ \
-    20260424_strategy_attribution \
-    20260425_intent_memory \
-    20260427_conversational_memory \
-    20260428_episodic_memory \
-    20260428_snipe_attempts \
-    20260429_conviction_personalization \
-    20260429_snipe_buy_snapshot \
-    20260429_snipe_tables \
-    20260429a_snipe_attempts \
-    20260429b_snipe_buy_snapshot \
-    20260430_snipe_trade_error_msg \
-    20260430_phone_auth \
-    20260502_alert_read_at \
-    20260503_provider_config \
-    20260503010000_schema_drift_fix
-  do
-    pnpm prisma migrate resolve --rolled-back "$migration" \
-      --schema=./prisma/schema.prisma 2>/dev/null || true
-  done
-fi
+# ─── Resolve any failed/stuck migrations ─────────────────────────────────
+# Always runs. Each `migrate resolve --rolled-back` call is harmless if the
+# migration was never applied (the error gets swallowed by `|| true`), so this
+# is safe on both fresh and existing DBs. We can't reliably detect a fresh DB
+# from this shell — `prisma db execute` doesn't print SELECT results to stdout —
+# so the simplest correct thing is to attempt resolution unconditionally.
+echo "▶ resolving any previously-failed migrations (idempotent)"
+for migration in \
+  20260424041722_ \
+  20260424_strategy_attribution \
+  20260425_intent_memory \
+  20260427_conversational_memory \
+  20260428_episodic_memory \
+  20260428_snipe_attempts \
+  20260429_conviction_personalization \
+  20260429_snipe_buy_snapshot \
+  20260429_snipe_tables \
+  20260429a_snipe_attempts \
+  20260429b_snipe_buy_snapshot \
+  20260430_snipe_trade_error_msg \
+  20260430_phone_auth \
+  20260502_alert_read_at \
+  20260503_provider_config \
+  20260503010000_schema_drift_fix
+do
+  out=$(pnpm prisma migrate resolve --rolled-back "$migration" \
+    --schema=./prisma/schema.prisma 2>&1) && \
+    echo "  ↳ $migration: rolled back" || \
+    echo "  ↳ $migration: not present (skip)"
+done
 
 # ─── Apply migrations FIRST ───────────────────────────────────────────────
 # On a fresh DB this creates every enum (Chain, OrderType, …) and table.
