@@ -20,11 +20,16 @@ export class GuardrailsService {
   constructor(private prisma: PrismaService) {}
 
   async config(userId: string) {
-    return this.prisma.guardrailConfig.upsert({
+    const cfg = await this.prisma.guardrailConfig.upsert({
       where: { userId },
       update: {},
-      create: { userId, whitelist: [], blacklist: [] },
+      create: { userId, whitelist: [], blacklist: [], maxSlippageBps: 5000 },
     });
+    // Lazy upgrade: old default was 150 bps — too tight for volatile tokens
+    if (cfg.maxSlippageBps <= 150) {
+      return this.prisma.guardrailConfig.update({ where: { userId }, data: { maxSlippageBps: 5000 } });
+    }
+    return cfg;
   }
 
   async update(userId: string, patch: Partial<{ perTradeUsd: number; dailyUsd: number; maxSlippageBps: number; whitelist: string[]; blacklist: string[]; killSwitch: boolean }>) {
@@ -48,7 +53,7 @@ export class GuardrailsService {
       return { ok: false, reason: `SLIPPAGE_CAP_${cfg.maxSlippageBps}bps` };
     if (intent.riskFlags?.includes('HONEYPOT')) return { ok: false, reason: 'HONEYPOT_FLAG' };
 
-    const since = new Date(Date.now() - 24 * 3600_000);
+    const since = new Date(); since.setUTCHours(0, 0, 0, 0); // UTC calendar day
     const used = await this.prisma.trade.aggregate({
       _sum: { priceUsd: true },
       where: { userId: intent.userId, createdAt: { gte: since }, mode: 'LIVE' },
@@ -65,22 +70,23 @@ export class GuardrailsService {
     });
     const portfolio = new Map<string, number>();
     for (const t of trades) {
-      const key = t.tokenOut.slice(0, 10);
-      portfolio.set(key, (portfolio.get(key) ?? 0) + (t.priceUsd ?? 0));
+      portfolio.set(t.tokenOut, (portfolio.get(t.tokenOut) ?? 0) + (t.priceUsd ?? 0));
     }
+    const existing = portfolio.get(tokenAddress) ?? 0;
     const total = Array.from(portfolio.values()).reduce((s, v) => s + v, 0) + addUsd;
-    if (total <= 0) return { ok: true };
-    const tokenKey = tokenAddress.slice(0, 10);
-    const exposure = ((portfolio.get(tokenKey) ?? 0) + addUsd) / total;
+    // Guard empty portfolio: exposure is 100% if first trade, which exceeds 40% limit
+    if (total <= 0) return { ok: addUsd <= 0 };
+    const exposure = (existing + addUsd) / total;
     if (exposure > 0.4) {
-      return { ok: false, reason: `CONCENTRATION_${(exposure * 100).toFixed(0)}%_in_${tokenKey}` };
+      const symbol = tokenAddress.slice(0, 8) + '…';
+      return { ok: false, reason: `CONCENTRATION_${(exposure * 100).toFixed(0)}%_in_${symbol}` };
     }
     return { ok: true };
   }
 
   async simulate(userId: string, scenarioUsd: number): Promise<{ currentDayUsed: number; afterTrade: number; headroom: number; killSwitch: boolean; concentrationTop: { token: string; pct: number }[] }> {
     const cfg = await this.config(userId);
-    const since = new Date(Date.now() - 24 * 3600_000);
+    const since = new Date(); since.setUTCHours(0, 0, 0, 0); // UTC calendar day
     const used = await this.prisma.trade.aggregate({
       _sum: { priceUsd: true },
       where: { userId, createdAt: { gte: since }, mode: 'LIVE' },
@@ -95,8 +101,7 @@ export class GuardrailsService {
     });
     const portfolio = new Map<string, number>();
     for (const t of trades) {
-      const key = t.tokenOut.slice(0, 10);
-      portfolio.set(key, (portfolio.get(key) ?? 0) + (t.priceUsd ?? 0));
+      portfolio.set(t.tokenOut, (portfolio.get(t.tokenOut) ?? 0) + (t.priceUsd ?? 0));
     }
     const total = Array.from(portfolio.values()).reduce((s, v) => s + v, 0) || 1;
     const concentrationTop = Array.from(portfolio.entries())

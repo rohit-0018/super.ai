@@ -182,10 +182,11 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
       const report = await this.tokenAnalysis.analyzeAddress(
         item.address, false, 'hot_tokens_scan',
       );
-      if (!report?.aiReasoning) return;
 
-      // Mark done — don't re-queue for ANALYSIS_TTL_MS
+      // Mark done regardless of outcome — prevents infinite re-queue on bad tokens
       this.doneCache.set(item.address, Date.now() + ANALYSIS_TTL_MS);
+
+      if (!report?.aiReasoning) return;
 
       const { aiReasoning: ai, meta, tradingStrategy: ts } = report;
       const price = meta.priceUsd ?? 0;

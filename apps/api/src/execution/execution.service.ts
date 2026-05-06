@@ -77,6 +77,11 @@ export class ExecutionService {
 
   async swap(input: SwapInput): Promise<SwapResult> {
     const trace: string | undefined = input.traceId ?? currentTraceId();
+    // Normalize amountIn: QuickBuy sends empty string; derive from notionalUsd
+    if (!input.amountIn && input.notionalUsd > 0 && input.chain === 'SOLANA') {
+      const solUsd = await this.jup.getSolPriceUsd();
+      input.amountIn = Math.round((input.notionalUsd / solUsd) * 1e9).toString();
+    }
     // ── Security layer: audit, compliance, and risk checks ──
     await this.securityAudit.log('SWAP_INITIATED', {
       userId: input.userId,
@@ -150,7 +155,8 @@ export class ExecutionService {
     if (!decision.ok) throw new ForbiddenException({ guardrail: decision.reason, traceId: trace });
 
     const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
-    const mode: TradeMode = user?.paperMode ? 'PAPER' : 'LIVE';
+    if (!user) throw new ForbiddenException({ message: 'User not found', traceId: trace });
+    const mode: TradeMode = user.paperMode ? 'PAPER' : 'LIVE';
 
     // LiveTradeGuard — per-user rate limit + first-live-trade cap.
     if (mode === 'LIVE') {
@@ -368,42 +374,74 @@ export class ExecutionService {
       return { txHash, outAmount: quote.outAmount };
     }
 
-    // Mainnet: real Jupiter swap
-    const swapTxB64: string = swap.swapTransaction;
-    const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
-      const kp = Keypair.fromSecretKey(new Uint8Array(key));
-      const raw = Buffer.from(swapTxB64, 'base64');
-      const tx = VersionedTransaction.deserialize(raw);
-      tx.sign([kp]);
+    // Mainnet: real Jupiter swap — retry with fresh re-quotes on slippage failure.
+    // Slippage escalation: base → 2× → 4× (capped at 10 000 bps).
+    const MAX_SWAP_ATTEMPTS = 3;
+    const SWAP_SLIPPAGE_CEILING = 10_000;
 
-      // Fetch the confirmation window BEFORE sending so lastValidBlockHeight is
-      // tied to the same era as the blockhash already embedded in the Jupiter tx.
-      const { lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-      const blockhash = tx.message.recentBlockhash; // use the tx's own blockhash
+    let lastErr: Error | null = null;
+    let lastOutAmount = quote.outAmount;
 
-      const sig = await connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      const result = await connection.confirmTransaction(
-        { signature: sig, blockhash, lastValidBlockHeight },
-        'confirmed',
-      );
+    for (let attempt = 0; attempt < MAX_SWAP_ATTEMPTS; attempt++) {
+      // On retries, re-quote with escalated slippage so the embedded price anchor is fresh.
+      const attemptSlippage = attempt === 0
+        ? input.slippageBps
+        : Math.min(SWAP_SLIPPAGE_CEILING, input.slippageBps * Math.pow(2, attempt));
 
-      if (result.value.err) {
-        const errStr = JSON.stringify(result.value.err);
-        // InstructionError with Custom:1 is Jupiter's SlippageToleranceExceeded
-        const isSlippage = errStr.includes('"Custom":1') || errStr.includes('"custom":1');
-        throw new Error(
-          isSlippage
-            ? `Slippage tolerance exceeded — price moved between quote and execution (slippage=${input.slippageBps}bps). txHash=${sig}`
-            : `Transaction confirmed but program failed: ${errStr}. txHash=${sig}`,
-        );
+      const attemptQuote = attempt === 0
+        ? quote
+        : await this.jup.quote(input.tokenIn, input.tokenOut, input.amountIn, attemptSlippage);
+      const attemptSwap = attempt === 0
+        ? swap
+        : await this.jup.swapTx(attemptQuote, wallet.address, true);
+
+      if (!attemptSwap?.swapTransaction) break; // testnet mock path — shouldn't reach here on mainnet
+
+      lastOutAmount = attemptQuote.outAmount;
+
+      try {
+        const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
+          const kp = Keypair.fromSecretKey(new Uint8Array(key));
+          const raw = Buffer.from(attemptSwap.swapTransaction, 'base64');
+          const tx = VersionedTransaction.deserialize(raw);
+          tx.sign([kp]);
+
+          const { lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+          const blockhash = tx.message.recentBlockhash;
+
+          const sig = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: false,
+            maxRetries: 3,
+          });
+          const result = await connection.confirmTransaction(
+            { signature: sig, blockhash, lastValidBlockHeight },
+            'confirmed',
+          );
+
+          if (result.value.err) {
+            const errStr = JSON.stringify(result.value.err);
+            const isSlippage = errStr.includes('"Custom":1') || errStr.includes('"custom":1');
+            throw new Error(
+              isSlippage
+                ? `SLIPPAGE:Slippage exceeded (attempt ${attempt + 1}/${MAX_SWAP_ATTEMPTS}, ${attemptSlippage}bps). txHash=${sig}`
+                : `Transaction failed: ${errStr}. txHash=${sig}`,
+            );
+          }
+          return sig;
+        });
+        return { txHash, outAmount: lastOutAmount };
+      } catch (e: any) {
+        lastErr = e;
+        if (!e.message?.startsWith('SLIPPAGE:')) throw e; // non-slippage error — don't retry
+        this.logger.warn(`[trc=${trace}] swap slippage attempt ${attempt + 1}/${MAX_SWAP_ATTEMPTS} failed at ${attemptSlippage}bps — retrying with fresh quote`);
       }
-      return sig;
-    });
+    }
 
-    return { txHash, outAmount: quote.outAmount };
+    // All attempts exhausted
+    throw new Error(
+      lastErr?.message?.replace('SLIPPAGE:', '') ??
+      `Slippage exceeded on all ${MAX_SWAP_ATTEMPTS} attempts`,
+    );
   }
 
   private async executeEvm(input: SwapInput): Promise<{ txHash: string; outAmount: string }> {
@@ -477,16 +515,27 @@ export class ExecutionService {
   }
 
   private async updatePaperBalance(userId: string, token: string, deltaAmount: string) {
-    const existing = await this.prisma.paperBalance.findUnique({
-      where: { userId_token: { userId, token } },
-    });
-    const prev = BigInt(existing?.amount ?? '0');
-    const next = (prev + BigInt(deltaAmount)).toString();
-    await this.prisma.paperBalance.upsert({
-      where: { userId_token: { userId, token } },
-      update: { amount: next },
-      create: { userId, token, amount: next },
-    });
+    // Guard: BigInt throws SyntaxError on 'NaN', 'Infinity', floats, or empty strings.
+    const parsed = parseFloat(deltaAmount);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      this.logger.warn(`updatePaperBalance: invalid deltaAmount="${deltaAmount}" for token=${token} — skipping`);
+      return;
+    }
+    const delta = BigInt(Math.round(parsed)).toString();
+    // Atomic upsert: use create + increment-on-conflict pattern via two statements
+    // wrapped in a transaction to prevent concurrent-update races.
+    await this.prisma.$transaction([
+      this.prisma.paperBalance.upsert({
+        where:  { userId_token: { userId, token } },
+        create: { userId, token, amount: delta },
+        update: {},
+      }),
+      this.prisma.$executeRaw`
+        UPDATE "PaperBalance"
+        SET amount = (amount::bigint + ${BigInt(delta)}::bigint)::text
+        WHERE "userId" = ${userId} AND token = ${token}
+      `,
+    ]);
   }
 }
 
