@@ -587,12 +587,14 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
           }
         } catch { /* Redis miss is fine */ }
 
-        await this.redis.setex(key, STREAK_TTL_SEC, JSON.stringify(streak)).catch(() => {});
+        await this.redis.setex(key, STREAK_TTL_SEC, JSON.stringify(streak))
+          .catch((e: any) => this.logger.warn(`streak Redis write [${t.address.slice(0, 8)}]: ${e?.message}`));
 
         if (streak.count >= STREAK_THRESHOLD && !streak.notified) {
           // Mark notified so we only alert once per streak run
           streak.notified = true;
-          await this.redis.setex(key, STREAK_TTL_SEC, JSON.stringify(streak)).catch(() => {});
+          await this.redis.setex(key, STREAK_TTL_SEC, JSON.stringify(streak))
+            .catch((e: any) => this.logger.warn(`streak notify Redis write [${t.address.slice(0, 8)}]: ${e?.message}`));
 
           winners.push({
             address: t.address,

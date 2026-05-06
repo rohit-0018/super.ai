@@ -13,9 +13,11 @@ import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // Blockhash validity on Solana: ~150 slots ≈ 60 s.
-// We retry within 15 s per attempt so pre-signed txs never expire.
-const CONFIRM_POLL_INTERVAL_MS = 1_400; // fast polling for quick failure detection
-const CONFIRM_TIMEOUT_MS = 15_000;      // give each attempt 15 s before giving up
+const CONFIRM_POLL_INTERVAL_MS = 1_400;
+const CONFIRM_TIMEOUT_MS = 10_000;  // 10 s per attempt — fail faster so we can re-quote sooner
+const MAX_TOTAL_ATTEMPTS = 6;       // total attempts including initial broadcast
+// Last-resort slippage ceiling — goes beyond user's maxSlippageBps on final retries
+const RETRY_SLIPPAGE_CEILING_BPS = 10_000;
 
 export interface SnipeResult {
   txHash: string | null;
@@ -198,12 +200,25 @@ export class SnipeFastService {
     // Level 0: dynamic (Jupiter picks optimal — cheapest, ~50-200 bps for liquid tokens)
     // Level 1: 30% of max
     // Level 2: 65% of max
-    // Level 3: 100% of max
+    // Level 3: 100% of max (user's configured ceiling)
+    // Levels 4-5 go beyond maxBps as last-resort — computed in monitorWithRetry
     const l1 = Math.round(maxBps * 0.30);
     const l2 = Math.round(maxBps * 0.65);
-    // Deduplicate: if max is very low (< 300 bps) some levels collapse
     const explicit = [...new Set([l1, l2, maxBps].filter((b) => b >= 50))];
     return ['dynamic', ...explicit];
+  }
+
+  // Returns the slippage bps to use for attempt N (0-indexed, 0 = initial broadcast).
+  // Retries escalate beyond the user's maxSlippageBps for the final two levels so
+  // that a fresh re-quote still has a realistic chance on ultra-volatile tokens.
+  private retrySlippage(attempt: number, maxBps: number, preBuildLevels: Array<number | 'dynamic'>): number {
+    if (attempt < preBuildLevels.length) {
+      const l = preBuildLevels[attempt];
+      return l === 'dynamic' ? maxBps : l;
+    }
+    // Beyond pre-build levels: escalate 50% per extra attempt, capped at ceiling
+    const extra = attempt - preBuildLevels.length + 1;
+    return Math.min(RETRY_SLIPPAGE_CEILING_BPS, Math.round(maxBps * (1 + extra * 0.5)));
   }
 
   // ── Parallel bundle preparation ─────────────────────────────────────────────
@@ -317,8 +332,9 @@ export class SnipeFastService {
     (async () => {
       let currentSig = initialSig;
       let attemptCount = 1; // attempt 1 already broadcast by execute()
+      const levels = this.buildSlippageLevels(config.maxSlippageBps);
 
-      for (let attempt = 0; attempt < bundles.length; attempt++) {
+      for (let attempt = 0; attempt < MAX_TOTAL_ATTEMPTS; attempt++) {
         const status = await this.waitForStatus(conn, currentSig, traceId);
 
         if (status === 'confirmed') {
@@ -341,12 +357,11 @@ export class SnipeFastService {
               try {
                 const trade = await this.prisma.snipeTrade.findFirst({
                   where: { txHash: currentSig },
-                  select: { priceAtBuyUsd: true, mcapAtBuyUsd: true, liquidityAtBuyUsd: true } as any,
+                  select: { priceAtBuyUsd: true, mcapAtBuyUsd: true, liquidityAtBuyUsd: true },
                 });
-                const priceAtBuy = (trade as any)?.priceAtBuyUsd ?? null;
-                let priceUsd: number | null = priceAtBuy;
-                let mcapUsd: number | null = (trade as any)?.mcapAtBuyUsd ?? null;
-                let liqUsd: number | null = (trade as any)?.liquidityAtBuyUsd ?? null;
+                let priceUsd: number | null = trade?.priceAtBuyUsd ?? null;
+                let mcapUsd: number | null = trade?.mcapAtBuyUsd ?? null;
+                let liqUsd: number | null = trade?.liquidityAtBuyUsd ?? null;
                 // If the buy-time snapshot fields haven't been backfilled yet,
                 // fetch via DexScreener (no key, fast). Skip capture if we can't
                 // anchor a price.
@@ -395,49 +410,8 @@ export class SnipeFastService {
 
           const nextAttempt = attempt + 1;
 
-          // Build the retry bundle — use pre-fetched if still fresh, else re-quote
-          let retrySig: string;
-          let retryOut: string;
-
-          const prebuilt = bundles[nextAttempt];
-          const elapsedMs = Date.now() - t0;
-
-          if (prebuilt && elapsedMs < 45_000) {
-            // Pre-signed tx still well within the 60 s blockhash window — broadcast instantly
-            this.logger.log(
-              `[trc=${traceId}] ↑ slippage retry attempt=${nextAttempt} ` +
-              `slippage=${prebuilt.slippageBps} (pre-signed, ${elapsedMs}ms elapsed)`,
-            );
-            retrySig = await sendConn.sendRawTransaction(prebuilt.rawTx, { skipPreflight: true, maxRetries: 0 });
-            retryOut = prebuilt.outAmount;
-          } else if (nextAttempt < bundles.length || prebuilt) {
-            // Blockhash might be stale — re-quote with the target slippage level
-            const targetBps = prebuilt?.slippageBps === 'dynamic'
-              ? config.maxSlippageBps
-              : (prebuilt?.slippageBps ?? config.maxSlippageBps);
-
-            this.logger.log(
-              `[trc=${traceId}] ↑ slippage retry attempt=${nextAttempt} slippage=${targetBps} (fresh re-quote, ${elapsedMs}ms elapsed)`,
-            );
-            try {
-              const fresh = await this.buildBundle(
-                jupBase, mint, config.buyAmountRaw,
-                bundles[0].tx.message.staticAccountKeys[0].toBase58(),
-                // re-sign with keypair from session (retrieve from cache)
-                (this.snipeSession.getSession(config.userId))!.keypair,
-                typeof targetBps === 'number' ? targetBps : config.maxSlippageBps,
-              );
-              retrySig = await sendConn.sendRawTransaction(fresh.rawTx, { skipPreflight: true, maxRetries: 0 });
-              retryOut = fresh.outAmount;
-            } catch (buildErr: any) {
-              this.logger.error(`[trc=${traceId}] re-quote for retry failed: ${buildErr.message}`);
-              await this.markFailed(currentSig, `Slippage exceeded; retry re-quote failed: ${buildErr.message}`);
-              this.ws?.emitToUser(config.userId, 'snipe_update', { txHash: currentSig, status: 'failed', error: 'Retry re-quote failed' });
-              return;
-            }
-          } else {
-            // All levels exhausted
-            const msg = `Slippage exceeded on all ${bundles.length} attempts (max=${config.maxSlippageBps}bps)`;
+          if (nextAttempt >= MAX_TOTAL_ATTEMPTS) {
+            const msg = `Slippage exceeded on all ${MAX_TOTAL_ATTEMPTS} attempts (max=${config.maxSlippageBps}bps, ceiling=${RETRY_SLIPPAGE_CEILING_BPS}bps)`;
             this.logger.warn(`[trc=${traceId}] ✗ ${msg}`);
             await this.markFailed(currentSig, msg);
             this.ws?.emitToUser(config.userId, 'snipe_triggered', {
@@ -445,6 +419,35 @@ export class SnipeFastService {
               amountRaw: config.buyAmountRaw, outAmount: '0',
               groupId, status: 'failed', error: msg, ts: Date.now(),
             });
+            return;
+          }
+
+          // Always re-quote fresh on every slippage retry.
+          // Pre-signed bundles have stale price anchors — using them is the primary
+          // reason retries fail even at high slippage: the quoted price from 10-30s
+          // ago diverges from the on-chain price at execution time.
+          const targetBps = this.retrySlippage(nextAttempt, config.maxSlippageBps, levels);
+          const elapsedMs = Date.now() - t0;
+          this.logger.log(
+            `[trc=${traceId}] ↑ slippage retry attempt=${nextAttempt}/${MAX_TOTAL_ATTEMPTS - 1} ` +
+            `slippage=${targetBps}bps (fresh re-quote, ${elapsedMs}ms elapsed)`,
+          );
+
+          let retrySig: string;
+          let retryOut: string;
+          try {
+            const session = this.snipeSession.getSession(config.userId);
+            if (!session) throw new Error('Session expired');
+            const fresh = await this.buildBundle(
+              jupBase, mint, config.buyAmountRaw,
+              session.address, session.keypair, targetBps,
+            );
+            retrySig = await sendConn.sendRawTransaction(fresh.rawTx, { skipPreflight: true, maxRetries: 0 });
+            retryOut = fresh.outAmount;
+          } catch (buildErr: any) {
+            this.logger.error(`[trc=${traceId}] re-quote for retry ${nextAttempt} failed: ${buildErr.message}`);
+            await this.markFailed(currentSig, `Slippage retry re-quote failed: ${buildErr.message}`);
+            this.ws?.emitToUser(config.userId, 'snipe_update', { txHash: currentSig, status: 'failed', error: 'Retry re-quote failed' });
             return;
           }
 

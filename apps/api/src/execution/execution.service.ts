@@ -1,4 +1,4 @@
-import { ForbiddenException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { Chain, OrderStatus, Prisma, TradeMode } from '@prisma/client';
 import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
 import { ethers } from 'ethers';
@@ -77,11 +77,17 @@ export class ExecutionService {
 
   async swap(input: SwapInput): Promise<SwapResult> {
     const trace: string | undefined = input.traceId ?? currentTraceId();
-    // Normalize amountIn: QuickBuy sends empty string; derive from notionalUsd
-    if (!input.amountIn && input.notionalUsd > 0 && input.chain === 'SOLANA') {
-      const solUsd = await this.jup.getSolPriceUsd();
-      input.amountIn = Math.round((input.notionalUsd / solUsd) * 1e9).toString();
+    // Normalize amountIn: QuickBuy sends empty string; derive from notionalUsd (SOLANA only).
+    // EVM callers must supply an explicit amountIn because token decimals vary per chain.
+    if (!input.amountIn && input.notionalUsd > 0) {
+      if (input.chain === 'SOLANA') {
+        const solUsd = await this.jup.getSolPriceUsd();
+        input.amountIn = Math.round((input.notionalUsd / solUsd) * 1e9).toString();
+      } else {
+        throw new BadRequestException({ message: 'amountIn is required for EVM trades', traceId: trace });
+      }
     }
+    if (!input.amountIn) throw new BadRequestException({ message: 'amountIn must not be empty', traceId: trace });
     // ── Security layer: audit, compliance, and risk checks ──
     await this.securityAudit.log('SWAP_INITIATED', {
       userId: input.userId,
@@ -194,7 +200,8 @@ export class ExecutionService {
           outAmount = input.amountIn; // 1:1 simulated ratio
         }
         txHash = `paper-${Date.now().toString(36)}`;
-        await this.updatePaperBalance(input.userId, input.tokenOut, outAmount);
+        // NOTE: updatePaperBalance is called AFTER trade.create so that if the
+        // trade record fails, the balance is never mutated (atomic ordering guarantee).
       }
     } catch (err: any) {
       this.logger.error(`[trc=${trace}] swap failed user=${input.userId} chain=${input.chain}: ${err.message}`);
@@ -246,6 +253,12 @@ export class ExecutionService {
         ...(trace ? { traceId: trace } : {}),
       } as unknown as Prisma.TradeCreateInput,
     });
+
+    // Paper balance is updated here, after the trade record is committed, so that
+    // a trade.create failure never leaves the balance in an inconsistent state.
+    if (mode === 'PAPER') {
+      await this.updatePaperBalance(input.userId, input.tokenOut, outAmount);
+    }
 
     if (input.orderId) {
       await this.prisma.order.update({
