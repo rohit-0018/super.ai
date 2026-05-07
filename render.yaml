@@ -46,8 +46,8 @@ services:
     maxmemoryPolicy: noeviction
 
   # ────────────────────────────────────────────────────────────────
-  # Backend — NestJS API + BullMQ workers + Telegram bot, one process.
-  # Workers run inline when QWAI_ROLE=all.
+  # Backend API — NestJS HTTP server + Telegram webhook handler.
+  # BullMQ workers run separately in `super-worker` (QWAI_ROLE=worker).
   # ────────────────────────────────────────────────────────────────
   - type: web
     name: super-api
@@ -67,8 +67,9 @@ services:
         value: production
       - key: PORT
         value: 4400
+      # web = API + Telegram, no inline workers (handled by super-worker).
       - key: QWAI_ROLE
-        value: all
+        value: web
 
       # ── Network mode ────────────────────────────────────────────
       - key: NETWORK_MODE
@@ -227,6 +228,205 @@ services:
       # Seed demo data only on the very first deploy, then set to false.
       - key: SEED_DB_ON_DEPLOY
         value: "false"
+
+  # ────────────────────────────────────────────────────────────────
+  # Background workers — BullMQ consumers, hot-tokens scanner, intel
+  # rescan, signal pipeline, position monitor, copy-trade, snipe, DCA,
+  # outbound Telegram sends. Runs apps/api/dist/worker.js (no HTTP).
+  #
+  # All shared secrets are mirrored from super-api via `fromService` so
+  # you set each key ONCE in the super-api dashboard and the worker
+  # picks it up automatically — no manual double-pasting.
+  # ────────────────────────────────────────────────────────────────
+  - type: worker
+    name: super-worker
+    runtime: node
+    region: oregon
+    plan: starter
+    rootDir: .
+    branch: feat_deployment
+    buildCommand: ./scripts/render-build.sh
+    # No migrations here — super-api owns those. Just boot the worker process.
+    startCommand: node --max-old-space-size=400 apps/api/dist/worker.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.12.2
+      - key: NODE_ENV
+        value: production
+      - key: QWAI_ROLE
+        value: worker
+      - key: LOG_LEVEL
+        value: info
+      - key: NETWORK_MODE
+        value: mainnet
+      - key: ALLOW_UNSAFE_LOCAL_KMS
+        value: "1"
+
+      # ── Infrastructure (auto-wired) ──────────────────────────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: super-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: super-redis
+          property: connectionString
+
+      # ── Shared secret (mirror from super-api so KMS fallback agrees) ──
+      - key: JWT_SECRET
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: JWT_SECRET
+
+      # ── Telegram outbound (mirror) ───────────────────────────────
+      - key: TELEGRAM_BOT_TOKEN
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: TELEGRAM_BOT_TOKEN
+      - key: APP_WEB_URL
+        value: https://qwai-web-o6jz.onrender.com
+
+      # ── LLM (mirror) ─────────────────────────────────────────────
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: LLM_MODEL
+        value: claude-sonnet-4-6
+      - key: LLM_TIMEOUT_MS
+        value: "30000"
+      - key: ANTHROPIC_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: ANTHROPIC_API_KEY
+      - key: OPENAI_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: OPENAI_API_KEY
+
+      # ── Solana RPC (mirror) ──────────────────────────────────────
+      - key: HELIUS_RPC_URL
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: HELIUS_RPC_URL
+      - key: SOLANA_RPC_URL
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: SOLANA_RPC_URL
+      - key: JUPITER_API_BASE
+        value: https://lite-api.jup.ag/swap/v1
+      - key: JITO_BUNDLE_URL
+        value: https://mainnet.block-engine.jito.wtf
+
+      # ── Token Intelligence Providers (mirror) ────────────────────
+      - key: SOLANA_TRACKER_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: SOLANA_TRACKER_API_KEY
+      - key: MORALIS_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: MORALIS_API_KEY
+      - key: BIRDEYE_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: BIRDEYE_API_KEY
+      - key: ETHERSCAN_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: ETHERSCAN_API_KEY
+      - key: BITQUERY_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: BITQUERY_API_KEY
+
+      # ── Hot Token Scanner (worker owns this now) ─────────────────
+      - key: HOT_TOKENS_ENABLED
+        value: "true"
+      - key: HOT_TOKENS_FAST_SCAN
+        value: "false"
+
+      # ── Intel Track Record (worker owns this now) ────────────────
+      - key: INTEL_RESCAN_INTERVAL_SEC
+        value: "600"
+      - key: INTEL_RESCAN_BATCH_SIZE
+        value: "60"
+      - key: INTEL_RESCAN_MAX_AGE_DAYS
+        value: "30"
+      - key: INTEL_TRACK_AUTO_PURGE
+        value: "false"
+      - key: INTEL_TRACK_CAPTURE_MIN_AI_SCORE
+        value: "60"
+
+      # ── Intel Cache Tuning ───────────────────────────────────────
+      - key: INTEL_CACHE_TTL_SEC
+        value: "60"
+      - key: INTEL_DB_CACHE_TTL_SEC
+        value: "120"
+
+      # ── EVM RPCs (mirror) ────────────────────────────────────────
+      - key: ETH_RPC_URL
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: ETH_RPC_URL
+      - key: ARBITRUM_RPC_URL
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: ARBITRUM_RPC_URL
+      - key: BASE_RPC_URL
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: BASE_RPC_URL
+      - key: ONEINCH_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: ONEINCH_API_KEY
+
+      # ── AWS KMS (mirror) ─────────────────────────────────────────
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_KMS_KEY_ID
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: AWS_KMS_KEY_ID
+      - key: AWS_ACCESS_KEY_ID
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: AWS_ACCESS_KEY_ID
+      - key: AWS_SECRET_ACCESS_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: AWS_SECRET_ACCESS_KEY
+
+      # ── Observability (mirror) ───────────────────────────────────
+      - key: DATADOG_API_KEY
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: DATADOG_API_KEY
+      - key: SENTRY_DSN
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: SENTRY_DSN
 
   # ────────────────────────────────────────────────────────────────
   # Frontend — Next.js 14 exported to /out, served as a static site.
