@@ -39,10 +39,13 @@ for migration in \
   20260503_provider_config \
   20260503010000_schema_drift_fix
 do
+  # `migrate resolve --rolled-back` only succeeds when the migration is in
+  # FAILED state. It errors for already-applied or never-applied migrations,
+  # which is fine — those need no action. We log all three outcomes clearly.
   out=$(pnpm prisma migrate resolve --rolled-back "$migration" \
     --schema=./prisma/schema.prisma 2>&1) && \
-    echo "  ↳ $migration: rolled back" || \
-    echo "  ↳ $migration: not present (skip)"
+    echo "  ↳ $migration: was failed → rolled back" || \
+    echo "  ↳ $migration: ok (already applied or not in table — no action)"
 done
 
 # ─── Apply migrations FIRST ───────────────────────────────────────────────
