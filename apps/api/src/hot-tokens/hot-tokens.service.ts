@@ -80,6 +80,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   private scanCache = new Map<string, { scan: HotTokensScan; ts: number }>();
   private priceRefreshCache = new Map<string, HotToken>();
   private scanning = false;
+  private prewarming = false;
   private lastRedisErrorLog = 0;
 
   constructor(
@@ -307,20 +308,31 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   // ── Pre-warm analysis cache ───────────────────────────────────────────────
 
   private async prewarmAnalysis(addresses: string[]): Promise<void> {
-    for (const address of addresses) {
-      try {
-        // analyzeAddress runs the full pipeline (market + safety + holders + social + smart-money + AI)
-        // and persists to DB with a 12-min TTL. Subsequent clicks serve from that DB cache instantly.
-        // Pass 'hot_tokens_scan' so the IntelSnapshot row is attributed correctly.
-        await this.tokenAnalysis.analyzeAddress(address, false, 'hot_tokens_scan');
-        this.logger.debug(`Pre-warmed analysis for ${address}`);
-      } catch (err) {
-        this.logger.debug(`Pre-warm skipped for ${address}: ${(err as Error).message}`);
-      }
-      // Stagger calls: 2.5s apart to avoid hammering provider rate limits.
-      await new Promise((r) => setTimeout(r, 2_500));
+    // Guard: skip entirely if a previous pre-warm is still running.
+    // At short scan intervals the loop can outlast the interval; without this
+    // guard multiple concurrent loops stack up and hammer provider rate limits.
+    if (this.prewarming) {
+      this.logger.debug('Pre-warm skipped — previous run still in progress');
+      return;
     }
-    this.logger.log(`Pre-warm complete for ${addresses.length} hot token addresses`);
+    this.prewarming = true;
+    try {
+      for (const address of addresses) {
+        try {
+          // analyzeAddress runs the full pipeline (market + safety + holders + social + smart-money + AI)
+          // and persists to DB with a 12-min TTL. Subsequent clicks serve from that DB cache instantly.
+          await this.tokenAnalysis.analyzeAddress(address, false, 'hot_tokens_scan');
+          this.logger.debug(`Pre-warmed analysis for ${address}`);
+        } catch (err) {
+          this.logger.debug(`Pre-warm skipped for ${address}: ${(err as Error).message}`);
+        }
+        // Stagger calls: 2.5s apart to avoid hammering provider rate limits.
+        await new Promise((r) => setTimeout(r, 2_500));
+      }
+      this.logger.log(`Pre-warm complete for ${addresses.length} hot token addresses`);
+    } finally {
+      this.prewarming = false;
+    }
   }
 
   // ── Redis helpers ─────────────────────────────────────────────────────────
