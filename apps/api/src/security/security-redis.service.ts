@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { buildRedisOptions } from '../common/redis-options';
 
 /**
  * Dedicated Redis connection for the security module.
@@ -13,11 +14,10 @@ export class SecurityRedisService implements OnModuleDestroy {
 
   constructor(@Optional() private readonly config?: ConfigService) {
     const redisUrl = this.config?.get<string>('REDIS_URL') ?? process.env.REDIS_URL ?? 'redis://localhost:6379';
-    this.client = new Redis(redisUrl, {
-      maxRetriesPerRequest: 3,
+    this.client = new Redis(redisUrl, buildRedisOptions({
       keyPrefix: 'sec:',
       lazyConnect: true,
-    });
+    }));
 
     this.client.on('error', (err) => {
       this.logger.error(`Security Redis error: ${err.message}`);
