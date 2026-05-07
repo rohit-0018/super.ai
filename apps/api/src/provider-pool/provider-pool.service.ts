@@ -137,6 +137,17 @@ export class ProviderPoolService implements OnModuleInit {
   }
 
   /**
+   * Check if a provider is currently available (not rate-limited or disabled).
+   * Use this when calling a provider directly outside of execute().
+   */
+  async isAvailable(key: string): Promise<boolean> {
+    const providers = await this.getGroupProviders('_all');
+    const p = providers.find((x) => x.key === key);
+    if (!p || !p.enabled || !this.isKeyPresent(p.requiresKey)) return false;
+    return this.rl.canUse(p.key, p.reqsPerWindow, p.windowSec);
+  }
+
+  /**
    * Manually mark a provider as rate-limited (call after detecting 429 outside execute()).
    */
   async markRateLimited(key: string): Promise<void> {

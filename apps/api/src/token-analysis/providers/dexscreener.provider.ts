@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Chain, TokenMeta } from '../token-analysis.types';
-import { parseRetryAfter } from '../../common/http';
 import { ProviderPoolService } from '../../provider-pool/provider-pool.service';
 
 /**
@@ -27,7 +26,7 @@ export class DexScreenerProvider {
         signal: AbortSignal.timeout(3_000),
       });
       if (res.status === 429) {
-        await this.pool.markRateLimited(this.providerKey, parseRetryAfter(res.headers));
+        await this.pool.markRateLimited(this.providerKey);
         return null;
       }
       if (!res.ok) {

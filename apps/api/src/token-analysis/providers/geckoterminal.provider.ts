@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Chain } from '../token-analysis.types';
-import { parseRetryAfter } from '../../common/http';
 import { ProviderPoolService } from '../../provider-pool/provider-pool.service';
 
 /**
@@ -69,7 +68,7 @@ export class GeckoTerminalProvider {
         signal: AbortSignal.timeout(3_000),
       });
       if (res.status === 429) {
-        await this.pool.markRateLimited(this.providerKey, parseRetryAfter(res.headers));
+        await this.pool.markRateLimited(this.providerKey);
         return null;
       }
       if (!res.ok) {
