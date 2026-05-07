@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
 import { fmtPriceUsd } from '../../lib/format-price';
 import { BullBearIndicator } from '../../components/TokenCard';
+import { useRealtime } from '../../lib/useRealtime';
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 type TradingProfile = 'meme_hunter' | 'degen_sniper' | 'swing_trader' | 'gem_hunt' | 'alpha_hunt';
@@ -179,22 +180,212 @@ const vl = (v: string) => VERDICT_LABEL[v] ?? v;
 const pctColor = (n?: number | null) => n == null ? 'var(--text-3)' : n >= 0 ? '#4ade80' : '#ef4444';
 
 /* ─── Compute overall verdict ────────────────────────────────────────────── */
-function computeOverall(report: Report): { score: number; verdict: string; source: 'ai' | 'playbooks' } {
+// Heuristic scorer — translated directly from Claude's meme-hunter system prompt.
+// Key principle: "No honeypot = table stakes, not a bullish signal."
+// Each category starts from a CONSERVATIVE baseline. Positive evidence earns
+// points; passing basic checks is neutral, not rewarded.
+function computeHeuristicCategories(report: Report) {
+  const { safety, meta, holderMetrics: hm, socialData: sd, smartMoney: sm, kill } = report;
+
+  // ── Safety (35 pts) ─────────────────────────────────────────────────────────
+  // Instant disqualification
+  if (safety.honeypot === 'yes' || kill?.triggered) {
+    return { safety: 0, distribution: 0, market: 0, social: 0, macro: 0 };
+  }
+  // Start at 22 if honeypot confirmed clean, 16 if unknown
+  let saf = safety.honeypot === 'no' ? 22 : 16;
+
+  if (safety.mintAuthority === false)     saf += 4;
+  else if (safety.mintAuthority === true) saf -= 12;
+
+  if (safety.freezeAuthority === false)     saf += 2;
+  else if (safety.freezeAuthority === true) saf -= 7;
+
+  if (safety.lpLocked === 'yes')      saf += 6;
+  else if (safety.lpLocked === 'no')  saf -= 10;
+
+  const rug = safety.rugScore ?? -1;
+  if (rug >= 0) {
+    if (rug < 15)      saf += 6;
+    else if (rug < 30) saf += 2;
+    else if (rug < 60) saf -= 10;
+    else               saf -= 20;
+  }
+
+  // Only apply tax scoring if data is present
+  if (safety.buyTax != null) {
+    const taxBps = (safety.buyTax ?? 0) + (safety.sellTax ?? 0);
+    if (taxBps === 0)          saf += 3;
+    else if (taxBps <= 300)    saf += 1;
+    else if (taxBps <= 800)    saf -= 5;
+    else                       saf -= 14;
+  }
+
+  const nf = safety.flags?.length ?? 0;
+  if (nf === 0)      saf += 2;
+  else if (nf <= 2)  saf += 0;
+  else if (nf <= 4)  saf -= 6;
+  else               saf -= 12;
+
+  saf = Math.max(0, Math.min(35, saf));
+
+  // ── Distribution (30 pts) ───────────────────────────────────────────────────
+  // Start at 10 — most new tokens have unknown/mediocre distribution
+  let dist = 10;
+
+  const top10 = hm?.top10ConcentrationPct ?? safety.topHoldersPct;
+  if (top10 != null) {
+    // "Top-10 holders < 30% = healthy distribution, exit risk low"
+    if (top10 < 15)       dist += 18;
+    else if (top10 < 30)  dist += 10; // Claude's explicit healthy threshold
+    else if (top10 < 40)  dist += 3;
+    else if (top10 < 55)  dist -= 8;
+    else if (top10 < 70)  dist -= 17;
+    else                  dist -= 23; // exit is impossible
+  } else {
+    dist -= 6; // can't confirm distribution = penalise uncertainty
+  }
+
+  // "Bundle launch = deployer front-ran liquidity = hard pass"
+  if (hm?.bundleDetected) {
+    const bPct = hm.bundleInfo?.bundledSupplyPct ?? 10;
+    dist -= bPct >= 20 ? 22 : 16;
+  }
+
+  // "Smart money holding = strongest signal of all — these wallets don't hold trash"
+  const smHolders = sm?.holdersFound ?? 0;
+  if (smHolders >= 3)      dist += 12;
+  else if (smHolders >= 1) dist += 6;
+
+  dist = Math.max(0, Math.min(30, dist));
+
+  // Cross-category: bundle + whale = coordinated setup, extra safety haircut
+  if (hm?.bundleDetected && (top10 ?? 0) > 40) saf = Math.max(0, saf - 5);
+
+  // ── Market (20 pts) ─────────────────────────────────────────────────────────
+  // Start at 5 — most new memes have thin, unproven market quality
+  let mkt = 5;
+
+  const liq = meta.liquidityUsd;
+  if (liq != null) {
+    if (liq > 500_000)       mkt += 8;
+    else if (liq > 200_000)  mkt += 6;
+    else if (liq > 100_000)  mkt += 4;
+    else if (liq > 50_000)   mkt += 2;
+    else if (liq > 20_000)   mkt += 0;
+    else if (liq > 5_000)    mkt -= 4;
+    else                     mkt -= 10;
+  }
+
+  // "Volume/MCap > 20% = genuine interest, not wash trading"
+  const volMcap = (meta.marketCapUsd && meta.volume24hUsd && meta.marketCapUsd > 0)
+    ? meta.volume24hUsd / meta.marketCapUsd : null;
+  if (volMcap != null) {
+    if (volMcap > 1.0)      mkt += 5;
+    else if (volMcap > 0.5) mkt += 4;
+    else if (volMcap > 0.2) mkt += 3; // "genuine interest"
+    else if (volMcap > 0.1) mkt += 1;
+    else                    mkt -= 4;
+  }
+
+  // "Buy pressure > 60% sustained = real buyers, not bots"
+  const buys = meta.txns24h?.buys ?? 0, sells = meta.txns24h?.sells ?? 0;
+  const txTotal = buys + sells;
+  if (txTotal > 50) { // meaningful sample only
+    const bp = buys / txTotal;
+    if (bp > 0.65)      mkt += 3;
+    else if (bp > 0.55) mkt += 1;
+    else if (bp < 0.40) mkt -= 3;
+  }
+
+  // "Price impact > 10% at $1K = illiquid trap — your exit will move the market"
+  const pi = hm?.priceImpact?.buy1000Usd;
+  if (pi != null) {
+    if (pi < 2)        mkt += 3;
+    else if (pi < 5)   mkt += 1;
+    else if (pi < 10)  mkt -= 2;
+    else if (pi < 20)  mkt -= 8;  // "illiquid trap"
+    else               mkt -= 12;
+  }
+
+  // "Organic score < 30 = manipulation detected, walk away"
+  const organic = hm?.organicScore;
+  if (organic != null) {
+    if (organic > 70)       mkt += 4;
+    else if (organic > 50)  mkt += 2;
+    else if (organic >= 30) mkt -= 2;
+    else                    mkt -= 11; // matches Claude's severity — walk away
+  }
+
+  // "Bonding curve < 50% = too early, high dump risk at graduation"
+  if (hm?.lifecycle?.stage === 'bonding') {
+    const bc = hm.lifecycle.bondingCurvePct;
+    mkt -= (bc != null && bc < 50) ? 6 : 3;
+  }
+
+  mkt = Math.max(0, Math.min(20, mkt));
+
+  // ── Social (10 pts) ─────────────────────────────────────────────────────────
+  // Start at 3 — most new memes launch with minimal social presence
+  let soc = 3;
+
+  if (sd) {
+    const tg = sd.telegramMembers;
+    if (tg != null) {
+      if (tg > 10_000)     soc += 5;
+      else if (tg > 5_000) soc += 4;
+      else if (tg > 1_000) soc += 3;
+      else if (tg > 500)   soc += 2;
+      else if (tg > 100)   soc += 1;
+      else                 soc -= 2; // ghost/bot channel
+    } else if (!sd.telegramUrl) {
+      soc -= 2; // no telegram = major gap for a meme
+    }
+
+    const dom = sd.domainAgeDays;
+    if (dom != null) {
+      if (dom > 180)     soc += 3;
+      else if (dom > 30) soc += 2;
+      else if (dom >= 7) soc += 0;
+      else               soc -= 3; // "classic pump & dump setup"
+    } else if (!sd.websiteUrl) {
+      soc -= 2;
+    }
+
+    if (sd.twitterUrl)      soc += 1;
+    if (sd.websiteChanged)  soc -= 2; // rug-reuse signal
+  } else {
+    soc -= 2;
+  }
+
+  soc = Math.max(0, Math.min(10, soc));
+
+  // ── Macro (5 pts) ───────────────────────────────────────────────────────────
+  // Start at 3 — neutral baseline
+  let macro = 3;
+  const tvl7d = hm?.chainContext?.tvl7dChangePct;
+  if (tvl7d != null) {
+    if (tvl7d > 10)        macro += 2;
+    else if (tvl7d > 3)    macro += 1;
+    else if (tvl7d >= -3)  macro += 0;
+    else if (tvl7d >= -10) macro -= 1;
+    else                   macro -= 2; // "macro headwind, reduce conviction"
+  }
+  macro = Math.max(0, Math.min(5, macro));
+
+  return { safety: Math.max(0, Math.min(35, saf)), distribution: dist, market: mkt, social: soc, macro };
+}
+
+function computeOverall(report: Report): {
+  score: number; verdict: string; source: 'ai' | 'playbooks';
+  categoryScores?: { safety: number; distribution: number; market: number; social: number; macro: number };
+} {
   if (report.aiReasoning) return { score: report.aiReasoning.score, verdict: report.aiReasoning.verdict, source: 'ai' };
-  const { safety, playbooks, kill } = report;
-  const scored = playbooks.filter(pb => pb.score != null && pb.verdict !== 'insufficient_data');
-  let base = scored.length ? scored.reduce((s, pb) => s + pb.score! * 10, 0) / scored.length : 50;
-  if (safety.honeypot === 'yes') base -= 45;
-  if (kill?.triggered) base -= 50;
-  if (safety.mintAuthority) base -= 12;
-  if (safety.freezeAuthority) base -= 8;
-  if (safety.lpLocked === 'no') base -= 10;
-  if ((safety.rugScore ?? 0) > 70) base -= 22;
-  else if ((safety.rugScore ?? 0) > 40) base -= 10;
-  if (safety.flags.length > 3) base -= 8;
-  const score = Math.max(0, Math.min(100, Math.round(base)));
+
+  const cats = computeHeuristicCategories(report);
+  const score = Math.max(0, Math.min(100, cats.safety + cats.distribution + cats.market + cats.social + cats.macro));
   const verdict = score >= 80 ? 'STRONG_BUY' : score >= 65 ? 'BUY' : score >= 50 ? 'CAUTIOUS' : score >= 30 ? 'SKIP' : 'HIGH_RISK';
-  return { score, verdict, source: 'playbooks' };
+  return { score, verdict, source: 'playbooks', categoryScores: cats };
 }
 
 /* ─── Score ring ─────────────────────────────────────────────────────────── */
@@ -552,12 +743,14 @@ function OverallVerdictCard({ report, profile }: { report: Report; profile: Trad
   const buys = report.meta.txns24h?.buys ?? 0, sells = report.meta.txns24h?.sells ?? 0, total = buys + sells;
   const buyPct = total > 0 ? Math.round((buys/total)*100) : null;
 
-  const cats = ai ? [
-    { label: 'Safety',       score: ai.categoryScores.safety,       max: 35 },
-    { label: 'Distribution', score: ai.categoryScores.distribution, max: 30 },
-    { label: 'Market',       score: ai.categoryScores.market,       max: 20 },
-    { label: 'Social',       score: ai.categoryScores.social,       max: 10 },
-    { label: 'Macro',        score: ai.categoryScores.macro,        max:  5 },
+  // Use AI category scores when available; fall back to heuristic breakdown (same rubric)
+  const catSource = ai?.categoryScores ?? overall.categoryScores;
+  const cats = catSource ? [
+    { label: 'Safety',       score: catSource.safety,       max: 35 },
+    { label: 'Distribution', score: catSource.distribution, max: 30 },
+    { label: 'Market',       score: catSource.market,       max: 20 },
+    { label: 'Social',       score: catSource.social,       max: 10 },
+    { label: 'Macro',        score: catSource.macro,        max:  5 },
   ] : null;
 
   return (
@@ -579,7 +772,7 @@ function OverallVerdictCard({ report, profile }: { report: Report; profile: Trad
 
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 5 }}>
-            {overall.source === 'ai' ? `${profileMeta.label} AI Analysis` : 'Playbook Score'}
+            {overall.source === 'ai' ? `${profileMeta.label} AI Analysis` : `${profileMeta.label} Heuristic Score`}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 34, fontWeight: 900, color, lineHeight: 1, letterSpacing: '0.01em' }}>
@@ -618,6 +811,20 @@ function OverallVerdictCard({ report, profile }: { report: Report; profile: Trad
       {report.kill?.triggered && (
         <div style={{ padding: '10px 24px', background: 'rgba(239,68,68,0.12)', borderTop: '1px solid rgba(239,68,68,0.25)', fontSize: 13, fontWeight: 600, color: '#ef4444' }}>
           🚨 Kill switch — {report.kill.reason}
+        </div>
+      )}
+
+      {!ai && !report.kill?.triggered && (
+        <div style={{ padding: '12px 24px', borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(168,85,247,0.04)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 16 }}>🤖</span>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 2 }}>
+              Heuristic score — rule-based, same rubric as Claude AI
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-3)' }}>
+              Uses all data (safety · holders · smart money · social · macro) but Claude AI may score differently based on narrative and signal patterns. Enable <strong style={{ color: '#c084fc' }}>Claude AI</strong> for trader take + signal conflicts (+5–10s).
+            </div>
+          </div>
         </div>
       )}
 
@@ -1287,7 +1494,95 @@ function LoadingBar() {
   );
 }
 
-function ReportSkeleton({ msg, steps }: { msg: string; steps: string }) {
+// ── AI toggle ──────────────────────────────────────────────────────────────────
+function AiToggle({ enabled, onChange }: { enabled: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label style={{
+      display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+      padding: '4px 10px', borderRadius: 7,
+      border: `1px solid ${enabled ? 'rgba(168,85,247,0.45)' : 'var(--border)'}`,
+      background: enabled ? 'rgba(168,85,247,0.1)' : 'var(--surface-2)',
+      transition: 'all 0.2s',
+      userSelect: 'none',
+    }}>
+      <input
+        type="checkbox"
+        checked={enabled}
+        onChange={e => onChange(e.target.checked)}
+        style={{ accentColor: '#a855f7', width: 13, height: 13, cursor: 'pointer' }}
+      />
+      <span style={{ fontSize: 11, fontWeight: 700, color: enabled ? '#c084fc' : 'var(--text-3)', whiteSpace: 'nowrap' }}>
+        🤖 Claude AI
+      </span>
+      {!enabled && (
+        <span style={{ fontSize: 10, fontWeight: 600, color: '#4ade80', background: 'rgba(74,222,128,0.12)', padding: '1px 5px', borderRadius: 3, border: '1px solid rgba(74,222,128,0.2)' }}>
+          FAST
+        </span>
+      )}
+    </label>
+  );
+}
+
+// ── Analysis progress step rendering ──────────────────────────────────────────
+const PHASE_ORDER = ['market', 'safety', 'intelligence', 'ai', 'done'];
+const PHASE_UI_STEPS: Record<string, string[]> = {
+  market:       ['DexScreener'],
+  safety:       ['Safety'],
+  intelligence: ['Holders', 'Social', 'Smart Money'],
+  ai:           ['Claude AI'],
+};
+
+function StepBadges({ activeStep, isQuick, aiEnabled = true }: { activeStep: string; isQuick: boolean; aiEnabled?: boolean }) {
+  const phaseIdx = PHASE_ORDER.indexOf(activeStep);
+  const donePhases = new Set(PHASE_ORDER.slice(0, phaseIdx));
+  const activePhase = activeStep === 'done' ? null : activeStep;
+  const doneSteps = new Set(
+    [...donePhases].flatMap((p) => PHASE_UI_STEPS[p] ?? []),
+  );
+  const activeSteps = new Set(activePhase ? (PHASE_UI_STEPS[activePhase] ?? []) : []);
+
+  const allSteps = isQuick
+    ? ['DexScreener', 'Safety', 'Playbooks']
+    : aiEnabled
+    ? ['DexScreener', 'Safety', 'Holders', 'Social', 'Smart Money', 'Claude AI']
+    : ['DexScreener', 'Safety', 'Holders', 'Social', 'Smart Money'];
+
+  return (
+    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 10, justifyContent: 'center' }}>
+      {allSteps.map((s, i) => {
+        const done = doneSteps.has(s) || activeStep === 'done';
+        const active = activeSteps.has(s);
+        return (
+          <span key={i} style={{
+            fontSize: 10, padding: '3px 8px', borderRadius: 5,
+            fontWeight: active ? 700 : 600,
+            border: `1px solid ${done ? 'rgba(74,222,128,0.35)' : active ? 'rgba(99,102,241,0.7)' : 'var(--border)'}`,
+            background: done ? 'rgba(74,222,128,0.08)' : active ? 'rgba(99,102,241,0.15)' : 'var(--surface-2)',
+            color: done ? '#4ade80' : active ? '#818cf8' : 'var(--text-3)',
+            display: 'flex', alignItems: 'center', gap: 4,
+            transition: 'all 0.3s ease',
+          }}>
+            {done
+              ? <span style={{ fontSize: 9 }}>✓</span>
+              : active
+              ? <span style={{
+                  display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+                  border: '1.5px solid #818cf8',
+                  borderTopColor: 'transparent',
+                  animation: 'qwai-spin 0.7s linear infinite',
+                  flexShrink: 0,
+                }} />
+              : <span style={{ fontSize: 9, opacity: 0.4 }}>·</span>
+            }
+            {s}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function ReportSkeleton({ msg, steps, activeStep, aiEnabled = true }: { msg: string; steps: string; activeStep: string; aiEnabled?: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* progress bar */}
@@ -1332,19 +1627,10 @@ function ReportSkeleton({ msg, steps }: { msg: string; steps: string }) {
         </div>
         {/* pipeline status */}
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 4 }}>
             {msg}
           </div>
-          <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>{steps}</div>
-          <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
-            {steps.split('→').map((s, i) => (
-              <span key={i} style={{
-                fontSize: 10, padding: '2px 7px', borderRadius: 4,
-                background: 'var(--surface-2)', color: 'var(--text-3)',
-                border: '1px solid var(--border)',
-              }}>{s.trim()}</span>
-            ))}
-          </div>
+          <StepBadges activeStep={activeStep} isQuick={steps.includes('Playbooks')} aiEnabled={aiEnabled} />
         </div>
       </div>
       {/* 2-col grid skeleton for safety + market */}
@@ -1363,7 +1649,7 @@ function ReportSkeleton({ msg, steps }: { msg: string; steps: string }) {
 }
 
 /* ─── Re-analyze overlay (keeps existing report visible underneath) ──────── */
-function AnalyzingOverlay({ msg, steps }: { msg: string; steps: string }) {
+function AnalyzingOverlay({ msg, steps, activeStep, aiEnabled = true }: { msg: string; steps: string; activeStep: string; aiEnabled?: boolean }) {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 60,
@@ -1375,7 +1661,7 @@ function AnalyzingOverlay({ msg, steps }: { msg: string; steps: string }) {
     }}>
       <div style={{
         background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 14, padding: '28px 36px', minWidth: 340,
+        borderRadius: 14, padding: '28px 36px', minWidth: 340, maxWidth: 440,
         boxShadow: 'inset 0 1px 0 var(--highlight), 0 24px 64px rgba(0,0,0,0.7)',
         textAlign: 'center',
       }}>
@@ -1384,14 +1670,7 @@ function AnalyzingOverlay({ msg, steps }: { msg: string; steps: string }) {
           <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{msg}</span>
         </div>
         <LoadingBar />
-        <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)', lineHeight: 1.9, letterSpacing: '0.01em' }}>
-          {steps.split('→').map((s, i, arr) => (
-            <span key={i}>
-              <span style={{ color: 'var(--accent)' }}>{s.trim()}</span>
-              {i < arr.length - 1 && <span style={{ color: 'var(--text-3)', margin: '0 6px' }}>→</span>}
-            </span>
-          ))}
-        </div>
+        <StepBadges activeStep={activeStep} isQuick={steps.includes('Playbooks')} aiEnabled={aiEnabled} />
       </div>
     </div>
   );
@@ -1431,6 +1710,19 @@ function IntelPageClient() {
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [histKey, setHistKey] = useState(0);
+  const [analysisStep, setAnalysisStep] = useState<string>('market');
+  const analyzingAddressRef = useRef<string>('');
+  const [aiEnabled, setAiEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return localStorage.getItem('qwai_intel_ai_enabled') !== 'false';
+  });
+  const aiEnabledRef = useRef(aiEnabled);
+
+  useRealtime('analysis_progress', (data: { address: string; step: string }) => {
+    if (data.address === analyzingAddressRef.current) {
+      setAnalysisStep(data.step);
+    }
+  });
 
   // Stable ref so the searchParams effect can call the latest triggerAnalyze
   // without needing it in the dependency array (avoids stale closure on router)
@@ -1444,17 +1736,22 @@ function IntelPageClient() {
     const trimmed = addr.trim();
     if (!trimmed) return;
     setError(null);
+    setAnalysisStep('market');
+    analyzingAddressRef.current = trimmed;
     if (force) {
       setBusy(true);
+      setAnalyzing(true);  // show overlay on force-refresh too
     } else if (report) {
       setAnalyzing(true);  // show overlay; keep old report visible beneath
     } else {
       setLoading(true);    // first load — show full skeleton
     }
     try {
+      const ai = aiEnabledRef.current;
+      const noAiParam = !ai ? '&noAi=true' : '';
       const url = d === 'quick'
         ? `/intel/${encodeURIComponent(trimmed)}?depth=quick${force ? '&force=true' : ''}`
-        : `/intel/${encodeURIComponent(trimmed)}?depth=${d}&profile=${p}${force ? '&force=true' : ''}`;
+        : `/intel/${encodeURIComponent(trimmed)}?depth=${d}&profile=${p}${force ? '&force=true' : ''}${noAiParam}`;
       const { data } = await api.get<Report>(url);
       setReport(data);
       saveHistory(data);
@@ -1472,10 +1769,21 @@ function IntelPageClient() {
   }, [router, report]);
 
   triggerAnalyzeRef.current = triggerAnalyze;
+  aiEnabledRef.current = aiEnabled;
 
   const analyze = useCallback((addr: string, force = false) => {
     triggerAnalyze(addr, profile, depth, force);
   }, [triggerAnalyze, profile, depth]);
+
+  const handleAiToggle = (enabled: boolean) => {
+    setAiEnabled(enabled);
+    aiEnabledRef.current = enabled;
+    try { localStorage.setItem('qwai_intel_ai_enabled', String(enabled)); } catch {}
+    if (report) {
+      lastAnalyzedRef.current = null;
+      triggerAnalyze(report.meta.address, profile, depth, false);
+    }
+  };
 
   const handleProfileChange = (p: TradingProfile) => {
     setProfile(p);
@@ -1513,11 +1821,15 @@ function IntelPageClient() {
     ? 'Running fast scan'
     : depth === 'dossier'
     ? `${PROFILES[profile].label} — Full Dossier`
-    : `${PROFILES[profile].label} — AI Analysis`;
+    : aiEnabled
+    ? `${PROFILES[profile].label} — AI Analysis`
+    : `${PROFILES[profile].label} — Fast Scan`;
 
   const loadingSteps = depth === 'quick'
     ? 'DexScreener → Safety → Playbooks'
-    : 'DexScreener → Safety → Holders → Social → Smart Money → Claude AI';
+    : aiEnabled
+    ? 'DexScreener → Safety → Holders → Social → Smart Money → Claude AI'
+    : 'DexScreener → Safety → Holders → Social → Smart Money';
 
   const isAnalyzing = loading || analyzing;
 
@@ -1537,7 +1849,11 @@ function IntelPageClient() {
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <ProfileSelector profile={profile} onChange={handleProfileChange} />
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* AI toggle — hidden in quick mode */}
+            {depth !== 'quick' && (
+              <AiToggle enabled={aiEnabled} onChange={handleAiToggle} />
+            )}
             <DepthToggle depth={depth} onChange={(d) => {
               setDepth(d);
               if (report) {
@@ -1580,13 +1896,13 @@ function IntelPageClient() {
 
         {/* First load — full skeleton */}
         {loading && !report && (
-          <ReportSkeleton msg={loadingMsg} steps={loadingSteps} />
+          <ReportSkeleton msg={loadingMsg} steps={loadingSteps} activeStep={analysisStep} aiEnabled={depth !== 'quick' ? aiEnabled : false} />
         )}
 
         {/* Report — with full-screen overlay while re-analyzing */}
         {report && (
           <>
-            {analyzing && <AnalyzingOverlay msg={loadingMsg} steps={loadingSteps} />}
+            {analyzing && <AnalyzingOverlay msg={loadingMsg} steps={loadingSteps} activeStep={analysisStep} aiEnabled={depth !== 'quick' ? aiEnabled : false} />}
             <ReportView
               report={report}
               onReanalyze={() => { lastAnalyzedRef.current = null; analyze(report.meta.address, true); }}

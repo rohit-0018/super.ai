@@ -42,7 +42,7 @@ export class BirdeyeProvider {
       const data = await http.get<any>(`${this.base}/defi/token_overview`, {
         params: { address },
         headers: this.headers,
-        timeoutMs: 8_000,
+        timeoutMs: 5_000,
       });
       const d = data?.data;
       if (!d) return null;
@@ -75,7 +75,7 @@ export class BirdeyeProvider {
           http.get<any>(`${this.base}/defi/price_impact`, {
             params: { address, trade_type: 'buy', type: '15m', tx_amount: String(usdAmt) },
             headers: this.headers,
-            timeoutMs: 8_000,
+            timeoutMs: 5_000,
           }),
         ),
       );

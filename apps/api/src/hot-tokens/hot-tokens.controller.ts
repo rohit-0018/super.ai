@@ -157,6 +157,16 @@ export class HotTokensController {
 
     const userId: string = req.user.userId;
 
+    // Block trades on pump.fun bonding-curve tokens — they're not on Jupiter/Raydium yet.
+    // Use the in-memory signal result (already analyzed) to check lifecycle without extra RPC.
+    const signal = this.pipeline?.getResult(dto.address);
+    if (signal?.isBondingCurve) {
+      throw new BadRequestException(
+        `${signal.symbol} is still on the pump.fun bonding curve and cannot be traded via Jupiter. ` +
+        `Wait for graduation to Raydium/PumpSwap before buying.`,
+      );
+    }
+
     // Find the user's primary Solana wallet
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, chain: 'SOLANA' },

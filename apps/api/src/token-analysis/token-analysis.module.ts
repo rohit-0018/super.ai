@@ -23,9 +23,10 @@ import { AiReasoner } from './ai-reasoner';
 import { LlmService } from '../ai-agent/llm.service';
 import { TokenIntelModule } from '../token-intel/token-intel.module';
 import { IntelTrackModule } from '../intel-track/intel-track.module';
+import { WsModule } from '../ws/ws.module';
 
 @Module({
-  imports: [TokenIntelModule, IntelTrackModule],
+  imports: [TokenIntelModule, IntelTrackModule, WsModule],
   providers: [
     TokenAnalysisService,
     ComparableTokensService,

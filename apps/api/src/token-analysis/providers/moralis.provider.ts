@@ -35,7 +35,7 @@ export class MoralisProvider {
     try {
       const data = await http.get<any>(
         `${this.base}/solana/tokens/${mint}/pairs`,
-        { headers: this.headers, timeoutMs: 8_000 },
+        { headers: this.headers, timeoutMs: 4_000 },
       );
       const pairs: any[] = Array.isArray(data?.result) ? data.result : [];
       const pumpPair = pairs.find((p) => /pump/i.test(p?.exchangeName ?? ''));
@@ -78,7 +78,7 @@ export class MoralisProvider {
         {
           headers: this.headers,
           params: { chain: moralisChain, limit: '100' },
-          timeoutMs: 10_000,
+          timeoutMs: 5_000,
         },
       );
       const result: any[] = Array.isArray(data?.result) ? data.result : [];

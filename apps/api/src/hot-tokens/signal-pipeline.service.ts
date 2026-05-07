@@ -44,8 +44,12 @@ export interface SignalResult {
   aiSummary:      string;
   exitSizing?:    string;
   // Meta
-  analyzedAt: string;
-  dexUrl?:    string;
+  analyzedAt:        string;
+  dexUrl?:           string;
+  /** DexScreener dexId, e.g. "pump-fun" | "raydium" | "pumpswap" | "orca" */
+  dex?:              string;
+  /** True when the token is still on the pump.fun bonding curve — NOT tradeable via Jupiter. */
+  isBondingCurve?:   boolean;
 }
 
 export type VerdictSource = 'scanner_auto' | 'page_load_batch' | 'manual_request';
@@ -300,8 +304,10 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
         riskFactors:    ai.riskFactors,
         aiSummary:      ai.summary,
         exitSizing:     ai.exitSizing,
-        analyzedAt:     new Date().toISOString(),
-        dexUrl:         meta.url,
+        analyzedAt:       new Date().toISOString(),
+        dexUrl:           meta.url,
+        dex:              meta.dex,
+        isBondingCurve:   meta.dex === 'pump-fun',
       };
 
       // Detect verdict changes before overwriting the previous result

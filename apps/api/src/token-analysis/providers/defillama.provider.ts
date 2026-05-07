@@ -37,7 +37,7 @@ export class DeFiLlamaProvider {
 
     try {
       const data = await http.get<any[]>(`${this.base}/v2/historicalChainTvl/${slug}`, {
-        timeoutMs: 8_000,
+        timeoutMs: 4_000,
       });
       if (!Array.isArray(data) || data.length < 2) return null;
 

@@ -52,7 +52,7 @@ export class EtherscanProvider {
           offset: '20',
           apikey: this.apiKey,
         },
-        timeoutMs: 10_000,
+        timeoutMs: 5_000,
       });
       const result: any[] = Array.isArray(data?.result) ? data.result : [];
       if (!result.length) return null;

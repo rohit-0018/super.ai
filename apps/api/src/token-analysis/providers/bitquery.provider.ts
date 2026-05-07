@@ -54,7 +54,7 @@ export class BitqueryProvider {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({ query }),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(4_000),
       });
       if (!res.ok) {
         if (res.status === 429) {

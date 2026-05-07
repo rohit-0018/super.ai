@@ -21,7 +21,7 @@ export class BundleCheckerProvider {
     try {
       // trench.bot provides a direct token → bundle analysis endpoint
       const data = await http.get<any>(`${this.base}/bundle/analyse/${mint}`, {
-        timeoutMs: 12_000,
+        timeoutMs: 4_000,
         headers: { 'User-Agent': 'qwai/1.0' },
       });
       if (!data) return null;

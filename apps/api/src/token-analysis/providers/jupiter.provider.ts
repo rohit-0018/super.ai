@@ -83,7 +83,7 @@ export class JupiterProvider {
               slippageBps: 500,
               onlyDirectRoutes: false,
             },
-            timeoutMs: 8_000,
+            timeoutMs: 4_000,
           }),
         ),
       );

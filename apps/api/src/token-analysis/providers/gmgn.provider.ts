@@ -32,7 +32,7 @@ export class GmgnProvider {
           Accept: 'application/json',
           Referer: 'https://gmgn.ai/',
         },
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(4_000),
       });
 
       if (!res.ok) {

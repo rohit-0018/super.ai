@@ -1,8 +1,9 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProviderPoolService } from '../provider-pool/provider-pool.service';
 import { BoundedCache } from '../common/bounded-cache';
 import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
+import { RealtimeGateway } from '../ws/realtime.gateway';
 import { GoPlusProvider } from '../token-intel/providers/goplus.provider';
 import { RugCheckProvider } from '../token-intel/providers/rugcheck.provider';
 import { DexScreenerProvider } from './providers/dexscreener.provider';
@@ -29,6 +30,7 @@ import { detectChain } from './chain-detector';
 import { checkKill } from './kill-switch';
 import { runPlaybooks } from './playbooks';
 import type {
+  AiReasoning,
   BundleInfo,
   Chain,
   ChainContext,
@@ -89,7 +91,12 @@ export class TokenAnalysisService {
     private aiReasoner: AiReasoner,
     private comparableTokens: ComparableTokensService,
     private intelTrack: IntelSnapshotService,
+    @Optional() private realtime: RealtimeGateway,
   ) {}
+
+  private emitProgress(address: string, step: string) {
+    this.realtime?.emitGlobal('analysis_progress', { address, step });
+  }
 
   async analyzeShort(rawAddress: string): Promise<TokenAnalysisReport> {
     const address = (rawAddress ?? '').trim();
@@ -132,6 +139,7 @@ export class TokenAnalysisService {
     force: boolean,
     portfolioUsd: number | null,
     captureSource?: 'manual_scan' | 'telegram_scan' | 'hot_tokens_scan' | 'snipe',
+    noAi?: boolean,
   ): Promise<TokenAnalysisReport> {
     const address = (rawAddress ?? '').trim();
     const chain = detectChain(address);
@@ -140,11 +148,12 @@ export class TokenAnalysisService {
     const profileDef = getProfile(profile);
 
     // Get base report (reuses data pipeline cache — market, safety, holders, social, smartMoney)
-    const base = await this.analyze(chain, address, force, captureSource);
+    const base = await this.analyze(chain, address, force, captureSource, noAi);
 
     // Re-run AI with profile-specific persona (per-profile cache in AiReasoner)
+    // Skip when noAi=true (caller requested fast mode) or AI keys not configured.
     let aiReasoning = base.aiReasoning;
-    if (this.aiEnabled) {
+    if (this.aiEnabled && !noAi) {
       const profileAi = await this.aiReasoner.analyze(
         base.meta, base.safety,
         base.holderMetrics, base.socialData, base.smartMoney,
@@ -156,7 +165,7 @@ export class TokenAnalysisService {
       }
     }
 
-    // Build profile-aware trading strategy
+    // Build profile-aware trading strategy (no AI dependency — uses metrics only)
     const tradingStrategy = buildTradingStrategy(
       base.meta, base.safety, base.holderMetrics, base.smartMoney,
       profileDef, portfolioUsd,
@@ -185,6 +194,7 @@ export class TokenAnalysisService {
     rawAddress: string,
     force = false,
     captureSource: 'manual_scan' | 'telegram_scan' | 'hot_tokens_scan' | 'snipe' = 'manual_scan',
+    noAi = false,
   ): Promise<TokenAnalysisReport> {
     const address = (rawAddress ?? '').trim();
     if (!address) throw new BadRequestException('address is required');
@@ -207,9 +217,11 @@ export class TokenAnalysisService {
     const providers: ProviderStatus[] = [];
 
     // ── Layer 1: Market data ──────────────────────────────────────────────
+    this.emitProgress(normalizedAddress, 'market');
     const [dexMeta, geckoMeta] = await this.fetchMarketData(chain, address, providers);
 
     // ── Layer 2: Safety ───────────────────────────────────────────────────
+    this.emitProgress(normalizedAddress, 'safety');
     let rawRugcheckRisks: any[] | undefined;
     const { signals: safety, providerEntries, rugcheckRisks } = await this.fetchSafety(chain, address, dexMeta);
     rawRugcheckRisks = rugcheckRisks;
@@ -227,8 +239,6 @@ export class TokenAnalysisService {
       const report = this.buildReport(meta, safety, runPlaybooks(meta, safety), providers, kill);
       this.cache.set(cacheKey, report);
       await this.persistToDb(chain, normalizedAddress, report);
-      // Capture even kill-switch hits — honest track record includes the bad
-      // calls. Fire-and-forget so analyze() latency isn't affected.
       this.intelTrack.capture({
         chain, address: normalizedAddress,
         symbol: meta.symbol, name: meta.name,
@@ -238,6 +248,7 @@ export class TokenAnalysisService {
     }
 
     // ── Layer 3: Intelligence — all groups in parallel ────────────────────
+    this.emitProgress(normalizedAddress, 'intelligence');
     const [
       holderMetrics,
       socialData,
@@ -256,10 +267,16 @@ export class TokenAnalysisService {
       (holderMetrics as any).totalHolders = safety.holdersCount;
     }
 
-    // ── Layer 4: AI reasoning ─────────────────────────────────────────────
+    // ── Layer 4: AI reasoning (skipped when noAi=true for fast-mode) ─────
     const playbooks = runPlaybooks(meta, safety);
-    const aiReasoning = await this.aiReasoner.analyze(meta, safety, holderMetrics, socialData, smartMoneyData) ?? undefined;
-    if (aiReasoning) providers.push({ name: 'AI Reasoner (Claude)', status: 'hit' });
+    let aiReasoning: AiReasoning | undefined;
+    if (!noAi) {
+      this.emitProgress(normalizedAddress, 'ai');
+      aiReasoning = await this.aiReasoner.analyze(meta, safety, holderMetrics, socialData, smartMoneyData) ?? undefined;
+      if (aiReasoning) providers.push({ name: 'AI Reasoner (Claude)', status: 'hit' });
+    } else {
+      this.emitProgress(normalizedAddress, 'done');
+    }
 
     const report = this.buildReport(meta, safety, playbooks, providers, kill, holderMetrics, socialData, smartMoneyData, aiReasoning);
     this.cache.set(cacheKey, report);
@@ -362,7 +379,7 @@ export class TokenAnalysisService {
 
     // ── Price impact ───────────────────────────────────────────────────────
     tasks.push(
-      this.fetchPriceImpact(address, chain, metrics, providers).catch(() => undefined),
+      this.fetchPriceImpact(address, chain, meta.dex, metrics, providers).catch(() => undefined),
     );
 
     // ── Chain TVL context ──────────────────────────────────────────────────
@@ -379,8 +396,9 @@ export class TokenAnalysisService {
       );
     }
 
-    // ── Jupiter organic score (SOL only) ───────────────────────────────────
-    if (chain === 'SOLANA') {
+    // ── Jupiter organic score (SOL only, not pump.fun bonding curve) ─────────
+    // Jupiter doesn't index bonding-curve tokens — skip to avoid 404 noise.
+    if (chain === 'SOLANA' && meta.dex !== 'pump-fun') {
       tasks.push(
         this.pool.execute('ORGANIC_SCORE', {
           jupiter: () => this.jupiter.getTokenData(address),
@@ -409,10 +427,17 @@ export class TokenAnalysisService {
     metrics: HolderMetrics,
     providers: ProviderStatus[],
   ): Promise<void> {
-    // Try Helius first (fastest), then Solana Tracker (deeper)
-    const heliusResult = await this.pool.execute('HOLDER_SOL', {
-      helius: () => this.heliusHolders.getHolderMetrics(mint, rugcheckRisks),
-    });
+    // Run Helius and SolanaTracker in parallel — they read disjoint data
+    const [heliusResult, stResult] = await Promise.all([
+      this.pool.execute('HOLDER_SOL', {
+        helius: () => this.heliusHolders.getHolderMetrics(mint, rugcheckRisks),
+      }),
+      this.solanaTracker.isAvailable
+        ? this.pool.execute('HOLDER_SOL', {
+            solana_tracker: () => this.solanaTracker.getHolders(mint),
+          })
+        : Promise.resolve(null),
+    ]);
 
     if (heliusResult.status === 'hit' && heliusResult.data) {
       const hd = heliusResult.data as any;
@@ -421,18 +446,12 @@ export class TokenAnalysisService {
       providers.push({ name: 'Helius (holders)', status: 'hit' });
     }
 
-    // Solana Tracker adds top-100 concentration (deeper)
-    if (this.solanaTracker.isAvailable) {
-      const stResult = await this.pool.execute('HOLDER_SOL', {
-        solana_tracker: () => this.solanaTracker.getHolders(mint),
-      });
-      if (stResult.status === 'hit' && stResult.data) {
-        const sd = stResult.data as any;
-        metrics.totalHolders = metrics.totalHolders ?? sd.totalHolders;
-        metrics.top10ConcentrationPct = metrics.top10ConcentrationPct ?? sd.top10ConcentrationPct;
-        metrics.top100ConcentrationPct = sd.top100ConcentrationPct;
-        providers.push({ name: 'Solana Tracker (holders)', status: 'hit' });
-      }
+    if (stResult && stResult.status === 'hit' && stResult.data) {
+      const sd = stResult.data as any;
+      metrics.totalHolders = metrics.totalHolders ?? sd.totalHolders;
+      metrics.top10ConcentrationPct = metrics.top10ConcentrationPct ?? sd.top10ConcentrationPct;
+      metrics.top100ConcentrationPct = sd.top100ConcentrationPct;
+      providers.push({ name: 'Solana Tracker (holders)', status: 'hit' });
     }
   }
 
@@ -507,12 +526,15 @@ export class TokenAnalysisService {
   private async fetchPriceImpact(
     address: string,
     chain: Chain,
+    dex: string | undefined,
     metrics: HolderMetrics,
     providers: ProviderStatus[],
   ): Promise<void> {
+    const onBondingCurve = dex === 'pump-fun';
     const result = await this.pool.execute<PriceImpact>('PRICE_IMPACT', {
       birdeye: () => (chain === 'SOLANA' ? this.birdeye.getPriceImpact(address) : Promise.resolve(null)),
-      jupiter_impact: () => (chain === 'SOLANA' ? this.jupiter.getPriceImpact(address) : Promise.resolve(null)),
+      // Jupiter can't price-impact bonding-curve tokens — no Raydium/PumpSwap pool exists yet.
+      jupiter_impact: () => (!onBondingCurve && chain === 'SOLANA' ? this.jupiter.getPriceImpact(address) : Promise.resolve(null)),
     });
     if (result.data && (result.data.buy500Usd != null || result.data.buy1000Usd != null)) {
       metrics.priceImpact = result.data;

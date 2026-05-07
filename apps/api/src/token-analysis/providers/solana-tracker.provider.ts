@@ -51,7 +51,7 @@ export class SolanaTrackerProvider {
     try {
       const data = await http.get<any>(`${this.base}/holders/${mint}`, {
         headers: { 'x-api-key': this.apiKey },
-        timeoutMs: 10_000,
+        timeoutMs: 5_000,
       });
       if (!data) return null;
 
@@ -83,7 +83,7 @@ export class SolanaTrackerProvider {
     try {
       const data = await http.get<any>(`${this.base}/tokens/${mint}`, {
         headers: { 'x-api-key': this.apiKey },
-        timeoutMs: 10_000,
+        timeoutMs: 5_000,
       });
       if (!data?.risk) return null;
 
@@ -114,7 +114,7 @@ export class SolanaTrackerProvider {
     try {
       const data = await http.get<any>(`${this.base}/tokens/${mint}`, {
         headers: { 'x-api-key': this.apiKey },
-        timeoutMs: 10_000,
+        timeoutMs: 5_000,
       });
       if (!data) return null;
 
