@@ -8,7 +8,7 @@
 #   ANTHROPIC_API_KEY        From console.anthropic.com → API Keys
 #   HELIUS_RPC_URL           https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
 #   JWT_SECRET               ≥32 random bytes (auto-generated below)
-#   APP_WEB_URL              Your Render web URL, e.g. https://qwai-web-o6jz.onrender.com
+#   APP_WEB_URL              Your Render web URL, e.g. https://qwai-web-super.onrender.com
 #
 # TOKEN INTELLIGENCE (enables richer scans — leave blank to disable each):
 #   SOLANA_TRACKER_API_KEY   solanatracker.io — top-100 holders, rug risk score
@@ -95,7 +95,7 @@ services:
 
       # ── Auth ─────────────────────────────────────────────────────
       - key: WEB_ORIGIN
-        value: https://qwai-web-o6jz.onrender.com
+        value: https://qwai-web-super.onrender.com
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
@@ -113,7 +113,7 @@ services:
         value: https://qwai-api-cirr.onrender.com
       # Public web URL.
       - key: APP_WEB_URL
-        value: https://qwai-web-o6jz.onrender.com
+        value: https://qwai-web-super.onrender.com
       # gramjs userbot (optional — only needed for Telegram group sniping)
       - key: TELEGRAM_API_ID
         sync: false
@@ -232,7 +232,7 @@ services:
   # Frontend — Next.js 14 exported to /out, served as a static site.
   # ────────────────────────────────────────────────────────────────
   - type: web
-    name: qwai-web
+    name: qwai-web-super
     runtime: static
     rootDir: .
     branch: feat_deployment
