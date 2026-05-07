@@ -145,7 +145,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
 
   getHotTokensForAgent(profileKey: string): string {
     const scan = this.getLatest(profileKey);
-    if (!scan || !scan.tokens.length) return 'No hot tokens currently tracked.';
+    if (!scan || !scan.tokens.length) return 'No hot tokens scanned yet — the scanner runs every 20s, check back shortly.';
     const lines = scan.tokens.slice(0, 8).map(
       (t) =>
         `${t.symbol} [${t.address}] (${fmtPriceUsd(t.priceUsd)}) ` +

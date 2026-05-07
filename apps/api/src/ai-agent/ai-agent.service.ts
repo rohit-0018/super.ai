@@ -94,8 +94,8 @@ export class AiAgentService {
       // Feed tool results back to LLM for natural language response
       const followUp: ChatMessage[] = [
         ...messages,
-        { role: 'assistant', content: `I called these tools:\n${toolResults.join('\n')}` },
-        { role: 'user', content: 'Summarize what happened in a brief, friendly response to the user. Include key details like trade IDs, amounts, and status.' },
+        { role: 'assistant', content: `Tool results:\n${toolResults.join('\n')}` },
+        { role: 'user', content: 'Using only the tool results above, reply to my original request. Be direct and data-first. Quote key numbers. If the data is empty, say so plainly — do not invent details.' },
       ];
       const reply = await this.llm.chat(followUp);
       await this.memory.append(userId, 'assistant', reply, channel);
@@ -134,7 +134,7 @@ export class AiAgentService {
       const followUp: ChatMessage[] = [
         ...messages,
         { role: 'assistant', content: `Tool results:\n${toolResults.join('\n')}` },
-        { role: 'user', content: 'Summarize concisely what happened. Include trade IDs, amounts, status. Be brief and friendly.' },
+        { role: 'user', content: 'Using only the tool results above, reply to my original request. Be direct and data-first. Quote key numbers. If the data is empty, say so plainly — do not invent details.' },
       ];
       let acc = '';
       // Clear the "Executing..." prefix
