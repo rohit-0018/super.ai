@@ -122,14 +122,16 @@ services:
         sync: false
 
       # ── LLM ──────────────────────────────────────────────────────
-      # anthropic is recommended — claude-sonnet-4-6 is the default model.
-      # Switch to openai + set OPENAI_API_KEY if preferred.
+      # anthropic is recommended. Default is claude-haiku-4-5 for fast (~600ms)
+      # token verdicts. Bump to claude-sonnet-4-6 for richer reasoning at ~3x latency.
       - key: LLM_PROVIDER
         value: anthropic
       - key: LLM_MODEL
-        value: claude-sonnet-4-6
+        value: claude-haiku-4-5-20251001
+      # Haiku responds in <1s; 8s timeout fails fast when Anthropic is degraded
+      # so the caller can fall back to playbook-only verdicts instead of hanging.
       - key: LLM_TIMEOUT_MS
-        value: "30000"
+        value: "8000"
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
@@ -171,6 +173,12 @@ services:
       - key: HOT_TOKENS_FAST_SCAN
         value: "false"
 
+      # ── Provider toggles ─────────────────────────────────────────
+      # archive.org is frequently slow / timing out. Off by default — flip
+      # to "true" if you want website history checks back on.
+      - key: WAYBACK_ENABLED
+        value: "false"
+
       # ── Intel Track Record ───────────────────────────────────────
       # Controls the periodic re-scan of every captured token. Lower
       # interval = fresher data + more DexScreener calls. Default 10min
@@ -196,8 +204,10 @@ services:
       - key: INTEL_CACHE_TTL_SEC
         value: "60"
       # DB cache TTL (seconds). Reports older than this trigger full re-analysis.
+      # 600 = 10 min — most repeat scans of trending tokens hit cache and
+      # return in <100ms instead of running the full ~2s analysis pipeline.
       - key: INTEL_DB_CACHE_TTL_SEC
-        value: "120"
+        value: "600"
 
       # ── EVM RPCs (optional) ──────────────────────────────────────
       - key: ETH_RPC_URL
@@ -292,13 +302,14 @@ services:
       - key: APP_WEB_URL
         value: https://qwai-web-o6jz.onrender.com
 
-      # ── LLM (mirror) ─────────────────────────────────────────────
+      # ── LLM (must match super-api so signal-pipeline + /scan agree) ──
       - key: LLM_PROVIDER
         value: anthropic
       - key: LLM_MODEL
-        value: claude-sonnet-4-6
+        value: claude-haiku-4-5-20251001
+      # Match super-api: 8s fail-fast on degraded Anthropic.
       - key: LLM_TIMEOUT_MS
-        value: "30000"
+        value: "8000"
       # Required: at least one of ANTHROPIC_API_KEY / OPENAI_API_KEY must be
       # set on super-api (then it mirrors here). The other can stay empty.
       - key: ANTHROPIC_API_KEY
@@ -335,6 +346,10 @@ services:
       - key: HOT_TOKENS_FAST_SCAN
         value: "false"
 
+      # Mirror the api-side toggle so worker-side scans behave identically.
+      - key: WAYBACK_ENABLED
+        value: "false"
+
       # ── Intel Track Record (worker owns this now) ────────────────
       - key: INTEL_RESCAN_INTERVAL_SEC
         value: "600"
@@ -350,8 +365,10 @@ services:
       # ── Intel Cache Tuning ───────────────────────────────────────
       - key: INTEL_CACHE_TTL_SEC
         value: "60"
+      # Match super-api: 10 min DB cache so repeat scans hit cache instead
+      # of running the full pipeline.
       - key: INTEL_DB_CACHE_TTL_SEC
-        value: "120"
+        value: "600"
 
       # ── EVM RPCs (optional) ──────────────────────────────────────
       - key: ETH_RPC_URL
