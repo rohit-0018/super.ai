@@ -28,7 +28,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 databases:
-  - name: qwai-db
+  - name: super-db
     databaseName: qwai
     user: qwai
     plan: free
@@ -39,7 +39,7 @@ services:
   # Managed Redis — BullMQ queues + LLM cache + hot-token store.
   # ────────────────────────────────────────────────────────────────
   - type: redis
-    name: qwai-redis
+    name: super-redis
     plan: free
     region: oregon
     ipAllowList: []
@@ -85,12 +85,12 @@ services:
       # ── Infrastructure ───────────────────────────────────────────
       - key: DATABASE_URL
         fromDatabase:
-          name: qwai-db
+          name: super-db
           property: connectionString
       - key: REDIS_URL
         fromService:
           type: redis
-          name: qwai-redis
+          name: super-redis
           property: connectionString
 
       # ── Auth ─────────────────────────────────────────────────────
