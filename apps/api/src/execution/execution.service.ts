@@ -313,7 +313,11 @@ export class ExecutionService {
 
     this.logger.log(`[trc=${trace}] swap completed user=${input.userId} trade=${trade.id} mode=${mode} txHash=${txHash ?? 'none'}`);
 
-    await this.dna.recordTrade(input.userId, { pnlUsd: 0, holdMinutes: 0 });
+    // Only record the trade in DNA at buy time — pnlUsd is unknown until exit.
+    // Sell-side closes are handled by the exit engine after it stamps realizedPnl.
+    if (inferredSide === 'buy') {
+      await this.dna.recordTrade(input.userId, { pnlUsd: 0, holdMinutes: 0 });
+    }
     this.emotional.evaluate(input.userId).catch((e) => this.logger.warn(`[trc=${trace}] Emotional eval failed: ${e.message}`));
 
     // Fan out learning observation. Gated by LearningConfig.enabled inside the

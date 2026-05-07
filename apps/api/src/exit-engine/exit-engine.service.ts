@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TokenPoolService } from '../hot-tokens/token-pool.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { ExecutionService } from '../execution/execution.service';
+import { makeQueue, makeJobData, QUEUES } from '../agents/queues';
 
 // ── env config ────────────────────────────────────────────────────────────────
 const ENABLED      = process.env.EXIT_ENGINE_ENABLED !== 'false';
@@ -281,13 +282,30 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
     const patchData: Record<string, unknown> = {
       tiersExecuted: newExecuted,
     };
+    const realizedPnl = sellNotionalUsd - entryUsd;
     if (isFullExit) {
-      patchData.exitReason     = reason;
-      patchData.exitAt         = new Date();
-      patchData.realizedPnl    = sellNotionalUsd - entryUsd; // simplified P&L
+      patchData.exitReason      = reason;
+      patchData.exitAt          = new Date();
+      patchData.realizedPnl     = realizedPnl;
+      patchData.pnlUsd          = realizedPnl; // learning worker reads pnlUsd
       patchData.holdDurationSec = Math.round((Date.now() - (trade.createdAt as Date).getTime()) / 1000);
     }
     await this.prisma.trade.update({ where: { id: trade.id }, data: patchData as any });
+
+    // Fan out learning observation for the original buy trade now that outcome is known.
+    // Gated inside the worker by LearningConfig.enabled — safe to always enqueue.
+    if (isFullExit) {
+      try {
+        const q = makeQueue(QUEUES.LEARNING_INGEST);
+        await q.add(
+          'ingest',
+          makeJobData({ userId: trade.userId, tradeId: trade.id }),
+          { removeOnComplete: 500, removeOnFail: 100 },
+        );
+      } catch (e: any) {
+        this.logger.warn(`Learning ingest enqueue failed for trade=${trade.id}: ${e.message}`);
+      }
+    }
 
     // Emit WS event
     this.realtime.emitGlobal('trade_exit', {
