@@ -286,22 +286,32 @@ export class TokenAnalysisService {
     address: string,
     providers: ProviderStatus[],
   ): Promise<[TokenMeta | null, any]> {
-    // Primary: DexScreener
-    let dexMeta: TokenMeta | null = null;
-    try {
-      dexMeta = await this.dexscreener.getToken(chain, address);
-      providers.push({ name: 'DexScreener', status: dexMeta ? 'hit' : 'miss', note: dexMeta ? `${dexMeta.chainId} · ${dexMeta.dex}` : undefined });
-    } catch {
+    // Run DexScreener + GeckoTerminal in parallel — they're independent.
+    // Gecko's chainId hint normally comes from Dex; when called concurrently
+    // we pass undefined and Gecko falls back to its default network mapping
+    // (DexScreener slugs ≈ Gecko slugs anyway, except polygon → polygon_pos).
+    // For SOLANA the hint is unused (network is hard-coded "solana").
+    const [dexResult, geckoResult] = await Promise.allSettled([
+      this.dexscreener.getToken(chain, address),
+      this.gecko.getToken(chain, address, undefined),
+    ]);
+
+    const dexMeta: TokenMeta | null =
+      dexResult.status === 'fulfilled' ? dexResult.value : null;
+    if (dexResult.status === 'fulfilled') {
+      providers.push({
+        name: 'DexScreener',
+        status: dexMeta ? 'hit' : 'miss',
+        note: dexMeta ? `${dexMeta.chainId} · ${dexMeta.dex}` : undefined,
+      });
+    } else {
       providers.push({ name: 'DexScreener', status: 'error' });
     }
 
-    // Supplemental: GeckoTerminal (any type — merges only select fields)
-    let geckoMeta: any = null;
-    try {
-      geckoMeta = await this.gecko.getToken(chain, address, dexMeta?.chainId);
-      if (geckoMeta) providers.push({ name: 'GeckoTerminal', status: 'hit', note: 'supplemented' });
-    } catch {
-      // non-critical
+    const geckoMeta: any =
+      geckoResult.status === 'fulfilled' ? geckoResult.value : null;
+    if (geckoMeta) {
+      providers.push({ name: 'GeckoTerminal', status: 'hit', note: 'supplemented' });
     }
 
     return [dexMeta, geckoMeta];
