@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { IntelSnapshotService, SPARKLINE_MAX_POINTS } from './intel-snapshot.service';
 
@@ -43,8 +43,8 @@ export class IntelRescanWorker implements OnModuleInit, OnModuleDestroy {
   private running = false;
 
   constructor(
-    private prisma: PrismaService,
-    private snapshots: IntelSnapshotService,
+    @Optional() private prisma:     PrismaService,
+    @Optional() private snapshots:  IntelSnapshotService,
   ) {}
 
   onModuleInit() {
@@ -95,6 +95,7 @@ export class IntelRescanWorker implements OnModuleInit, OnModuleDestroy {
 
   // ── 1. Rescan a batch of snapshots ─────────────────────────────────────
   private async rescanBatch(): Promise<number> {
+    if (!this.prisma) return 0;
     const stale = new Date(Date.now() - RESCAN_INTERVAL_SEC * 1_000);
     const rows = await this.prisma.intelSnapshot.findMany({
       where: {
@@ -189,6 +190,7 @@ export class IntelRescanWorker implements OnModuleInit, OnModuleDestroy {
 
   // ── 2. Status curation — rugged / retired demotions ────────────────────
   private async runStatusCuration(): Promise<number> {
+    if (!this.prisma) return 0;
     const cutoffRetire = new Date(Date.now() - RETIRE_NO_RESPONSE_HOURS * 3600_000);
     let touched = 0;
 
@@ -233,7 +235,7 @@ export class IntelRescanWorker implements OnModuleInit, OnModuleDestroy {
 
   // ── 3. Auto-purge (gated by INTEL_TRACK_AUTO_PURGE) ────────────────────
   private async runPurge(): Promise<number> {
-    if (!AUTO_PURGE) return 0;
+    if (!this.prisma || !AUTO_PURGE) return 0;
     const cutoff = new Date(Date.now() - RESCAN_MAX_AGE_DAYS * 86400_000);
     // NEVER purge graduated — those are the marketing trophies.
     const result = await this.prisma.intelSnapshot.deleteMany({

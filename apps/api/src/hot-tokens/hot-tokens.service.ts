@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional, Inject } from '@nestjs/common';
 import IORedis from 'ioredis';
 import { buildRedisOptions } from '../common/redis-options';
 import { RealtimeGateway } from '../ws/realtime.gateway';
@@ -84,7 +84,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   private lastRedisErrorLog = 0;
 
   constructor(
-    private readonly realtime: RealtimeGateway,
+    @Optional() private readonly realtime: RealtimeGateway,
     private readonly tokenAnalysis: TokenAnalysisService,
     @Optional() private readonly intelSnapshots: IntelSnapshotService,
     @Optional() private readonly signalPipeline: SignalPipelineService,
@@ -214,7 +214,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         `Hot scan done: ${candidates.size} candidates, ${enriched.filter((e) => e.dex).length} enriched, ${Date.now() - t0}ms`,
       );
 
-      this.realtime.emitGlobal('hot_tokens_update', {
+      this.realtime?.emitGlobal('hot_tokens_update', {
         byProfile,
         scannedAt,
         nextScanAt,
@@ -295,7 +295,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         }
       }
       if (updates.length) {
-        this.realtime.emitGlobal('hot_tokens_refresh', {
+        this.realtime?.emitGlobal('hot_tokens_refresh', {
           tokens: updates,
           refreshedAt: new Date().toISOString(),
         });
@@ -667,7 +667,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
 
       if (winners.length > 0) {
         this.logger.log(`Pump streaks hit threshold: ${winners.map((w) => w.symbol).join(', ')}`);
-        this.realtime.emitGlobal('pump_streak', { winners, scannedAt });
+        this.realtime?.emitGlobal('pump_streak', { winners, scannedAt });
       }
     } catch (err) {
       this.logger.warn(`processPumpStreaks error: ${(err as Error).message}`);

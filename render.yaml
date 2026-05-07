@@ -127,9 +127,9 @@ services:
       - key: LLM_PROVIDER
         value: anthropic
       - key: LLM_MODEL
-        value: claude-haiku-4-5-20251001
-      # Haiku responds in <1s; 8s timeout fails fast when Anthropic is degraded
-      # so the caller can fall back to playbook-only verdicts instead of hanging.
+        value: claude-sonnet-4-6
+      - key: LLM_FALLBACK_MODEL
+        value: gpt-4o
       - key: LLM_TIMEOUT_MS
         value: "8000"
       - key: ANTHROPIC_API_KEY
@@ -308,8 +308,9 @@ services:
       - key: LLM_PROVIDER
         value: anthropic
       - key: LLM_MODEL
-        value: claude-haiku-4-5-20251001
-      # Match super-api: 8s fail-fast on degraded Anthropic.
+        value: claude-sonnet-4-6
+      - key: LLM_FALLBACK_MODEL
+        value: gpt-4o
       - key: LLM_TIMEOUT_MS
         value: "8000"
       # Required: at least one of ANTHROPIC_API_KEY / OPENAI_API_KEY must be

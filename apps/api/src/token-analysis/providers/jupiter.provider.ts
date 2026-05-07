@@ -46,7 +46,7 @@ export class JupiterProvider {
       };
     } catch (e: any) {
       if (e instanceof HttpError && e.status === 404) return null;
-      this.logger.warn(`Jupiter token data failed for ${mint}: ${e.message}`);
+      this.logger.debug(`Jupiter token data failed for ${mint}: ${e.message}`);
       return null;
     }
   }
@@ -96,7 +96,7 @@ export class JupiterProvider {
 
       return { buy500Usd: r500, buy1000Usd: r1000, buy5000Usd: r5000 };
     } catch (e: any) {
-      this.logger.warn(`Jupiter price impact failed for ${mint}: ${e.message}`);
+      this.logger.debug(`Jupiter price impact failed for ${mint}: ${e.message}`);
       return null;
     }
   }

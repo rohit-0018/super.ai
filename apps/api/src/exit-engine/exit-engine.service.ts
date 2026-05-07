@@ -80,10 +80,10 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
   private running = false;
 
   constructor(
-    private readonly prisma:     PrismaService,
-    private readonly pool:       TokenPoolService,
-    private readonly realtime:   RealtimeGateway,
-    @Optional() private readonly exec?: ExecutionService,
+    @Optional() private readonly prisma:   PrismaService,
+    @Optional() private readonly pool:     TokenPoolService,
+    @Optional() private readonly realtime: RealtimeGateway,
+    @Optional() private readonly exec?:    ExecutionService,
   ) {}
 
   onModuleInit() {
@@ -118,6 +118,7 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async processOpenTrades(): Promise<void> {
+    if (!this.prisma) return;
     // Load open buy trades — no exitAt set yet.
     // In paper-only mode, restrict to PAPER. When live mode is on, process both.
     const where = LIVE_MODE
@@ -308,7 +309,7 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Emit WS event
-    this.realtime.emitGlobal('trade_exit', {
+    this.realtime?.emitGlobal('trade_exit', {
       tradeId:         trade.id,
       sellTradeId:     sellResult?.tradeId ?? null,
       userId:          trade.userId,
@@ -321,7 +322,7 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
       ts:              new Date().toISOString(),
     });
 
-    this.realtime.emitToUser(trade.userId, 'trade_exit', {
+    this.realtime?.emitToUser(trade.userId, 'trade_exit', {
       tradeId:         trade.id,
       token:           trade.tokenOut,
       reason,

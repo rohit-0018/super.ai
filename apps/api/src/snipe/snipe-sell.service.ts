@@ -23,7 +23,7 @@
  *   - connection (confirmed) used only for status polling
  */
 
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { PrismaService } from '../prisma/prisma.service';
 import { SnipeSessionService } from './snipe-session.service';
@@ -69,10 +69,10 @@ export class SnipeSellService implements OnModuleInit, OnModuleDestroy {
   private readonly peaks = new Map<string, number>();
 
   constructor(
-    private prisma: PrismaService,
-    private session: SnipeSessionService,
-    private helius: HeliusService,
-    private ws: RealtimeGateway,
+    @Optional() private prisma:   PrismaService,
+    @Optional() private session:  SnipeSessionService,
+    @Optional() private helius:   HeliusService,
+    @Optional() private ws:       RealtimeGateway,
   ) {}
 
   onModuleInit() {
@@ -121,6 +121,7 @@ export class SnipeSellService implements OnModuleInit, OnModuleDestroy {
   // ── Position monitoring ───────────────────────────────────────────────────
 
   private async checkPositions() {
+    if (!this.prisma) return;
     const jupBase = getJupiterApiBase();
     if (jupBase === 'MOCK') return;
 

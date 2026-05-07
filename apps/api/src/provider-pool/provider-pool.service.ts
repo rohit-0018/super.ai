@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RateLimitService } from './rate-limit.service';
 
@@ -45,8 +45,8 @@ export class ProviderPoolService implements OnModuleInit {
   private cache = new Map<string, { providers: ProviderEntry[]; ts: number }>();
 
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly rl: RateLimitService,
+    @Optional() private readonly prisma: PrismaService,
+    @Optional() private readonly rl:     RateLimitService,
   ) {}
 
   async onModuleInit() {
@@ -174,6 +174,7 @@ export class ProviderPoolService implements OnModuleInit {
   // ── Private ───────────────────────────────────────────────────────────────
 
   private async getGroupProviders(group: string): Promise<ProviderEntry[]> {
+    if (!this.prisma) return [];
     const cached = this.cache.get(group);
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.providers;
 
@@ -217,6 +218,7 @@ export class ProviderPoolService implements OnModuleInit {
 
   /** Seeds the ProviderConfig table with defaults if it is empty. */
   private async seedDefaultsIfEmpty(): Promise<void> {
+    if (!this.prisma) return;
     try {
       const count = await this.prisma.providerConfig.count();
       if (count > 0) return;

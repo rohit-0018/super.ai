@@ -47,10 +47,10 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   private readonly MAX_RECONNECT_FAILURES = 5;
 
   constructor(
-    private prisma: PrismaService,
-    private kms: KmsService,
-    private snipeGroup: SnipeGroupService,
-    @Optional() private ws: RealtimeGateway,
+    @Optional() private prisma:      PrismaService,
+    @Optional() private kms:         KmsService,
+    @Optional() private snipeGroup:  SnipeGroupService,
+    @Optional() private ws:          RealtimeGateway,
   ) {}
 
   async onModuleInit() {
@@ -64,6 +64,7 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
     // in the background and emit tg_status over WS when ready.
     setImmediate(async () => {
       try {
+        if (!this.prisma) return;
         const sessions = await this.prisma.tgUserSession.findMany({ where: { isActive: true } });
         this.logger.log(`Reconnecting ${sessions.length} Telegram userbot sessions in background…`);
         await Promise.allSettled(

@@ -253,10 +253,10 @@ function FeedCard({ s, extra, pendingAnalysis }: { s: FeedItem; extra?: SignalEx
   //   undefined  → historical card, no live-mode badges at all
   //   true       → just arrived via WS (green NEW badge)
   //   false      → awaiting analysis (shows Analyzing… spinner)
-  // For DB-loaded cards without a verdict we force false once analysis is triggered.
-  const isFresh = s._isFresh !== undefined
-    ? s._isFresh
-    : (pendingAnalysis && !s.aiVerdict ? false : undefined);
+  // Only WS-arrived cards (_isFresh set) get the live-mode spinner.
+  // DB-loaded historical cards stay undefined — they may not be in the current
+  // analysis queue so showing "Analyzing…" on all of them is misleading.
+  const isFresh = s._isFresh;
 
   return (
     <TokenCard

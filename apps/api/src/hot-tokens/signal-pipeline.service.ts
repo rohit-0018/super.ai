@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
@@ -80,8 +80,8 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly tokenAnalysis: TokenAnalysisService,
-    private readonly realtime:      RealtimeGateway,
-    private readonly prisma:        PrismaService,
+    @Optional() private readonly realtime: RealtimeGateway,
+    @Optional() private readonly prisma:   PrismaService,
   ) {}
 
   async onModuleInit() {
@@ -185,6 +185,7 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
    * not immediately re-queued — they'll be re-analyzed once the TTL expires.
    */
   private async hydrateFromDb(): Promise<void> {
+    if (!this.prisma) return;
     try {
       const rows = await this.prisma.verdictHistory.findMany({
         orderBy: { analyzedAt: 'desc' },
@@ -309,7 +310,7 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
         const scoreDelta   = result.score - prev.score;
         const categoryChanged = verdictCategory(result.verdict) !== verdictCategory(prev.verdict);
         if (Math.abs(scoreDelta) >= VERDICT_CHANGE_THRESHOLD || categoryChanged) {
-          this.realtime.emitGlobal('verdict_change', {
+          this.realtime?.emitGlobal('verdict_change', {
             address:       result.address,
             symbol:        result.symbol,
             prev:          { score: prev.score,   verdict: prev.verdict },
@@ -335,11 +336,11 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
       void this.persistVerdict(result, source, latencyMs);
 
       // Broadcast to all clients so hot-feed cards can overlay AI verdict
-      this.realtime.emitGlobal('signal_analysis', result);
+      this.realtime?.emitGlobal('signal_analysis', result);
 
       // Strong signal → trigger banner
       if (ai.score >= STRONG_BUY_THRESHOLD) {
-        this.realtime.emitGlobal('signal_alert', result);
+        this.realtime?.emitGlobal('signal_alert', result);
         this.logger.log(`🚨 SIGNAL ALERT: ${result.symbol} score=${result.score} T1=${result.t1Pct ?? '?'}%`);
       }
     } catch (err) {
@@ -350,6 +351,7 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
   // ── DB persistence ─────────────────────────────────────────────────────────
 
   private async persistVerdict(result: SignalResult, source: VerdictSource, latencyMs: number): Promise<void> {
+    if (!this.prisma) return;
     try {
       await this.prisma.verdictHistory.create({
         data: {
