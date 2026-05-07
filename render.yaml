@@ -234,9 +234,11 @@ services:
   # rescan, signal pipeline, position monitor, copy-trade, snipe, DCA,
   # outbound Telegram sends. Runs apps/api/dist/worker.js (no HTTP).
   #
-  # All shared secrets are mirrored from super-api via `fromService` so
-  # you set each key ONCE in the super-api dashboard and the worker
-  # picks it up automatically — no manual double-pasting.
+  # JWT_SECRET and TELEGRAM_BOT_TOKEN are mirrored from super-api via
+  # `fromService` (must match for KMS fallback + outbound bot calls).
+  # Everything else is `sync: false` — set on super-api dashboard, then
+  # set on super-worker dashboard for the keys you actually use. Sync
+  # works even when optional keys are empty.
   # ────────────────────────────────────────────────────────────────
   - type: worker
     name: super-worker
@@ -297,59 +299,35 @@ services:
         value: claude-sonnet-4-6
       - key: LLM_TIMEOUT_MS
         value: "30000"
+      # Required: at least one of ANTHROPIC_API_KEY / OPENAI_API_KEY must be
+      # set on super-api (then it mirrors here). The other can stay empty.
       - key: ANTHROPIC_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: ANTHROPIC_API_KEY
+        sync: false
       - key: OPENAI_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: OPENAI_API_KEY
+        sync: false
 
-      # ── Solana RPC (mirror) ──────────────────────────────────────
+      # ── Solana RPC ───────────────────────────────────────────────
+      # HELIUS_RPC_URL is required for Solana scans/trades to function.
       - key: HELIUS_RPC_URL
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: HELIUS_RPC_URL
+        sync: false
       - key: SOLANA_RPC_URL
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: SOLANA_RPC_URL
+        sync: false
       - key: JUPITER_API_BASE
         value: https://lite-api.jup.ag/swap/v1
       - key: JITO_BUNDLE_URL
         value: https://mainnet.block-engine.jito.wtf
 
-      # ── Token Intelligence Providers (mirror) ────────────────────
+      # ── Token Intelligence Providers (all optional — leave empty to disable) ──
       - key: SOLANA_TRACKER_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: SOLANA_TRACKER_API_KEY
+        sync: false
       - key: MORALIS_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: MORALIS_API_KEY
+        sync: false
       - key: BIRDEYE_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: BIRDEYE_API_KEY
+        sync: false
       - key: ETHERSCAN_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: ETHERSCAN_API_KEY
+        sync: false
       - key: BITQUERY_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: BITQUERY_API_KEY
+        sync: false
 
       # ── Hot Token Scanner (worker owns this now) ─────────────────
       - key: HOT_TOKENS_ENABLED
@@ -375,58 +353,31 @@ services:
       - key: INTEL_DB_CACHE_TTL_SEC
         value: "120"
 
-      # ── EVM RPCs (mirror) ────────────────────────────────────────
+      # ── EVM RPCs (optional) ──────────────────────────────────────
       - key: ETH_RPC_URL
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: ETH_RPC_URL
+        sync: false
       - key: ARBITRUM_RPC_URL
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: ARBITRUM_RPC_URL
+        sync: false
       - key: BASE_RPC_URL
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: BASE_RPC_URL
+        sync: false
       - key: ONEINCH_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: ONEINCH_API_KEY
+        sync: false
 
-      # ── AWS KMS (mirror) ─────────────────────────────────────────
+      # ── AWS KMS (optional — only needed without ALLOW_UNSAFE_LOCAL_KMS) ──
       - key: AWS_REGION
         value: us-east-1
       - key: AWS_KMS_KEY_ID
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: AWS_KMS_KEY_ID
+        sync: false
       - key: AWS_ACCESS_KEY_ID
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: AWS_ACCESS_KEY_ID
+        sync: false
       - key: AWS_SECRET_ACCESS_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: AWS_SECRET_ACCESS_KEY
+        sync: false
 
-      # ── Observability (mirror) ───────────────────────────────────
+      # ── Observability (optional) ─────────────────────────────────
       - key: DATADOG_API_KEY
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: DATADOG_API_KEY
+        sync: false
       - key: SENTRY_DSN
-        fromService:
-          type: web
-          name: super-api
-          envVarKey: SENTRY_DSN
+        sync: false
 
   # ────────────────────────────────────────────────────────────────
   # Frontend — Next.js 14 exported to /out, served as a static site.
