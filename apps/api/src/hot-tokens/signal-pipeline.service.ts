@@ -172,6 +172,10 @@ export class SignalPipelineService implements OnModuleInit, OnModuleDestroy {
     return this.getAll().filter((r) => r.score >= STRONG_BUY_THRESHOLD);
   }
 
+  getResult(address: string): SignalResult | undefined {
+    return this.results.get(address);
+  }
+
   // ── DB hydration on startup ────────────────────────────────────────────────
 
   /**

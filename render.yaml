@@ -172,6 +172,8 @@ services:
         value: "true"
       - key: HOT_TOKENS_FAST_SCAN
         value: "false"
+      - key: HOT_SCAN_INTERVAL_MS
+        value: "20000"
 
       # ── Provider toggles ─────────────────────────────────────────
       # archive.org is frequently slow / timing out. Off by default — flip
@@ -345,6 +347,8 @@ services:
         value: "true"
       - key: HOT_TOKENS_FAST_SCAN
         value: "false"
+      - key: HOT_SCAN_INTERVAL_MS
+        value: "20000"
 
       # Mirror the api-side toggle so worker-side scans behave identically.
       - key: WAYBACK_ENABLED

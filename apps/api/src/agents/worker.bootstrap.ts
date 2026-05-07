@@ -322,11 +322,11 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
       jobId: 'learner-tick',
     });
 
-    // Hot token scanner — full discovery + score every 1 min.
+    // Hot token scanner — full discovery + score on configurable interval (default 20s).
     if (process.env.HOT_TOKENS_ENABLED !== 'false') {
       const hotScan = makeQueue(QUEUES.HOT_TOKENS_SCAN);
       await hotScan.add('hot-tokens-scan', {}, {
-        repeat: { every: 60_000 },
+        repeat: { every: parseInt(process.env.HOT_SCAN_INTERVAL_MS ?? '20000', 10) },
         removeOnComplete: 20,
         removeOnFail: 20,
         jobId: 'hot-tokens-scan',

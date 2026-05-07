@@ -9,6 +9,7 @@ import { TelegramLinkService } from '../auth/telegram-link.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { SnipeGroupService } from '../snipe/snipe-group.service';
 import { HotTokensService } from '../hot-tokens/hot-tokens.service';
+import { SignalPipelineService } from '../hot-tokens/signal-pipeline.service';
 import { detectChain } from '../token-analysis/chain-detector';
 import { fmtPriceUsd } from '../common/format-price';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
@@ -61,6 +62,14 @@ export class TelegramBot {
   private getHotTokens(): HotTokensService | null {
     try {
       return this.moduleRef.get(HotTokensService, { strict: false });
+    } catch {
+      return null;
+    }
+  }
+
+  private getSignalPipeline(): SignalPipelineService | null {
+    try {
+      return this.moduleRef.get(SignalPipelineService, { strict: false });
     } catch {
       return null;
     }
@@ -260,9 +269,16 @@ export class TelegramBot {
     });
 
     /* ── /portfolio ────────────────────────────────────────────────────────── */
+    /* ── /top — fast-lane hot tokens, no LLM ─────────────────────────────── */
+    bot.command('top', async (ctx) => this.runHotTokens(ctx));
+    bot.command('top10', async (ctx) => this.runHotTokens(ctx));
+
     bot.command('portfolio', async (ctx) => {
       try {
-        return ctx.reply(await this.chat(ctx.chat.id, 'Give me my portfolio summary with current positions and P&L.'));
+        return ctx.reply(await this.chat(ctx.chat.id, 'Give me my portfolio summary with current positions and P&L.'), {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
       } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
@@ -273,6 +289,8 @@ export class TelegramBot {
       try {
         const reply = await this.chat(ctx.chat.id, `Buy ${args}`);
         return ctx.reply(reply, {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
           reply_markup: new InlineKeyboard()
             .text('✅ Confirm', `confirm:buy:${args}`)
             .text('❌ Cancel', 'confirm:cancel'),
@@ -286,6 +304,8 @@ export class TelegramBot {
       try {
         const reply = await this.chat(ctx.chat.id, `Sell ${args}`);
         return ctx.reply(reply, {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
           reply_markup: new InlineKeyboard()
             .text('✅ Confirm', `confirm:sell:${args}`)
             .text('❌ Cancel', 'confirm:cancel'),
@@ -298,13 +318,19 @@ export class TelegramBot {
       const args = ctx.match?.trim();
       if (!args) return ctx.reply('Usage: /dca 50 SOL daily');
       try {
-        return ctx.reply(await this.chat(ctx.chat.id, `Set up a DCA: buy ${args}`));
+        return ctx.reply(await this.chat(ctx.chat.id, `Set up a DCA: buy ${args}`), {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
       } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
     bot.command('alerts', async (ctx) => {
       try {
-        return ctx.reply(await this.chat(ctx.chat.id, 'Show me my recent alerts and notifications.'));
+        return ctx.reply(await this.chat(ctx.chat.id, 'Show me my recent alerts and notifications.'), {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
       } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
@@ -393,13 +419,13 @@ export class TelegramBot {
             { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: new InlineKeyboard().url('🔗 Connect →', url) },
           );
         }
-        case 'hot': {
-          const userId = await this.resolveUserId(chatId);
-          if (userId) return ctx.reply(await this.chat(chatId, 'Show me the top hot tokens right now'));
-          return ctx.reply(await this.guestChat(String(chatId), 'Show me the top hot tokens right now'));
-        }
-        case 'portfolio': return ctx.reply(await this.chat(chatId, 'Portfolio summary'));
-        case 'alerts':    return ctx.reply(await this.chat(chatId, 'Show my recent alerts'));
+        case 'hot': return this.runHotTokens(ctx);
+        case 'portfolio': return ctx.reply(await this.chat(chatId, 'Portfolio summary'), {
+          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
+        });
+        case 'alerts': return ctx.reply(await this.chat(chatId, 'Show my recent alerts'), {
+          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
+        });
         case 'kill':      return ctx.reply('Use /kill to engage the kill switch.');
         case 'paper':     return ctx.reply('Toggle paper mode in the web Settings page.');
         default:          return ctx.reply(`Unknown action: ${action}`);
@@ -409,7 +435,9 @@ export class TelegramBot {
     bot.callbackQuery(/^confirm:kill$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       try {
-        return ctx.reply(await this.chat(ctx.chat!.id, 'Engage kill switch immediately. Pause all agents.'));
+        return ctx.reply(await this.chat(ctx.chat!.id, 'Engage kill switch immediately. Pause all agents.'), {
+          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
+        });
       } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
@@ -422,7 +450,9 @@ export class TelegramBot {
       await ctx.answerCallbackQuery();
       const [, action, args] = ctx.match;
       try {
-        return ctx.reply(await this.chat(ctx.chat!.id, `Confirmed — ${action} ${args}. Execute now.`));
+        return ctx.reply(await this.chat(ctx.chat!.id, `Confirmed — ${action} ${args}. Execute now.`), {
+          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
+        });
       } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
     });
 
@@ -523,73 +553,85 @@ export class TelegramBot {
   }
 
   private async runHotTokens(ctx: any): Promise<void> {
-    // Send placeholder immediately
-    let msgId: number | undefined;
-    try {
-      const m = await ctx.reply('🔥 <b>Fetching hot tokens…</b>', { parse_mode: 'HTML' });
-      msgId = m.message_id;
-    } catch { /* */ }
-
-    const editOrReply = async (text: string, opts: Record<string, any>) => {
-      if (msgId) {
-        try { return await ctx.api.editMessageText(ctx.chat.id, msgId, text, opts); } catch { /* */ }
-      }
-      return ctx.reply(text, opts);
-    };
-
     const svc = this.getHotTokens();
-    const scan = svc?.getLatest('meme_hunter');
-
-    if (!scan || !scan.tokens.length) {
-      await editOrReply(
-        '📡 <b>Hot tokens scanner is warming up.</b>\n\n<i>First scan runs on startup — check back in a minute.</i>',
-        { parse_mode: 'HTML' },
-      );
-      return;
+    if (!svc) {
+      return ctx.reply('📡 <b>Scanner unavailable.</b>', { parse_mode: 'HTML' });
     }
 
-    const tokens = scan.tokens.slice(0, 10);
-    const ageMin = Math.round((Date.now() - new Date(scan.scannedAt).getTime()) / 60_000);
-    const ageStr = ageMin < 1 ? 'just now' : `${ageMin}m ago`;
+    // On Refresh button tap: if cache is stale (> 45s), pull fresh data from DexScreener directly.
+    const STALE_MS = 45_000;
+    const cached = svc.getLatest('meme_hunter');
+    const cacheAgeMs = cached ? Date.now() - new Date(cached.scannedAt).getTime() : Infinity;
+    const scan = (ctx.callbackQuery && cacheAgeMs > STALE_MS)
+      ? await svc.fetchTopDirect().catch(() => cached)
+      : cached;
 
-    const lines: string[] = [
-      `🔥 <b>Hot Tokens — Meme Hunter</b>  <i>· ${ageStr}</i>`,
-      '',
-    ];
+    if (!scan || !scan.tokens.length) {
+      return ctx.reply(
+        '📡 <b>Scanner warming up</b>\n\n<i>First scan runs at startup — retry in ~60s.</i>',
+        { parse_mode: 'HTML' },
+      );
+    }
+
+    const tokens   = scan.tokens.slice(0, 10);
+    const ageMs    = Date.now() - new Date(scan.scannedAt).getTime();
+    const ageStr   = ageMs < 60_000 ? 'just now' : `${Math.floor(ageMs / 60_000)}m ago`;
+    const pipeline = this.getSignalPipeline();
 
     const VERDICT_ICON: Record<string, string> = {
       STRONG_BUY: '🚀', BUY: '📈', CAUTIOUS: '⚠️', SKIP: '⏭', HIGH_RISK: '🚨',
     };
 
-    tokens.forEach((t, i) => {
+    const lines: string[] = [
+      `🔥 <b>Top ${tokens.length} Hot Tokens</b>  ·  <i>${ageStr}</i>`,
+      '',
+    ];
+
+    for (let i = 0; i < tokens.length; i++) {
+      const t       = tokens[i];
       const icon    = VERDICT_ICON[t.verdict] ?? '•';
       const price   = fmtPriceUsd(t.priceUsd);
       const ch1h    = `${t.priceChange1h >= 0 ? '+' : ''}${t.priceChange1h.toFixed(1)}%`;
-      const ch24h   = `${t.priceChange24h >= 0 ? '+' : ''}${t.priceChange24h.toFixed(1)}%`;
+      const ch5m    = t.priceChange5m !== 0
+        ? ` · ${t.priceChange5m >= 0 ? '+' : ''}${t.priceChange5m.toFixed(1)}% 5m`
+        : '';
       const mcap    = fmtUsd(t.marketCapUsd);
       const vol     = fmtUsd(t.volume24hUsd);
+      const dexLink = t.dexUrl ?? `https://dexscreener.com/solana/${t.address}`;
 
-      lines.push(`${i + 1}. ${icon} <b>${esc(t.symbol)}</b>  ·  ${esc(price)}`);
-      lines.push(`   <code>${t.address}</code>`);
-      lines.push(`   Score <b>${t.score}/100</b>  ·  ${t.verdict}`);
-      lines.push(`   ${ch1h} 1h  ·  ${ch24h} 24h  ·  MCap ${mcap}  ·  Vol ${vol}`);
-      if (t.summary) lines.push(`   <i>${esc(t.summary.slice(0, 80))}</i>`);
+      // Line 1: rank · verdict · name · price · 1h change
+      lines.push(`${i + 1}. ${icon} <b>$${esc(t.symbol)}</b>  ·  ${esc(price)}  ·  <b>${ch1h} 1h</b>${ch5m}`);
+      // Line 2: full CA (tap to copy) + DexScreener chart link
+      lines.push(`   <code>${t.address}</code>  <a href="${dexLink}">📊</a>`);
+      // Line 3: heuristic score + market stats
+      lines.push(`   Score <b>${t.score}</b>  ·  MCap ${mcap}  ·  Vol ${vol}`);
+      // Line 4 (optional): AI verdict overlay when pipeline has already analyzed this token
+      const sig = pipeline?.getResult(t.address);
+      if (sig && sig.score >= 62) {
+        const t1 = sig.t1Pct != null   ? ` · T1 <b>+${sig.t1Pct.toFixed(0)}%</b>`       : '';
+        const sl = sig.stopLossPct != null ? ` · SL ${sig.stopLossPct.toFixed(0)}%`       : '';
+        const rr = sig.riskReward != null  ? ` · R/R <b>${sig.riskReward.toFixed(1)}x</b>` : '';
+        lines.push(`   🤖 <b>${sig.verdict} ${sig.score}</b>${t1}${sl}${rr}`);
+      }
       lines.push('');
-    });
+    }
 
-    lines.push(`<a href="${WEB_URL}/intel">🔍 Full deep-scan on any token →</a>`);
+    lines.push(`<a href="${WEB_URL}/intel">🔍 Deep-scan any token →</a>`);
 
-    const keyboard = new InlineKeyboard()
-      .text('🔄 Refresh', 'action:hot')
-      .url('🌐 Open QWAI', WEB_URL)
-      .row()
-      .text('🔗 Link Account', 'action:login');
-
-    await editOrReply(lines.join('\n'), {
+    const msgOpts = {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
-      reply_markup: keyboard,
-    });
+      reply_markup: new InlineKeyboard()
+        .text('🔄 Refresh', 'action:hot')
+        .url('🌐 QWAI', WEB_URL),
+    };
+
+    // Callback query (button tap) → edit the existing message in-place.
+    // Falls back to a new reply if the edit fails (too old, content identical, etc.).
+    if (ctx.callbackQuery) {
+      try { return await ctx.editMessageText(lines.join('\n'), msgOpts); } catch { /* fall through */ }
+    }
+    return ctx.reply(lines.join('\n'), msgOpts);
   }
 
   /* ── General chat with loading indicator ────────────────────────────────── */

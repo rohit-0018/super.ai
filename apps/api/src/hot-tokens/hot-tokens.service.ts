@@ -34,8 +34,8 @@ interface PumpStreak {
 
 const streakKey = (address: string) => `qwai:streak:${address}`;
 
-const SCAN_INTERVAL_MS = 60 * 1_000;
-const REDIS_TTL_SEC = Math.ceil((SCAN_INTERVAL_MS * 3) / 1_000); // 3 min — survives two missed ticks
+const SCAN_INTERVAL_MS = parseInt(process.env.HOT_SCAN_INTERVAL_MS ?? '20000', 10);
+const REDIS_TTL_SEC = Math.ceil((SCAN_INTERVAL_MS * 3) / 1_000); // 3 × interval — survives two missed ticks
 const MAX_PER_PROFILE = 12;
 const ALL_PROFILES: TradingProfile[] = [
   'meme_hunter', 'degen_sniper', 'swing_trader', 'gem_hunt', 'alpha_hunt',
@@ -242,6 +242,36 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     } finally {
       this.scanning = false;
     }
+  }
+
+  /**
+   * Lightweight on-demand refresh: hits DexScreener boosts + batch prices only
+   * (~2 HTTP calls, ~500ms). Skips pump.fun and all-profile scoring.
+   * Updates the meme_hunter cache so subsequent getLatest() calls are fresh.
+   * Called by the Telegram Refresh button when cache is stale (> 45s).
+   */
+  async fetchTopDirect(): Promise<HotTokensScan> {
+    const addresses = await this.fetchDexBoosts();
+    const top = addresses.slice(0, 15);
+    const dexData = await this.fetchDexBatch(top);
+    const scannedAt = new Date().toISOString();
+    const candidates = top.map((addr) => ({
+      address: addr,
+      source: 'dexscreener_boost' as HotTokenSource,
+      dex: dexData.find((d) => d.address === addr) ?? null,
+    }));
+    const tokens = this.scoreForProfile(candidates, 'meme_hunter', scannedAt);
+    const scan: HotTokensScan = {
+      tokens,
+      profileKey: 'meme_hunter',
+      scannedAt,
+      nextScanAt: new Date(Date.now() + SCAN_INTERVAL_MS).toISOString(),
+      scanIntervalMs: SCAN_INTERVAL_MS,
+      fastScanEnabled: this.fastScan,
+    };
+    this.scanCache.set('meme_hunter', { scan, ts: Date.now() });
+    this.logger.log(`fetchTopDirect: ${tokens.length} tokens refreshed via DexScreener fast-lane`);
+    return scan;
   }
 
   async refreshPrices(): Promise<void> {
