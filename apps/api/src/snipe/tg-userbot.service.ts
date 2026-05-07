@@ -43,6 +43,8 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   private reconnecting = new Set<string>();
   private keepAlives   = new Map<string, ReturnType<typeof setInterval>>();
   private lastUpdate   = new Map<string, number>(); // userId → timestamp of last received message
+  private reconnectFailures = new Map<string, number>(); // userId → consecutive keepAlive failures
+  private readonly MAX_RECONNECT_FAILURES = 5;
 
   constructor(
     private prisma: PrismaService,
@@ -288,6 +290,7 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   // ── KeepAlive — detects stalled update loop and force-reconnects ──────────
 
   private startKeepAlive(userId: string, sessionString: string): void {
+    this.reconnectFailures.delete(userId);
     const iv = setInterval(async () => {
       const client = this.clients.get(userId);
       const stale = Date.now() - (this.lastUpdate.get(userId) ?? 0) > 3 * 60_000;
@@ -298,8 +301,26 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
           await this.startClient(userId, sessionString);
           const me = await this.getMe(userId);
           this.ws?.emitToUser(userId, 'tg_status', { connected: true, me });
+          this.reconnectFailures.delete(userId);
         } catch (e: any) {
-          this.logger.warn(`KeepAlive reconnect failed userId=${userId}: ${e.message}`);
+          const fails = (this.reconnectFailures.get(userId) ?? 0) + 1;
+          this.reconnectFailures.set(userId, fails);
+          this.logger.warn(`KeepAlive reconnect failed userId=${userId} (${fails}/${this.MAX_RECONNECT_FAILURES}): ${e.message}`);
+          // After repeated failures the session is almost certainly dead
+          // (user signed out from Telegram, key revoked, account banned).
+          // Stop spawning new TelegramClient instances every 90s.
+          if (fails >= this.MAX_RECONNECT_FAILURES) {
+            this.logger.error(`KeepAlive: giving up on userId=${userId} after ${fails} failures — marking session inactive`);
+            this.stopKeepAlive(userId);
+            const dead = this.clients.get(userId);
+            if (dead) { try { await dead.disconnect(); } catch {} this.clients.delete(userId); }
+            this.reconnectFailures.delete(userId);
+            this.lastUpdate.delete(userId);
+            try {
+              await this.prisma.tgUserSession.updateMany({ where: { userId }, data: { isActive: false } });
+            } catch {}
+            this.ws?.emitToUser(userId, 'tg_status', { connected: false, me: null, reason: 'reconnect_exhausted' });
+          }
         }
       }
     }, 90_000);
@@ -310,6 +331,7 @@ export class TgUserbotService implements OnModuleInit, OnModuleDestroy {
   private stopKeepAlive(userId: string): void {
     const iv = this.keepAlives.get(userId);
     if (iv) { clearInterval(iv); this.keepAlives.delete(userId); }
+    this.reconnectFailures.delete(userId);
   }
 
   private async onNewMessage(userId: string, event: NewMessageEvent): Promise<void> {

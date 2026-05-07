@@ -286,22 +286,32 @@ export class TokenAnalysisService {
     address: string,
     providers: ProviderStatus[],
   ): Promise<[TokenMeta | null, any]> {
-    // Primary: DexScreener
-    let dexMeta: TokenMeta | null = null;
-    try {
-      dexMeta = await this.dexscreener.getToken(chain, address);
-      providers.push({ name: 'DexScreener', status: dexMeta ? 'hit' : 'miss', note: dexMeta ? `${dexMeta.chainId} · ${dexMeta.dex}` : undefined });
-    } catch {
+    // Run DexScreener + GeckoTerminal in parallel — they're independent.
+    // Gecko's chainId hint normally comes from Dex; when called concurrently
+    // we pass undefined and Gecko falls back to its default network mapping
+    // (DexScreener slugs ≈ Gecko slugs anyway, except polygon → polygon_pos).
+    // For SOLANA the hint is unused (network is hard-coded "solana").
+    const [dexResult, geckoResult] = await Promise.allSettled([
+      this.dexscreener.getToken(chain, address),
+      this.gecko.getToken(chain, address, undefined),
+    ]);
+
+    const dexMeta: TokenMeta | null =
+      dexResult.status === 'fulfilled' ? dexResult.value : null;
+    if (dexResult.status === 'fulfilled') {
+      providers.push({
+        name: 'DexScreener',
+        status: dexMeta ? 'hit' : 'miss',
+        note: dexMeta ? `${dexMeta.chainId} · ${dexMeta.dex}` : undefined,
+      });
+    } else {
       providers.push({ name: 'DexScreener', status: 'error' });
     }
 
-    // Supplemental: GeckoTerminal (any type — merges only select fields)
-    let geckoMeta: any = null;
-    try {
-      geckoMeta = await this.gecko.getToken(chain, address, dexMeta?.chainId);
-      if (geckoMeta) providers.push({ name: 'GeckoTerminal', status: 'hit', note: 'supplemented' });
-    } catch {
-      // non-critical
+    const geckoMeta: any =
+      geckoResult.status === 'fulfilled' ? geckoResult.value : null;
+    if (geckoMeta) {
+      providers.push({ name: 'GeckoTerminal', status: 'hit', note: 'supplemented' });
     }
 
     return [dexMeta, geckoMeta];
@@ -318,48 +328,77 @@ export class TokenAnalysisService {
   ): Promise<HolderMetrics> {
     const metrics: HolderMetrics = {};
 
+    // All sub-fetches write to disjoint keys of `metrics` and append to the
+    // shared `providers` array — JS is single-threaded so concurrent mutations
+    // to different keys are safe. Promise.all parallelizes ~5–6 round-trips
+    // that previously chained sequentially (~1.5–2s saved per cold scan).
+    // Each task swallows its own errors so one provider can't fail the layer.
+    const tasks: Array<Promise<unknown>> = [];
+
     // ── Holder data ────────────────────────────────────────────────────────
     if (chain === 'SOLANA') {
-      await this.fetchSolanaHolders(address, rugcheckRisks, metrics, providers);
+      tasks.push(
+        this.fetchSolanaHolders(address, rugcheckRisks, metrics, providers).catch(() => undefined),
+      );
     } else {
-      await this.fetchEvmHolders(address, meta.chainId ?? 'ethereum', metrics, providers);
+      tasks.push(
+        this.fetchEvmHolders(address, meta.chainId ?? 'ethereum', metrics, providers).catch(() => undefined),
+      );
     }
 
-    // ── Bundle detection ───────────────────────────────────────────────────
+    // ── Bundle detection (SOL only — reads rugcheckRisks already in scope) ─
     if (chain === 'SOLANA') {
-      await this.fetchBundleInfo(address, rugcheckRisks, metrics, providers);
+      tasks.push(
+        this.fetchBundleInfo(address, rugcheckRisks, metrics, providers).catch(() => undefined),
+      );
     }
 
-    // ── Lifecycle (pump.fun) ────────────────────────────────────────────────
+    // ── Lifecycle (pump.fun, SOL only) ─────────────────────────────────────
     if (chain === 'SOLANA') {
-      await this.fetchLifecycle(address, metrics, providers);
+      tasks.push(
+        this.fetchLifecycle(address, metrics, providers).catch(() => undefined),
+      );
     }
 
     // ── Price impact ───────────────────────────────────────────────────────
-    await this.fetchPriceImpact(address, chain, metrics, providers);
+    tasks.push(
+      this.fetchPriceImpact(address, chain, metrics, providers).catch(() => undefined),
+    );
 
-    // ── Chain TVL context ─────────────────────────────────────────────────
+    // ── Chain TVL context ──────────────────────────────────────────────────
     if (meta.chainId) {
-      const ctx = await this.defillama.getChainContext(meta.chainId).catch(() => null);
-      if (ctx) {
-        metrics.chainContext = ctx;
-        providers.push({ name: 'DeFiLlama (TVL)', status: 'hit', note: `TVL 7d: ${ctx.tvl7dChangePct?.toFixed(1)}%` });
-      }
+      tasks.push(
+        this.defillama.getChainContext(meta.chainId)
+          .then((ctx) => {
+            if (ctx) {
+              metrics.chainContext = ctx;
+              providers.push({ name: 'DeFiLlama (TVL)', status: 'hit', note: `TVL 7d: ${ctx.tvl7dChangePct?.toFixed(1)}%` });
+            }
+          })
+          .catch(() => undefined),
+      );
     }
 
-    // ── Jupiter organic score (SOL only) ──────────────────────────────────
+    // ── Jupiter organic score (SOL only) ───────────────────────────────────
     if (chain === 'SOLANA') {
-      const jupResult = await this.pool.execute('ORGANIC_SCORE', {
-        jupiter: () => this.jupiter.getTokenData(address),
-      });
-      if (jupResult.data) {
-        const jd = jupResult.data as any;
-        if (jd.organicScore != null) {
-          metrics.organicScore = jd.organicScore;
-          providers.push({ name: 'Jupiter (organic score)', status: 'hit', note: `score: ${jd.organicScore}` });
-        }
-      }
+      tasks.push(
+        this.pool.execute('ORGANIC_SCORE', {
+          jupiter: () => this.jupiter.getTokenData(address),
+        })
+          .then((jupResult) => {
+            if (jupResult.data) {
+              const jd = jupResult.data as any;
+              if (jd.organicScore != null) {
+                metrics.organicScore = jd.organicScore;
+                providers.push({ name: 'Jupiter (organic score)', status: 'hit', note: `score: ${jd.organicScore}` });
+              }
+            }
+          })
+          .catch(() => undefined),
+      );
     }
+
+    await Promise.all(tasks);
 
     return metrics;
   }

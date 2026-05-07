@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Chain } from '../token-analysis.types';
+import { parseRetryAfter } from '../../common/http';
+import { ProviderPoolService } from '../../provider-pool/provider-pool.service';
 
 /**
  * GeckoTerminal public API (CoinGecko-owned, no auth required).
@@ -31,6 +33,9 @@ export interface GeckoTokenSupplement {
 export class GeckoTerminalProvider {
   private readonly logger = new Logger(GeckoTerminalProvider.name);
   private readonly base = 'https://api.geckoterminal.com/api/v2';
+  private readonly providerKey = 'geckoterminal';
+
+  constructor(private readonly pool: ProviderPoolService) {}
 
   /** Map our chain (+ optional dex chain id) → GeckoTerminal network slug. */
   private network(chain: Chain, dexChainId?: string): string {
@@ -55,11 +60,18 @@ export class GeckoTerminalProvider {
     dexChainId?: string,
   ): Promise<GeckoTokenSupplement | null> {
     const network = this.network(chain, dexChainId);
+    if (!(await this.pool.isAvailable(this.providerKey))) return null;
     try {
       const res = await fetch(`${this.base}/networks/${network}/tokens/${address}?include=top_pools`, {
         headers: { 'User-Agent': 'qwai/1.0', accept: 'application/json' },
-        signal: AbortSignal.timeout(8_000),
+        // Healthy GeckoTerminal responds in <500ms. 3s upper bound; beyond
+        // that the request is effectively dead and not worth waiting on.
+        signal: AbortSignal.timeout(3_000),
       });
+      if (res.status === 429) {
+        await this.pool.markRateLimited(this.providerKey, parseRetryAfter(res.headers));
+        return null;
+      }
       if (!res.ok) {
         this.logger.warn(`GeckoTerminal ${network} ${address}: ${res.status}`);
         return null;

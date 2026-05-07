@@ -6,9 +6,18 @@ for (const p of [resolve(process.cwd(), '.env'), resolve(__dirname, '../../../..
   loadDotenv({ path: p });
 }
 import { currentTraceId, newTraceId } from '../common/trace-context';
+import { buildRedisOptions } from '../common/redis-options';
 
-export const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-  maxRetriesPerRequest: null,
+// BullMQ requires maxRetriesPerRequest=null on its connection (workers must
+// wait through reconnects rather than fail commands). Everything else inherits
+// the shared keepAlive/reconnectOnError defaults.
+export const connection = new IORedis(
+  process.env.REDIS_URL ?? 'redis://localhost:6379',
+  buildRedisOptions({ maxRetriesPerRequest: null }),
+);
+connection.on('error', () => {
+  // Suppress noisy logs — buildRedisOptions handles reconnect, error events fire
+  // on every retry attempt and would drown the log.
 });
 
 export const QUEUES = {

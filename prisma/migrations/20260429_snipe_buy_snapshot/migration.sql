@@ -1,13 +1,5 @@
--- Snapshot of token economics at fill time so SnipeTrade rows carry frozen
--- historical context for accurate "mcap at buy", "price at buy", and realized
--- P&L rendering even after the live token price drifts.
-
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "priceAtBuyUsd" DOUBLE PRECISION;
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "mcapAtBuyUsd" DOUBLE PRECISION;
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "liquidityAtBuyUsd" DOUBLE PRECISION;
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "solPriceAtBuyUsd" DOUBLE PRECISION;
-
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "proceedsSolAtSell" DOUBLE PRECISION;
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "proceedsUsdAtSell" DOUBLE PRECISION;
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "pnlUsdRealized" DOUBLE PRECISION;
-ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "pnlPctRealized" DOUBLE PRECISION;
+-- NO-OP STUB.
+-- The actual ALTER TABLE has moved to 20260429b_snipe_buy_snapshot (which runs
+-- AFTER 20260429_snipe_tables creates the SnipeTrade table). This stub stays
+-- so existing prisma migration tracking rows reference a real folder.
+SELECT 1;

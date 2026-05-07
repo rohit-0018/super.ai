@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
+import { buildRedisOptions } from '../common/redis-options';
 
 /**
  * Redis-backed sliding-window rate limiter for external API providers.
@@ -16,12 +17,15 @@ export class RateLimitService implements OnModuleDestroy {
   private readonly redis: Redis;
 
   constructor() {
-    this.redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+    // Rate limiter intentionally keeps offline-queue OFF — if Redis is down we
+    // want the rate-check to fail fast so the caller can fall back, not block
+    // request handling.
+    this.redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', buildRedisOptions({
       keyPrefix: 'rl:',
       maxRetriesPerRequest: 2,
       enableOfflineQueue: false,
       lazyConnect: true,
-    });
+    }));
     this.redis.on('error', (e) => this.logger.warn(`RateLimit Redis error: ${e.message}`));
     this.redis.connect().catch((e) =>
       this.logger.warn(`RateLimit Redis connect failed (will retry): ${e.message}`),

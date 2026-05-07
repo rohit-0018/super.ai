@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@ne
 import IORedis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
+import { buildRedisOptions } from '../common/redis-options';
 
 const REFRESH_MINS = parseInt(process.env.TOKEN_POOL_REFRESH_MINS ?? '2', 10);
 const STALE_HOURS = parseInt(process.env.TOKEN_STALE_HOURS ?? '24', 10);
@@ -52,11 +53,10 @@ export class TokenPoolService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly prisma?: PrismaService,
     @Optional() private readonly realtime?: RealtimeGateway,
   ) {
-    this.redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-      maxRetriesPerRequest: 3,
-      lazyConnect: true,
-      enableReadyCheck: false,
-    });
+    this.redis = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379',
+      buildRedisOptions({ lazyConnect: true, enableReadyCheck: false }),
+    );
     this.redis.on('error', () => {});
   }
 

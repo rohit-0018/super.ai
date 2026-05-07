@@ -138,6 +138,16 @@ export class SnipeSellService implements OnModuleInit, OnModuleDestroy {
       orderBy: { createdAt: 'asc' },
     });
 
+    // Drop peaks for trades no longer in the active set (sold elsewhere,
+    // deleted from UI, sellAttempts exhausted). Otherwise the map grows
+    // forever as new positions open and old ones quietly leave the query.
+    if (this.peaks.size > 0) {
+      const live = new Set(trades.map((t) => t.id));
+      for (const id of this.peaks.keys()) {
+        if (!live.has(id)) this.peaks.delete(id);
+      }
+    }
+
     await Promise.allSettled(
       trades.map((t) => this.evaluateTrade(t as any, jupBase)),
     );

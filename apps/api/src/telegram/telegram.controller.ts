@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Logger, Post } from '@nestjs/common';
 import { TelegramService } from './telegram.service';
 
 /**
@@ -8,6 +8,7 @@ import { TelegramService } from './telegram.service';
  */
 @Controller('telegram')
 export class TelegramController {
+  private readonly logger = new Logger(TelegramController.name);
   constructor(private readonly tg: TelegramService) {}
 
   @Post('webhook')
@@ -15,7 +16,11 @@ export class TelegramController {
   async webhook(@Body() update: any): Promise<{ ok: boolean }> {
     const bot = this.tg.getBot();
     if (!bot) return { ok: false };
-    await bot.handleUpdate(update);
+    // Fire-and-forget: ack within Telegram's 60s webhook timeout regardless of
+    // how long LLM/scan handling takes. Errors surface via grammy's bot.catch.
+    bot.handleUpdate(update).catch((e) =>
+      this.logger.error(`handleUpdate failed: ${(e as Error)?.message ?? e}`),
+    );
     return { ok: true };
   }
 

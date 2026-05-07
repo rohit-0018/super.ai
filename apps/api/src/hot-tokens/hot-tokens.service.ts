@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import IORedis from 'ioredis';
+import { buildRedisOptions } from '../common/redis-options';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import { IntelSnapshotService } from '../intel-track/intel-snapshot.service';
@@ -88,11 +89,10 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly signalPipeline: SignalPipelineService,
     @Optional() private readonly tokenPool: TokenPoolService,
   ) {
-    this.redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-      maxRetriesPerRequest: 3,
-      lazyConnect: true,
-      enableReadyCheck: false,
-    });
+    this.redis = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379',
+      buildRedisOptions({ lazyConnect: true, enableReadyCheck: false }),
+    );
     this.redis.on('error', (err) => {
       // Avoid log floods — only log first error per minute
       const now = Date.now();

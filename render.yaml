@@ -1,6 +1,6 @@
 # QWAI — Render deployment manifest.
 # One static FE, one Node BE (API + workers + Telegram webhook), managed Postgres, managed Redis.
-# Deploy via Render Blueprint. Migrations run from startCommand (free plan has no preDeploy).
+# Deploy via Render Blueprint. Migrations run from startCommand.
 #
 # ── First deploy checklist — set these in Render Dashboard → Environment ──────
 # REQUIRED (bot will not start without these):
@@ -8,7 +8,7 @@
 #   ANTHROPIC_API_KEY        From console.anthropic.com → API Keys
 #   HELIUS_RPC_URL           https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
 #   JWT_SECRET               ≥32 random bytes (auto-generated below)
-#   APP_WEB_URL              Your Render web URL, e.g. https://qwai-web.onrender.com
+#   APP_WEB_URL              Your Render web URL, e.g. https://qwai-web-o6jz.onrender.com
 #
 # TOKEN INTELLIGENCE (enables richer scans — leave blank to disable each):
 #   SOLANA_TRACKER_API_KEY   solanatracker.io — top-100 holders, rug risk score
@@ -28,10 +28,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 databases:
-  - name: qwai-db
+  - name: super-db
     databaseName: qwai
     user: qwai
-    plan: free
+    plan: basic-256mb
     postgresMajorVersion: 16
 
 services:
@@ -39,21 +39,21 @@ services:
   # Managed Redis — BullMQ queues + LLM cache + hot-token store.
   # ────────────────────────────────────────────────────────────────
   - type: redis
-    name: qwai-redis
-    plan: free
+    name: super-redis
+    plan: starter
     region: oregon
     ipAllowList: []
     maxmemoryPolicy: noeviction
 
   # ────────────────────────────────────────────────────────────────
-  # Backend — NestJS API + BullMQ workers + Telegram bot, one process.
-  # Workers run inline when QWAI_ROLE=all.
+  # Backend API — NestJS HTTP server + Telegram webhook handler.
+  # BullMQ workers run separately in `super-worker` (QWAI_ROLE=worker).
   # ────────────────────────────────────────────────────────────────
   - type: web
-    name: qwai-api
+    name: super-api
     runtime: node
     region: oregon
-    plan: free
+    plan: starter
     rootDir: .
     branch: feat_deployment
     buildCommand: ./scripts/render-build.sh
@@ -67,8 +67,9 @@ services:
         value: production
       - key: PORT
         value: 4400
+      # web = API + Telegram, no inline workers (handled by super-worker).
       - key: QWAI_ROLE
-        value: all
+        value: web
 
       # ── Network mode ────────────────────────────────────────────
       - key: NETWORK_MODE
@@ -85,20 +86,17 @@ services:
       # ── Infrastructure ───────────────────────────────────────────
       - key: DATABASE_URL
         fromDatabase:
-          name: qwai-db
+          name: super-db
           property: connectionString
       - key: REDIS_URL
         fromService:
           type: redis
-          name: qwai-redis
+          name: super-redis
           property: connectionString
 
       # ── Auth ─────────────────────────────────────────────────────
       - key: WEB_ORIGIN
-        fromService:
-          type: web
-          name: qwai-web
-          property: url
+        value: https://qwai-web-o6jz.onrender.com
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
@@ -111,18 +109,12 @@ services:
       # No TELEGRAM_BOT_POLL needed — only set that for local dev.
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      # Render auto-resolves this to https://<service>.onrender.com — path is appended in code.
+      # Render service URL — webhook path is appended in code.
       - key: TELEGRAM_API_BASE_URL
-        fromService:
-          type: web
-          name: qwai-api
-          property: url
-      # Public web URL — auto-resolved from the qwai-web service URL at deploy time.
+        value: https://qwai-api-cirr.onrender.com
+      # Public web URL.
       - key: APP_WEB_URL
-        fromService:
-          type: web
-          name: qwai-web
-          property: url
+        value: https://qwai-web-o6jz.onrender.com
       # gramjs userbot (optional — only needed for Telegram group sniping)
       - key: TELEGRAM_API_ID
         sync: false
@@ -130,14 +122,16 @@ services:
         sync: false
 
       # ── LLM ──────────────────────────────────────────────────────
-      # anthropic is recommended — claude-sonnet-4-6 is the default model.
-      # Switch to openai + set OPENAI_API_KEY if preferred.
+      # anthropic is recommended. Default is claude-haiku-4-5 for fast (~600ms)
+      # token verdicts. Bump to claude-sonnet-4-6 for richer reasoning at ~3x latency.
       - key: LLM_PROVIDER
         value: anthropic
       - key: LLM_MODEL
-        value: claude-sonnet-4-6
+        value: claude-haiku-4-5-20251001
+      # Haiku responds in <1s; 8s timeout fails fast when Anthropic is degraded
+      # so the caller can fall back to playbook-only verdicts instead of hanging.
       - key: LLM_TIMEOUT_MS
-        value: "30000"
+        value: "8000"
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
@@ -179,6 +173,12 @@ services:
       - key: HOT_TOKENS_FAST_SCAN
         value: "false"
 
+      # ── Provider toggles ─────────────────────────────────────────
+      # archive.org is frequently slow / timing out. Off by default — flip
+      # to "true" if you want website history checks back on.
+      - key: WAYBACK_ENABLED
+        value: "false"
+
       # ── Intel Track Record ───────────────────────────────────────
       # Controls the periodic re-scan of every captured token. Lower
       # interval = fresher data + more DexScreener calls. Default 10min
@@ -204,8 +204,10 @@ services:
       - key: INTEL_CACHE_TTL_SEC
         value: "60"
       # DB cache TTL (seconds). Reports older than this trigger full re-analysis.
+      # 600 = 10 min — most repeat scans of trending tokens hit cache and
+      # return in <100ms instead of running the full ~2s analysis pipeline.
       - key: INTEL_DB_CACHE_TTL_SEC
-        value: "120"
+        value: "600"
 
       # ── EVM RPCs (optional) ──────────────────────────────────────
       - key: ETH_RPC_URL
@@ -238,10 +240,167 @@ services:
         value: "false"
 
   # ────────────────────────────────────────────────────────────────
+  # Background workers — BullMQ consumers, hot-tokens scanner, intel
+  # rescan, signal pipeline, position monitor, copy-trade, snipe, DCA,
+  # outbound Telegram sends. Runs apps/api/dist/worker.js (no HTTP).
+  #
+  # JWT_SECRET and TELEGRAM_BOT_TOKEN are mirrored from super-api via
+  # `fromService` (must match for KMS fallback + outbound bot calls).
+  # Everything else is `sync: false` — set on super-api dashboard, then
+  # set on super-worker dashboard for the keys you actually use. Sync
+  # works even when optional keys are empty.
+  # ────────────────────────────────────────────────────────────────
+  - type: worker
+    name: super-worker
+    runtime: node
+    region: oregon
+    plan: starter
+    rootDir: .
+    branch: feat_deployment
+    buildCommand: ./scripts/render-build.sh
+    # No migrations here — super-api owns those. Just boot the worker process.
+    startCommand: node --max-old-space-size=400 apps/api/dist/worker.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.12.2
+      - key: NODE_ENV
+        value: production
+      - key: QWAI_ROLE
+        value: worker
+      - key: LOG_LEVEL
+        value: info
+      - key: NETWORK_MODE
+        value: mainnet
+      - key: ALLOW_UNSAFE_LOCAL_KMS
+        value: "1"
+
+      # ── Infrastructure (auto-wired) ──────────────────────────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: super-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: super-redis
+          property: connectionString
+
+      # ── Shared secret (mirror from super-api so KMS fallback agrees) ──
+      - key: JWT_SECRET
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: JWT_SECRET
+
+      # ── Telegram outbound (mirror) ───────────────────────────────
+      - key: TELEGRAM_BOT_TOKEN
+        fromService:
+          type: web
+          name: super-api
+          envVarKey: TELEGRAM_BOT_TOKEN
+      - key: APP_WEB_URL
+        value: https://qwai-web-o6jz.onrender.com
+
+      # ── LLM (must match super-api so signal-pipeline + /scan agree) ──
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: LLM_MODEL
+        value: claude-haiku-4-5-20251001
+      # Match super-api: 8s fail-fast on degraded Anthropic.
+      - key: LLM_TIMEOUT_MS
+        value: "8000"
+      # Required: at least one of ANTHROPIC_API_KEY / OPENAI_API_KEY must be
+      # set on super-api (then it mirrors here). The other can stay empty.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+
+      # ── Solana RPC ───────────────────────────────────────────────
+      # HELIUS_RPC_URL is required for Solana scans/trades to function.
+      - key: HELIUS_RPC_URL
+        sync: false
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: JUPITER_API_BASE
+        value: https://lite-api.jup.ag/swap/v1
+      - key: JITO_BUNDLE_URL
+        value: https://mainnet.block-engine.jito.wtf
+
+      # ── Token Intelligence Providers (all optional — leave empty to disable) ──
+      - key: SOLANA_TRACKER_API_KEY
+        sync: false
+      - key: MORALIS_API_KEY
+        sync: false
+      - key: BIRDEYE_API_KEY
+        sync: false
+      - key: ETHERSCAN_API_KEY
+        sync: false
+      - key: BITQUERY_API_KEY
+        sync: false
+
+      # ── Hot Token Scanner (worker owns this now) ─────────────────
+      - key: HOT_TOKENS_ENABLED
+        value: "true"
+      - key: HOT_TOKENS_FAST_SCAN
+        value: "false"
+
+      # Mirror the api-side toggle so worker-side scans behave identically.
+      - key: WAYBACK_ENABLED
+        value: "false"
+
+      # ── Intel Track Record (worker owns this now) ────────────────
+      - key: INTEL_RESCAN_INTERVAL_SEC
+        value: "600"
+      - key: INTEL_RESCAN_BATCH_SIZE
+        value: "60"
+      - key: INTEL_RESCAN_MAX_AGE_DAYS
+        value: "30"
+      - key: INTEL_TRACK_AUTO_PURGE
+        value: "false"
+      - key: INTEL_TRACK_CAPTURE_MIN_AI_SCORE
+        value: "60"
+
+      # ── Intel Cache Tuning ───────────────────────────────────────
+      - key: INTEL_CACHE_TTL_SEC
+        value: "60"
+      # Match super-api: 10 min DB cache so repeat scans hit cache instead
+      # of running the full pipeline.
+      - key: INTEL_DB_CACHE_TTL_SEC
+        value: "600"
+
+      # ── EVM RPCs (optional) ──────────────────────────────────────
+      - key: ETH_RPC_URL
+        sync: false
+      - key: ARBITRUM_RPC_URL
+        sync: false
+      - key: BASE_RPC_URL
+        sync: false
+      - key: ONEINCH_API_KEY
+        sync: false
+
+      # ── AWS KMS (optional — only needed without ALLOW_UNSAFE_LOCAL_KMS) ──
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_KMS_KEY_ID
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+      # ── Observability (optional) ─────────────────────────────────
+      - key: DATADOG_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  # ────────────────────────────────────────────────────────────────
   # Frontend — Next.js 14 exported to /out, served as a static site.
   # ────────────────────────────────────────────────────────────────
   - type: web
-    name: qwai-web
+    name: super-web
     runtime: static
     rootDir: .
     branch: feat_deployment
@@ -253,7 +412,7 @@ services:
       - key: NODE_VERSION
         value: 20.12.2
       - key: NEXT_PUBLIC_API_BASE
-        value: https://qwai-api.onrender.com/api
+        value: https://qwai-api-cirr.onrender.com/api
       # socket.io-client derives the WS URL from NEXT_PUBLIC_API_BASE
       # by stripping /api — no separate NEXT_PUBLIC_WS_BASE needed.
       - key: NEXT_PUBLIC_NETWORK_MODE

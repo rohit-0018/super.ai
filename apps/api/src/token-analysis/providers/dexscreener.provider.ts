@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Chain, TokenMeta } from '../token-analysis.types';
+import { parseRetryAfter } from '../../common/http';
+import { ProviderPoolService } from '../../provider-pool/provider-pool.service';
 
 /**
  * DexScreener free API — https://docs.dexscreener.com/api/reference
@@ -11,13 +13,23 @@ import type { Chain, TokenMeta } from '../token-analysis.types';
 export class DexScreenerProvider {
   private readonly logger = new Logger(DexScreenerProvider.name);
   private readonly base = 'https://api.dexscreener.com/latest/dex';
+  private readonly providerKey = 'dexscreener';
+
+  constructor(private readonly pool: ProviderPoolService) {}
 
   async getToken(chain: Chain, address: string): Promise<TokenMeta | null> {
+    if (!(await this.pool.isAvailable(this.providerKey))) return null;
     try {
       const res = await fetch(`${this.base}/tokens/${address}`, {
         headers: { 'User-Agent': 'qwai/1.0' },
-        signal: AbortSignal.timeout(8_000),
+        // Healthy DexScreener responds in <500ms. 3s is a generous upper bound;
+        // anything slower is effectively dead and not worth blocking the scan on.
+        signal: AbortSignal.timeout(3_000),
       });
+      if (res.status === 429) {
+        await this.pool.markRateLimited(this.providerKey, parseRetryAfter(res.headers));
+        return null;
+      }
       if (!res.ok) {
         this.logger.warn(`DexScreener non-200 for ${address}: ${res.status}`);
         return null;
