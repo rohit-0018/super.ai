@@ -8,7 +8,7 @@
 #   ANTHROPIC_API_KEY        From console.anthropic.com → API Keys
 #   HELIUS_RPC_URL           https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
 #   JWT_SECRET               ≥32 random bytes (auto-generated below)
-#   APP_WEB_URL              Your Render web URL, e.g. https://qwai-web-super.onrender.com
+#   APP_WEB_URL              Your Render web URL, e.g. https://super-web.onrender.com
 #
 # TOKEN INTELLIGENCE (enables richer scans — leave blank to disable each):
 #   SOLANA_TRACKER_API_KEY   solanatracker.io — top-100 holders, rug risk score
@@ -50,7 +50,7 @@ services:
   # Workers run inline when QWAI_ROLE=all.
   # ────────────────────────────────────────────────────────────────
   - type: web
-    name: qwai-api
+    name: super-api
     runtime: node
     region: oregon
     plan: free
@@ -95,7 +95,7 @@ services:
 
       # ── Auth ─────────────────────────────────────────────────────
       - key: WEB_ORIGIN
-        value: https://qwai-web-super.onrender.com
+        value: https://super-web.onrender.com
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
@@ -110,10 +110,10 @@ services:
         sync: false
       # Render service URL — webhook path is appended in code.
       - key: TELEGRAM_API_BASE_URL
-        value: https://qwai-api-cirr.onrender.com
+        value: https://super-api.onrender.com
       # Public web URL.
       - key: APP_WEB_URL
-        value: https://qwai-web-super.onrender.com
+        value: https://super-web.onrender.com
       # gramjs userbot (optional — only needed for Telegram group sniping)
       - key: TELEGRAM_API_ID
         sync: false
@@ -232,7 +232,7 @@ services:
   # Frontend — Next.js 14 exported to /out, served as a static site.
   # ────────────────────────────────────────────────────────────────
   - type: web
-    name: qwai-web-super
+    name: super-web
     runtime: static
     rootDir: .
     branch: feat_deployment
@@ -244,7 +244,7 @@ services:
       - key: NODE_VERSION
         value: 20.12.2
       - key: NEXT_PUBLIC_API_BASE
-        value: https://qwai-api-cirr.onrender.com/api
+        value: https://super-api.onrender.com/api
       # socket.io-client derives the WS URL from NEXT_PUBLIC_API_BASE
       # by stripping /api — no separate NEXT_PUBLIC_WS_BASE needed.
       - key: NEXT_PUBLIC_NETWORK_MODE
