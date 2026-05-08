@@ -558,13 +558,26 @@ export class TelegramBot {
       return ctx.reply('📡 <b>Scanner unavailable.</b>', { parse_mode: 'HTML' });
     }
 
-    // On Refresh button tap: if cache is stale (> 45s), pull fresh data from DexScreener directly.
+    // On Refresh button tap: if cache is stale (> 45s), pull fresh data directly.
     const STALE_MS = 45_000;
     const cached = svc.getLatest('meme_hunter');
     const cacheAgeMs = cached ? Date.now() - new Date(cached.scannedAt).getTime() : Infinity;
-    const scan = (ctx.callbackQuery && cacheAgeMs > STALE_MS)
+    let scan = (ctx.callbackQuery && cacheAgeMs > STALE_MS)
       ? await svc.fetchTopDirect().catch(() => cached)
       : cached;
+
+    // Fall back to any profile that has results if meme_hunter is empty
+    if (!scan?.tokens.length) {
+      const all = svc.getAllLatest();
+      if (all) {
+        for (const [profileKey, tokens] of Object.entries(all.byProfile)) {
+          if (tokens.length > 0) {
+            scan = svc.getLatest(profileKey);
+            break;
+          }
+        }
+      }
+    }
 
     if (!scan || !scan.tokens.length) {
       return ctx.reply(

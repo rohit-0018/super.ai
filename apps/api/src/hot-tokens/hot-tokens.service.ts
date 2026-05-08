@@ -41,10 +41,12 @@ const ALL_PROFILES: TradingProfile[] = [
   'meme_hunter', 'degen_sniper', 'swing_trader', 'gem_hunt', 'alpha_hunt',
 ];
 
-const PUMPFUN_URL = 'https://frontend-api.pump.fun/coins';
 const DEX_BOOSTS_URL = 'https://api.dexscreener.com/token-boosts/latest/v1';
 const DEX_PROFILES_URL = 'https://api.dexscreener.com/token-profiles/latest/v1';
 const DEX_TOKENS_URL = 'https://api.dexscreener.com/latest/dex/tokens';
+const GECKO_NEW_POOLS_URL = 'https://api.geckoterminal.com/api/v2/networks/solana/new_pools?include=base_token';
+const GECKO_TRENDING_URL = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?include=base_token';
+const GECKO_ACCEPT = 'application/json;version=20230302';
 
 const redisKey = (profileKey: string) => `qwai:hot:${profileKey}`;
 
@@ -68,6 +70,7 @@ interface Candidate {
   address: string;
   source: HotTokenSource;
   pumpFunRaw?: Record<string, unknown>;
+  geckoRaw?: DexTokenData;
 }
 
 @Injectable()
@@ -82,6 +85,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   private scanning = false;
   private prewarming = false;
   private lastRedisErrorLog = 0;
+  private cacheRefreshInterval?: NodeJS.Timeout;
 
   constructor(
     @Optional() private readonly realtime: RealtimeGateway,
@@ -118,9 +122,18 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     } else {
       this.logger.log(`Warmed ${this.scanCache.size} profiles from Redis`);
     }
+
+    // Keep in-memory cache in sync with Redis so processes without BullMQ workers
+    // (QWAI_ROLE=web API servers) always serve fresh data written by the worker process.
+    this.cacheRefreshInterval = setInterval(
+      () => { void this.loadFromRedis(); },
+      SCAN_INTERVAL_MS,
+    );
+    this.cacheRefreshInterval.unref();
   }
 
   async onModuleDestroy() {
+    if (this.cacheRefreshInterval) clearInterval(this.cacheRefreshInterval);
     try { await this.redis.quit(); } catch {}
   }
 
@@ -252,15 +265,30 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
    * Called by the Telegram Refresh button when cache is stale (> 45s).
    */
   async fetchTopDirect(): Promise<HotTokensScan> {
-    const addresses = await this.fetchDexBoosts();
-    const top = addresses.slice(0, 15);
-    const dexData = await this.fetchDexBatch(top);
+    // GeckoTerminal new pools are guaranteed fresh (< a few hours), so meme_hunter's
+    // maxAgeHours filter won't remove them. Fall back to DexScreener boosts if gecko fails.
+    const geckoTokens = await this.fetchGeckoTerminalPools(GECKO_NEW_POOLS_URL, 'geckoterminal_new');
     const scannedAt = new Date().toISOString();
-    const candidates = top.map((addr) => ({
-      address: addr,
-      source: 'dexscreener_boost' as HotTokenSource,
-      dex: dexData.find((d) => d.address === addr) ?? null,
-    }));
+
+    let candidates: Array<Candidate & { dex: DexTokenData | null }>;
+    if (geckoTokens.length > 0) {
+      candidates = geckoTokens.slice(0, 20).map((d) => ({
+        address: d.address,
+        source: 'geckoterminal_new' as HotTokenSource,
+        geckoRaw: d,
+        dex: d,
+      }));
+    } else {
+      const addresses = await this.fetchDexBoosts();
+      const top = addresses.slice(0, 15);
+      const dexData = await this.fetchDexBatch(top);
+      candidates = top.map((addr) => ({
+        address: addr,
+        source: 'dexscreener_boost' as HotTokenSource,
+        dex: dexData.find((d) => d.address === addr) ?? null,
+      }));
+    }
+
     const tokens = this.scoreForProfile(candidates, 'meme_hunter', scannedAt);
     const scan: HotTokensScan = {
       tokens,
@@ -271,7 +299,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       fastScanEnabled: this.fastScan,
     };
     this.scanCache.set('meme_hunter', { scan, ts: Date.now() });
-    this.logger.log(`fetchTopDirect: ${tokens.length} tokens refreshed via DexScreener fast-lane`);
+    this.logger.log(`fetchTopDirect: ${tokens.length} tokens refreshed via ${geckoTokens.length > 0 ? 'GeckoTerminal' : 'DexScreener'} fast-lane`);
     return scan;
   }
 
@@ -363,39 +391,84 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
 
   private async gatherCandidates(): Promise<Map<string, Candidate>> {
     const map = new Map<string, Candidate>();
-    const [pf, boosts, profiles] = await Promise.all([
-      this.fetchPumpFun(),
+    const [geckoNew, geckoTrending, boosts, profiles] = await Promise.all([
+      this.fetchGeckoTerminalPools(GECKO_NEW_POOLS_URL, 'geckoterminal_new'),
+      this.fetchGeckoTerminalPools(GECKO_TRENDING_URL, 'geckoterminal_trending'),
       this.fetchDexBoosts(),
       this.fetchDexProfiles(),
     ]);
-    for (const r of pf) {
-      const addr = r.mint as string;
-      if (addr && !map.has(addr)) map.set(addr, { address: addr, source: 'pumpfun', pumpFunRaw: r });
+    // GeckoTerminal first — provides richer fallback data when DexScreener batch misses an address
+    for (const r of geckoNew) {
+      if (!map.has(r.address)) map.set(r.address, { address: r.address, source: 'geckoterminal_new', geckoRaw: r });
+    }
+    for (const r of geckoTrending) {
+      if (!map.has(r.address)) map.set(r.address, { address: r.address, source: 'geckoterminal_trending', geckoRaw: r });
     }
     for (const a of boosts) if (!map.has(a)) map.set(a, { address: a, source: 'dexscreener_boost' });
     for (const a of profiles) if (!map.has(a)) map.set(a, { address: a, source: 'dexscreener_profile' });
-    this.logger.log(`Candidates: ${pf.length} pump.fun, ${boosts.length} dex-boosts, ${profiles.length} dex-profiles → ${map.size} unique`);
+    this.logger.log(
+      `Candidates: ${geckoNew.length} gecko-new, ${geckoTrending.length} gecko-trending, ` +
+      `${boosts.length} dex-boosts, ${profiles.length} dex-profiles → ${map.size} unique`,
+    );
     return map;
   }
 
-  private async fetchPumpFun(): Promise<Record<string, unknown>[]> {
+  private async fetchGeckoTerminalPools(url: string, source: HotTokenSource): Promise<DexTokenData[]> {
     try {
-      const res = await fetch(
-        `${PUMPFUN_URL}?sort=last_trade_timestamp&order=DESC&limit=25&includeNsfw=false`,
-        { signal: AbortSignal.timeout(8_000), headers: { Accept: 'application/json' } },
-      );
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(8_000),
+        headers: { Accept: GECKO_ACCEPT },
+      });
       if (!res.ok) {
-        this.logger.warn(`pump.fun HTTP ${res.status}`);
+        this.logger.warn(`GeckoTerminal (${source}) HTTP ${res.status}`);
         return [];
       }
-      const data = await res.json();
-      if (!Array.isArray(data)) {
-        this.logger.warn(`pump.fun unexpected shape: ${JSON.stringify(data).slice(0, 120)}`);
-        return [];
+      const json = await res.json();
+      const pools: any[] = json.data ?? [];
+      const included: any[] = json.included ?? [];
+
+      const tokenById = new Map<string, { address: string; symbol: string; name: string }>();
+      for (const inc of included) {
+        if (inc.type === 'token' && inc.attributes?.address) {
+          tokenById.set(inc.id as string, {
+            address: inc.attributes.address as string,
+            symbol: (inc.attributes.symbol as string) ?? '???',
+            name: (inc.attributes.name as string) ?? 'Unknown',
+          });
+        }
       }
-      return (data as Record<string, unknown>[]).slice(0, 25);
+
+      const results: DexTokenData[] = [];
+      for (const pool of pools.slice(0, 25)) {
+        const baseTokenId = pool.relationships?.base_token?.data?.id as string | undefined;
+        const token = baseTokenId ? tokenById.get(baseTokenId) : undefined;
+        if (!token?.address) continue;
+
+        const attrs = pool.attributes ?? {};
+        const created = attrs.pool_created_at ? new Date(attrs.pool_created_at as string).getTime() : null;
+        const pairAgeHours = created ? (Date.now() - created) / 3_600_000 : 999;
+        const pct = (attrs.price_change_percentage as Record<string, string>) ?? {};
+        const vol = (attrs.volume_usd as Record<string, string>) ?? {};
+
+        results.push({
+          address: token.address,
+          symbol: token.symbol,
+          name: token.name,
+          priceUsd: parseFloat(attrs.base_token_price_usd as string ?? '0') || 0,
+          priceChange5m: parseFloat(pct.m5 ?? '0') || 0,
+          priceChange1h: parseFloat(pct.h1 ?? '0') || 0,
+          priceChange24h: parseFloat(pct.h24 ?? '0') || 0,
+          volume24hUsd: parseFloat(vol.h24 ?? '0') || 0,
+          marketCapUsd: parseFloat((attrs.market_cap_usd ?? attrs.fdv_usd ?? '0') as string) || 0,
+          liquidityUsd: parseFloat(attrs.reserve_in_usd as string ?? '0') || 0,
+          pairAgeHours,
+          dexUrl: `https://www.geckoterminal.com/solana/pools/${attrs.address as string}`,
+          launchPlatform: 'geckoterminal',
+        });
+      }
+      return results;
     } catch (err) {
-      this.logger.warn(`pump.fun fetch skipped: ${(err as Error).message}`);
+      this.logger.warn(`GeckoTerminal (${source}) fetch skipped: ${(err as Error).message}`);
       return [];
     }
   }
@@ -434,7 +507,11 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     for (const chunk of this.chunk(entries, 10)) {
       const batch = await this.fetchDexBatch(chunk.map((e) => e.address));
       const byAddr = new Map(batch.map((d) => [d.address, d]));
-      for (const entry of chunk) results.push({ ...entry, dex: byAddr.get(entry.address) ?? null });
+      for (const entry of chunk) {
+        // DexScreener is preferred; geckoRaw is used when DexScreener has no pair for this address
+        const dex = byAddr.get(entry.address) ?? byAddr.get(entry.address.toLowerCase()) ?? entry.geckoRaw ?? null;
+        results.push({ ...entry, dex });
+      }
       if (entries.length > 10) await new Promise((r) => setTimeout(r, 150));
     }
     return results;

@@ -1,4 +1,4 @@
-export type HotTokenSource = 'pumpfun' | 'dexscreener_boost' | 'dexscreener_profile';
+export type HotTokenSource = 'pumpfun' | 'dexscreener_boost' | 'dexscreener_profile' | 'geckoterminal_new' | 'geckoterminal_trending';
 export type HotTokenVerdict = 'STRONG_BUY' | 'BUY' | 'CAUTIOUS' | 'SKIP' | 'HIGH_RISK';
 
 export interface HotToken {
