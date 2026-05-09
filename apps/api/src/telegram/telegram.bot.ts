@@ -18,7 +18,7 @@ import {
   formatKillReport,
   formatPlaceholder,
 } from './telegram-scan.formatter';
-import { fetchOhlcv, generateCandleChart, buildChartCaption, gtNetwork } from './telegram-chart';
+import { fetchOhlcv, generateCandleChart, buildChartCaption, gtNetwork, getAvailableTfs } from './telegram-chart';
 
 const NOT_LINKED_TEXT =
   '🔗 Account not linked. Send /login for a one-tap connect link.';
@@ -875,21 +875,35 @@ export class TelegramBot {
       if (!chain) return ctx.reply('❌ Invalid address format.');
       const msg = await ctx.reply('📊 <i>Generating chart…</i>', { parse_mode: 'HTML' });
       try {
-        const [data, candles] = await Promise.allSettled([
-          this.fetchDexPair(addr),
-          (async () => {
-            const pair = await this.fetchDexPair(addr);
-            if (!pair?.pairAddress) throw new Error('no pair');
-            const net = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
-            return fetchOhlcv(net, pair.pairAddress, tf);
-          })(),
-        ]);
-        const pairData = data.status === 'fulfilled' ? data.value : null;
-        const ohlcv    = candles.status === 'fulfilled' ? candles.value : [];
-        const sym      = pairData?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
-        const caption  = pairData ? buildChartCaption(pairData, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
-        const kb       = new InlineKeyboard()
-          .text('5m', `chart:${addr}:5m`).text('15m', `chart:${addr}:15m`).text('1h', `chart:${addr}:1h`).text('4h', `chart:${addr}:4h`).text('1d', `chart:${addr}:1d`);
+        const pairData = await this.fetchDexPair(addr);
+        let ohlcv: any[] = [];
+        let chartErr = '';
+        let net = '';
+        if (pairData?.pairAddress) {
+          net = gtNetwork(pairData.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+          try {
+            ohlcv = await fetchOhlcv(net, pairData.pairAddress, tf);
+          } catch (e: any) {
+            chartErr = e.message ?? 'chart data unavailable';
+          }
+        } else {
+          chartErr = 'no trading pair found';
+        }
+
+        // Only probe for available TFs when main fetch succeeded (skip if rate-limited)
+        const availableTfs = (pairData?.pairAddress && !chartErr)
+          ? await getAvailableTfs(net, pairData.pairAddress, tf, ohlcv.length)
+          : null;
+
+        const sym     = pairData?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
+        const caption = pairData ? buildChartCaption(pairData, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
+
+        // Fall back to all TF buttons when probing was skipped (e.g. rate-limited)
+        const kb = new InlineKeyboard();
+        const ALL_TFS = ['5m', '15m', '1h', '4h', '1d'];
+        for (const t of ALL_TFS) {
+          if (!availableTfs || availableTfs.includes(t)) kb.text(t === tf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+        }
 
         await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
 
@@ -901,10 +915,11 @@ export class TelegramBot {
             reply_markup: kb,
           });
         } else {
-          await ctx.reply(caption, {
+          const note = chartErr ? `\n\n⚠️ <i>Chart unavailable: ${chartErr}</i>` : '\n\n⚠️ <i>Not enough candle data for chart</i>';
+          await ctx.reply(caption + note, {
             parse_mode: 'HTML',
             link_preview_options: { is_disabled: true },
-            reply_markup: kb,
+            reply_markup: pairData ? kb : undefined,
           });
         }
       } catch (e: any) {
@@ -1478,28 +1493,47 @@ export class TelegramBot {
 
     /* ── 📊 Chart timeframe button callbacks ────────────────────────────────── */
     bot.callbackQuery(/^chart:(.+):(\w+)$/, async (ctx) => {
-      await ctx.answerCallbackQuery('Loading…');
       const [, addr, tf] = ctx.match;
       const chain = detectChain(addr);
-      if (!chain) return;
+      if (!chain) { await ctx.answerCallbackQuery(); return; }
+      await ctx.answerCallbackQuery('Loading…');
       try {
-        const pair    = await this.fetchDexPair(addr);
-        const sym     = pair?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
+        const pair = await this.fetchDexPair(addr);
+        const sym  = pair?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
         const caption = pair ? buildChartCaption(pair, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
-        const kb      = new InlineKeyboard()
-          .text('5m', `chart:${addr}:5m`).text('15m', `chart:${addr}:15m`).text('1h', `chart:${addr}:1h`).text('4h', `chart:${addr}:4h`).text('1d', `chart:${addr}:1d`);
 
-        if (pair?.pairAddress) {
-          const net   = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
-          const ohlcv = await fetchOhlcv(net, pair.pairAddress, tf).catch(() => []);
-          if (ohlcv.length >= 2) {
-            const img = await generateCandleChart(ohlcv, sym, tf);
-            await ctx.editMessageMedia({ type: 'photo', media: new InputFile(img, 'chart.png'), caption, parse_mode: 'HTML' }, { reply_markup: kb });
-            return;
-          }
+        if (!pair?.pairAddress) {
+          await ctx.editMessageText(caption, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }).catch(() => {});
+          return;
         }
-        // Fallback: edit text (if message was a text message)
-        await ctx.editMessageText(caption, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: kb }).catch(() => {});
+
+        const net = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+        let ohlcv: any[] = [];
+        let chartErr = '';
+        try { ohlcv = await fetchOhlcv(net, pair.pairAddress, tf); } catch (e: any) { chartErr = e.message; }
+
+        // Only probe when fetch succeeded; fall back to all TF buttons if rate-limited
+        const availableTfs = !chartErr ? await getAvailableTfs(net, pair.pairAddress, tf, ohlcv.length) : null;
+        const kb = new InlineKeyboard();
+        for (const t of ['5m', '15m', '1h', '4h', '1d']) {
+          if (!availableTfs || availableTfs.includes(t)) kb.text(t === tf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+        }
+
+        if (ohlcv.length >= 2) {
+          const img = await generateCandleChart(ohlcv, sym, tf);
+          await ctx.editMessageMedia(
+            { type: 'photo', media: new InputFile(img, 'chart.png'), caption, parse_mode: 'HTML' },
+            { reply_markup: kb },
+          );
+          return;
+        }
+
+        // No candle data — update the message text/caption with reason
+        const note = chartErr
+          ? `\n\n⚠️ <i>${chartErr.slice(0, 120)}</i>`
+          : `\n\n⚠️ <i>No ${tf} data for this pool yet</i>`;
+        await ctx.editMessageCaption({ caption: caption + note, parse_mode: 'HTML', reply_markup: kb })
+          .catch(() => ctx.editMessageText(caption + note, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: kb }).catch(() => {}));
       } catch { /* */ }
     });
 

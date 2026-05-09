@@ -52,23 +52,115 @@ function parseTf(tf: string): { timeframe: string; aggregate: number } {
   return { timeframe: 'minute', aggregate: 15 };
 }
 
+const OHLCV_TTL = 45_000;
+const TF_PROBE_TTL = 120_000;
+
+interface CacheEntry<T> { value: T; expiresAt: number; }
+const ohlcvCache = new Map<string, CacheEntry<OhlcvCandle[]>>();
+const probeCache = new Map<string, CacheEntry<boolean>>();
+
+function cacheGet<T>(map: Map<string, CacheEntry<T>>, key: string): T | undefined {
+  const e = map.get(key);
+  if (!e) return undefined;
+  if (Date.now() > e.expiresAt) { map.delete(key); return undefined; }
+  return e.value;
+}
+function cacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, value: T, ttl: number) {
+  map.set(key, { value, expiresAt: Date.now() + ttl });
+}
+
 export async function fetchOhlcv(
   network: string,
   poolAddress: string,
   tf: string,
 ): Promise<OhlcvCandle[]> {
+  const cacheKey = `${network}:${poolAddress}:${tf}`;
+  const cached = cacheGet(ohlcvCache, cacheKey);
+  if (cached) return cached;
+
   const { timeframe, aggregate } = parseTf(tf);
   const url = `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=40&currency=usd`;
-  const res = await fetch(url, {
-    headers: { Accept: 'application/json', 'User-Agent': 'qwai/1.0' },
-    signal: AbortSignal.timeout(8_000),
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'qwai/1.0' },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (res.status === 429) {
+      if (attempt === 2) throw new Error('GeckoTerminal rate limited — try again in a moment');
+      const delay = Math.min(parseInt(res.headers.get('Retry-After') ?? '2', 10) * 1000, 4_000);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+    if (!res.ok) throw new Error(`GeckoTerminal OHLCV ${res.status}`);
+    const body = await res.json() as any;
+    const list: number[][] = body?.data?.attributes?.ohlcv_list ?? [];
+    const candles = list
+      .map(([time, open, high, low, close, volume]) => ({ time, open, high, low, close, volume }))
+      .reverse();
+    cacheSet(ohlcvCache, cacheKey, candles, OHLCV_TTL);
+    return candles;
+  }
+  throw new Error('GeckoTerminal OHLCV failed after retries');
+}
+
+type TfCategory = 'minute' | 'hour' | 'day';
+
+function getTfCategory(tf: string): TfCategory {
+  if (tf === '5m' || tf === '15m' || tf === '30m') return 'minute';
+  if (tf === '1h' || tf === '4h')                  return 'hour';
+  return 'day';
+}
+
+const CATEGORY_PROBE: Record<TfCategory, string> = { minute: '5m', hour: '1h', day: '1d' };
+const CATEGORY_TFS:   Record<TfCategory, string[]> = {
+  minute: ['5m', '15m'],
+  hour:   ['1h', '4h'],
+  day:    ['1d'],
+};
+
+async function probeCategory(network: string, poolAddress: string, cat: TfCategory): Promise<boolean> {
+  const cacheKey = `probe:${network}:${poolAddress}:${cat}`;
+  const cached = cacheGet(probeCache, cacheKey);
+  if (cached !== undefined) return cached;
+
+  try {
+    const { timeframe, aggregate } = parseTf(CATEGORY_PROBE[cat]);
+    const url = `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=2&currency=usd`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(url, {
+        headers: { Accept: 'application/json', 'User-Agent': 'qwai/1.0' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (res.status === 429) { if (attempt === 1) return false; await new Promise(r => setTimeout(r, 1_500)); continue; }
+      if (!res.ok) { cacheSet(probeCache, cacheKey, false, TF_PROBE_TTL); return false; }
+      const body = await res.json() as any;
+      const result = (body?.data?.attributes?.ohlcv_list?.length ?? 0) >= 2;
+      cacheSet(probeCache, cacheKey, result, TF_PROBE_TTL);
+      return result;
+    }
+    return false;
+  } catch { return false; }
+}
+
+/** Returns the subset of ['5m','15m','1h','4h','1d'] that have >= 2 candles available. */
+export async function getAvailableTfs(
+  network: string,
+  poolAddress: string,
+  activeTf: string,
+  activeOhlcvLen: number,
+): Promise<string[]> {
+  const activeCat = getTfCategory(activeTf);
+  const otherCats = (['minute', 'hour', 'day'] as TfCategory[]).filter(c => c !== activeCat);
+
+  const probeResults = await Promise.allSettled(otherCats.map(c => probeCategory(network, poolAddress, c)));
+
+  const catOk: Record<TfCategory, boolean> = { minute: false, hour: false, day: false };
+  catOk[activeCat] = activeOhlcvLen >= 2;
+  otherCats.forEach((cat, i) => {
+    catOk[cat] = probeResults[i].status === 'fulfilled' && probeResults[i].value === true;
   });
-  if (!res.ok) throw new Error(`GeckoTerminal OHLCV ${res.status}`);
-  const body = await res.json() as any;
-  const list: number[][] = body?.data?.attributes?.ohlcv_list ?? [];
-  return list
-    .map(([time, open, high, low, close, volume]) => ({ time, open, high, low, close, volume }))
-    .reverse();
+
+  return (Object.keys(CATEGORY_TFS) as TfCategory[]).flatMap(cat => catOk[cat] ? CATEGORY_TFS[cat] : []);
 }
 
 export async function generateCandleChart(
