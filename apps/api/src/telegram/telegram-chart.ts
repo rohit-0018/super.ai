@@ -52,7 +52,7 @@ function parseTf(tf: string): { timeframe: string; aggregate: number } {
   return { timeframe: 'minute', aggregate: 15 };
 }
 
-const OHLCV_TTL = 45_000;
+const OHLCV_TTL = 180_000;
 const TF_PROBE_TTL = 120_000;
 
 interface CacheEntry<T> { value: T; expiresAt: number; }
@@ -69,6 +69,10 @@ function cacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, value: T, ttl
   map.set(key, { value, expiresAt: Date.now() + ttl });
 }
 
+export class RateLimitedError extends Error {
+  constructor() { super('rate_limited'); }
+}
+
 export async function fetchOhlcv(
   network: string,
   poolAddress: string,
@@ -80,27 +84,26 @@ export async function fetchOhlcv(
 
   const { timeframe, aggregate } = parseTf(tf);
   const url = `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=40&currency=usd`;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json', 'User-Agent': 'qwai/1.0' },
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (res.status === 429) {
-      if (attempt === 2) throw new Error('GeckoTerminal rate limited — try again in a moment');
-      const delay = Math.min(parseInt(res.headers.get('Retry-After') ?? '2', 10) * 1000, 4_000);
-      await new Promise(r => setTimeout(r, delay));
-      continue;
-    }
-    if (!res.ok) throw new Error(`GeckoTerminal OHLCV ${res.status}`);
-    const body = await res.json() as any;
-    const list: number[][] = body?.data?.attributes?.ohlcv_list ?? [];
-    const candles = list
-      .map(([time, open, high, low, close, volume]) => ({ time, open, high, low, close, volume }))
-      .reverse();
-    cacheSet(ohlcvCache, cacheKey, candles, OHLCV_TTL);
-    return candles;
-  }
-  throw new Error('GeckoTerminal OHLCV failed after retries');
+
+  const gtHeaders: Record<string, string> = { Accept: 'application/json', 'User-Agent': 'qwai/1.0' };
+  const gtKey = process.env.GECKO_TERMINAL_API_KEY;
+  if (gtKey) gtHeaders['x-cg-demo-api-key'] = gtKey;
+
+  // Single attempt — no retry on 429 (caller decides whether to try another TF)
+  const res = await fetch(url, {
+    headers: gtHeaders,
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (res.status === 429) throw new RateLimitedError();
+  if (!res.ok) throw new Error(`GeckoTerminal OHLCV ${res.status}`);
+
+  const body = await res.json() as any;
+  const list: number[][] = body?.data?.attributes?.ohlcv_list ?? [];
+  const candles = list
+    .map(([time, open, high, low, close, volume]) => ({ time, open, high, low, close, volume }))
+    .reverse();
+  cacheSet(ohlcvCache, cacheKey, candles, OHLCV_TTL);
+  return candles;
 }
 
 type TfCategory = 'minute' | 'hour' | 'day';
@@ -190,7 +193,7 @@ export async function generateCandleChart(
 
   const n = candles.length;
 
-  if (n < 2) {
+  if (n < 1) {
     ctx.fillStyle = '#485069';
     ctx.font = '16px sans-serif';
     ctx.textAlign = 'center';
@@ -301,6 +304,138 @@ export async function generateCandleChart(
   ctx.lineWidth = 1;
   ctx.strokeRect(cL, cT, cW, priceH);
   ctx.strokeRect(cL, volT, cW, volH);
+
+  return canvas.toBuffer('image/png');
+}
+
+/**
+ * Fallback chart generated purely from DexScreener priceChange percentages.
+ * Draws a smooth area/line chart with 5 reconstructed price points.
+ * Used when GeckoTerminal OHLCV is unavailable (rate-limited or new token).
+ */
+export async function generateDexChart(pairData: any, sym: string): Promise<Buffer> {
+  const W = 800, H = 460;
+  const PAD = { top: 38, right: 72, bottom: 46, left: 8 };
+
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  const priceNow = parseFloat(pairData?.priceUsd ?? '0') || 0;
+  const ch5m  = pairData?.priceChange?.m5  ?? 0;
+  const ch1h  = pairData?.priceChange?.h1  ?? 0;
+  const ch6h  = pairData?.priceChange?.h6  ?? 0;
+  const ch24h = pairData?.priceChange?.h24 ?? 0;
+
+  const p24h = priceNow / (1 + ch24h / 100);
+  const p6h  = priceNow / (1 + ch6h  / 100);
+  const p1h  = priceNow / (1 + ch1h  / 100);
+  const p5m  = priceNow / (1 + ch5m  / 100);
+
+  const points = [
+    { label: '24h ago', price: p24h },
+    { label: '6h ago',  price: p6h  },
+    { label: '1h ago',  price: p1h  },
+    { label: '5m ago',  price: p5m  },
+    { label: 'Now',     price: priceNow },
+  ];
+
+  const cL = PAD.left, cR = W - PAD.right;
+  const cT = PAD.top, cB = H - PAD.bottom;
+  const cW = cR - cL, cH = cB - cT;
+
+  const prices = points.map(p => p.price).filter(p => p > 0 && isFinite(p));
+  if (prices.length < 2) {
+    ctx.fillStyle = '#485069';
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No price data available', W / 2, H / 2);
+    return canvas.toBuffer('image/png');
+  }
+
+  const maxP = Math.max(...prices);
+  const minP = Math.min(...prices);
+  const pRange = (maxP - minP) || maxP * 0.05 || 0.01;
+  const pad = pRange * 0.1;
+
+  const n = points.length;
+  const toX = (i: number) => cL + (i / (n - 1)) * cW;
+  const toY = (p: number) => cT + cH - ((p - minP + pad) / (pRange + pad * 2)) * cH;
+
+  const isUp = priceNow >= p24h;
+  const lineColor  = isUp ? '#26a69a' : '#ef5350';
+  const fillColor1 = isUp ? 'rgba(38,166,154,0.3)' : 'rgba(239,83,80,0.3)';
+  const fillColor2 = isUp ? 'rgba(38,166,154,0)' : 'rgba(239,83,80,0)';
+
+  // Grid
+  ctx.strokeStyle = '#161b22';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = cT + (cH / 4) * i;
+    ctx.beginPath(); ctx.moveTo(cL, y); ctx.lineTo(cR, y); ctx.stroke();
+  }
+
+  // Gradient fill under line
+  const grad = ctx.createLinearGradient(0, cT, 0, cB);
+  grad.addColorStop(0, fillColor1);
+  grad.addColorStop(1, fillColor2);
+
+  ctx.beginPath();
+  ctx.moveTo(toX(0), cB);
+  for (let i = 0; i < n; i++) {
+    ctx.lineTo(toX(i), toY(points[i].price));
+  }
+  ctx.lineTo(toX(n - 1), cB);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    i === 0 ? ctx.moveTo(toX(i), toY(points[i].price)) : ctx.lineTo(toX(i), toY(points[i].price));
+  }
+  ctx.stroke();
+
+  // Dots
+  for (let i = 0; i < n; i++) {
+    ctx.beginPath();
+    ctx.arc(toX(i), toY(points[i].price), 4, 0, Math.PI * 2);
+    ctx.fillStyle = lineColor;
+    ctx.fill();
+  }
+
+  // X labels — left-align first, right-align last, center the rest
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '10px monospace';
+  for (let i = 0; i < n; i++) {
+    ctx.textAlign = i === 0 ? 'left' : i === n - 1 ? 'right' : 'center';
+    ctx.fillText(points[i].label, toX(i), H - PAD.bottom + 14);
+  }
+
+  // Y axis labels
+  ctx.textAlign = 'left';
+  for (let i = 0; i <= 4; i++) {
+    const p = maxP + pad - ((pRange + pad * 2) / 4) * i;
+    const y = cT + (cH / 4) * i;
+    ctx.fillText(axisPrice(p), cR + 4, y + 4);
+  }
+
+  // Title
+  ctx.fillStyle = '#c9d1d9';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${sym} — price (DexScreener)`, W / 2, 24);
+
+  // Border
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cL, cT, cW, cH);
 
   return canvas.toBuffer('image/png');
 }

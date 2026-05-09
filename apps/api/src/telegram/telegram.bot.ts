@@ -18,7 +18,7 @@ import {
   formatKillReport,
   formatPlaceholder,
 } from './telegram-scan.formatter';
-import { fetchOhlcv, generateCandleChart, buildChartCaption, gtNetwork, getAvailableTfs } from './telegram-chart';
+import { fetchOhlcv, RateLimitedError, generateCandleChart, generateDexChart, buildChartCaption, gtNetwork } from './telegram-chart';
 
 const NOT_LINKED_TEXT =
   '🔗 Account not linked. Send /login for a one-tap connect link.';
@@ -904,19 +904,28 @@ export class TelegramBot {
           for (const tryTf of tryOrder) {
             try {
               const data = await fetchOhlcv(net, poolAddr, tryTf);
-              if (data.length >= 2) { ohlcv = data; actualTf = tryTf; break; }
-            } catch { /* try next TF */ }
+              if (data.length >= 1) { ohlcv = data; actualTf = tryTf; break; }
+            } catch (e) {
+              if (e instanceof RateLimitedError) {
+                // Wait 2s and retry once before giving up
+                await new Promise(r => setTimeout(r, 2_000));
+                try {
+                  const data = await fetchOhlcv(net, poolAddr, tryTf);
+                  if (data.length >= 1) { ohlcv = data; actualTf = tryTf; }
+                } catch { /* still limited */ }
+                break;
+              }
+            }
           }
         }
 
         await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
 
-        if (ohlcv.length >= 2) {
-          const availableTfs = await getAvailableTfs(net, poolAddr, actualTf, ohlcv.length);
+        if (ohlcv.length >= 1) {
           const caption = pairData ? buildChartCaption(pairData, actualTf) : `📊 <b>${esc(sym)}</b>  ·  ${actualTf}`;
           const kb = new InlineKeyboard();
           for (const t of ['5m', '15m', '1h', '4h', '1d']) {
-            if (availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+            kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
           }
           const img = await generateCandleChart(ohlcv, sym, actualTf);
           await ctx.replyWithPhoto(new InputFile(img, 'chart.png'), {
@@ -924,19 +933,22 @@ export class TelegramBot {
             parse_mode: 'HTML',
             reply_markup: kb,
           });
-        } else {
-          // Pool found but no candle data yet, or token not listed — give user a useful link
-          const dexUrl = `https://dexscreener.com/${chain === 'SOLANA' ? 'solana' : 'ethereum'}/${addr}`;
-          await ctx.reply(
-            `📊 <b>${esc(sym)}</b>\n\n<i>No candle data available yet for this token.</i>`,
-            {
-              parse_mode: 'HTML',
-              link_preview_options: { is_disabled: true },
-              reply_markup: new InlineKeyboard().url('View on DexScreener', dexUrl),
-            },
-          );
+        } else if (pairData) {
+          // GT unavailable — draw fallback chart from DexScreener price change data
+          const caption = buildChartCaption(pairData, tf);
+          const kb = new InlineKeyboard();
+          for (const t of ['5m', '15m', '1h', '4h', '1d']) {
+            kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+          }
+          const img = await generateDexChart(pairData, sym);
+          await ctx.replyWithPhoto(new InputFile(img, 'chart.png'), {
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: kb,
+          });
         }
-      } catch {
+      } catch (e: any) {
+        this.logger.error(`/c command failed: ${e?.message ?? e}`);
         await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
       }
     });
@@ -1532,16 +1544,24 @@ export class TelegramBot {
         for (const tryTf of tryOrder) {
           try {
             const data = await fetchOhlcv(net, poolAddr, tryTf);
-            if (data.length >= 2) { ohlcv = data; actualTf = tryTf; break; }
-          } catch { /* try next TF */ }
+            if (data.length >= 1) { ohlcv = data; actualTf = tryTf; break; }
+          } catch (e) {
+            if (e instanceof RateLimitedError) {
+              await new Promise(r => setTimeout(r, 2_000));
+              try {
+                const data = await fetchOhlcv(net, poolAddr, tryTf);
+                if (data.length >= 1) { ohlcv = data; actualTf = tryTf; }
+              } catch { /* still limited */ }
+              break;
+            }
+          }
         }
 
-        if (!ohlcv.length) return; // silently drop — no candle data on any TF
+        if (!ohlcv.length) return; // silently drop — no candle data on any TF or source
 
-        const availableTfs = await getAvailableTfs(net, poolAddr, actualTf, ohlcv.length);
         const kb = new InlineKeyboard();
         for (const t of ['5m', '15m', '1h', '4h', '1d']) {
-          if (availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+          kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
         }
 
         const actualCaption = pair ? buildChartCaption(pair, actualTf) : `📊 <b>${esc(sym)}</b>  ·  ${actualTf}`;
@@ -2114,9 +2134,12 @@ export class TelegramBot {
   private async fetchGeckoPool(address: string, chain: string): Promise<{ poolAddress: string; symbol: string; network: string } | null> {
     const network = chain === 'SOLANA' ? 'solana' : chain === 'ETH' ? 'eth' : 'solana';
     try {
+      const gtHeaders: Record<string, string> = { Accept: 'application/json', 'User-Agent': 'qwai/1.0' };
+      const gtKey = process.env.GECKO_TERMINAL_API_KEY;
+      if (gtKey) gtHeaders['x-cg-demo-api-key'] = gtKey;
       const res = await fetch(
         `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`,
-        { headers: { Accept: 'application/json', 'User-Agent': 'qwai/1.0' }, signal: AbortSignal.timeout(6_000) },
+        { headers: gtHeaders, signal: AbortSignal.timeout(6_000) },
       );
       if (!res.ok) return null;
       const body = await res.json() as any;
@@ -2131,13 +2154,15 @@ export class TelegramBot {
   }
 
   private async fetchDexSearch(query: string): Promise<any[]> {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`, {
-      headers: { 'User-Agent': 'qwai/1.0' },
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) return [];
-    const body = await res.json() as any;
-    return body?.pairs ?? [];
+    try {
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`, {
+        headers: { 'User-Agent': 'qwai/1.0' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!res.ok) return [];
+      const body = await res.json() as any;
+      return body?.pairs ?? [];
+    } catch { return []; }
   }
 
   private async fetchDexTrending(): Promise<any[]> {
