@@ -879,40 +879,63 @@ export class TelegramBot {
         let ohlcv: any[] = [];
         let actualTf = tf;
         let net = '';
+        let poolAddr = '';
+        let sym = pairData?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
+
         if (pairData?.pairAddress) {
           net = gtNetwork(pairData.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+          poolAddr = pairData.pairAddress;
+        } else {
+          // DexScreener token API failed — try search endpoint, then GeckoTerminal
+          const searched = await this.fetchDexSearch(addr);
+          const best = searched.sort((a: any, b: any) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+          if (best?.pairAddress) {
+            net = gtNetwork(best.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+            poolAddr = best.pairAddress;
+            sym = best.baseToken?.symbol ?? sym;
+          } else {
+            const gt = await this.fetchGeckoPool(addr, chain);
+            if (gt) { net = gt.network; poolAddr = gt.poolAddress; sym = gt.symbol; }
+          }
+        }
+
+        if (poolAddr) {
           const tryOrder = [tf, ...['5m', '15m', '1h', '4h', '1d'].filter(t => t !== tf)];
           for (const tryTf of tryOrder) {
             try {
-              const data = await fetchOhlcv(net, pairData.pairAddress, tryTf);
+              const data = await fetchOhlcv(net, poolAddr, tryTf);
               if (data.length >= 2) { ohlcv = data; actualTf = tryTf; break; }
             } catch { /* try next TF */ }
           }
         }
 
-        const availableTfs = (pairData?.pairAddress && ohlcv.length >= 2)
-          ? await getAvailableTfs(net, pairData.pairAddress, actualTf, ohlcv.length)
-          : null;
-
-        const sym     = pairData?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
-        const caption = pairData ? buildChartCaption(pairData, actualTf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${actualTf}`;
-
-        const kb = new InlineKeyboard();
-        for (const t of ['5m', '15m', '1h', '4h', '1d']) {
-          if (!availableTfs || availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
-        }
-
         await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
 
         if (ohlcv.length >= 2) {
+          const availableTfs = await getAvailableTfs(net, poolAddr, actualTf, ohlcv.length);
+          const caption = pairData ? buildChartCaption(pairData, actualTf) : `📊 <b>${esc(sym)}</b>  ·  ${actualTf}`;
+          const kb = new InlineKeyboard();
+          for (const t of ['5m', '15m', '1h', '4h', '1d']) {
+            if (availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+          }
           const img = await generateCandleChart(ohlcv, sym, actualTf);
           await ctx.replyWithPhoto(new InputFile(img, 'chart.png'), {
             caption,
             parse_mode: 'HTML',
             reply_markup: kb,
           });
+        } else {
+          // Pool found but no candle data yet, or token not listed — give user a useful link
+          const dexUrl = `https://dexscreener.com/${chain === 'SOLANA' ? 'solana' : 'ethereum'}/${addr}`;
+          await ctx.reply(
+            `📊 <b>${esc(sym)}</b>\n\n<i>No candle data available yet for this token.</i>`,
+            {
+              parse_mode: 'HTML',
+              link_preview_options: { is_disabled: true },
+              reply_markup: new InlineKeyboard().url('View on DexScreener', dexUrl),
+            },
+          );
         }
-        // silently drop when no pair data or no data on any TF
       } catch {
         await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
       }
@@ -1489,41 +1512,44 @@ export class TelegramBot {
       await ctx.answerCallbackQuery('Loading…');
       try {
         const pair = await this.fetchDexPair(addr);
-        const sym  = pair?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
-        const caption = pair ? buildChartCaption(pair, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
+        let sym = pair?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
+        let net = '';
+        let poolAddr = '';
 
-        if (!pair?.pairAddress) {
-          return; // silently ignore — no pair found
+        if (pair?.pairAddress) {
+          net = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+          poolAddr = pair.pairAddress;
+        } else {
+          const gt = await this.fetchGeckoPool(addr, chain);
+          if (gt) { net = gt.network; poolAddr = gt.poolAddress; sym = gt.symbol; }
         }
 
-        const net = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+        if (!poolAddr) return; // silently drop — no pair on any source
+
         let ohlcv: any[] = [];
         let actualTf = tf;
         const tryOrder = [tf, ...['5m', '15m', '1h', '4h', '1d'].filter(t => t !== tf)];
         for (const tryTf of tryOrder) {
           try {
-            const data = await fetchOhlcv(net, pair.pairAddress, tryTf);
+            const data = await fetchOhlcv(net, poolAddr, tryTf);
             if (data.length >= 2) { ohlcv = data; actualTf = tryTf; break; }
           } catch { /* try next TF */ }
         }
 
-        const availableTfs = ohlcv.length >= 2 ? await getAvailableTfs(net, pair.pairAddress, actualTf, ohlcv.length) : null;
+        if (!ohlcv.length) return; // silently drop — no candle data on any TF
+
+        const availableTfs = await getAvailableTfs(net, poolAddr, actualTf, ohlcv.length);
         const kb = new InlineKeyboard();
         for (const t of ['5m', '15m', '1h', '4h', '1d']) {
-          if (!availableTfs || availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+          if (availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
         }
 
-        if (ohlcv.length >= 2) {
-          const actualCaption = pair ? buildChartCaption(pair, actualTf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${actualTf}`;
-          const img = await generateCandleChart(ohlcv, sym, actualTf);
-          await ctx.editMessageMedia(
-            { type: 'photo', media: new InputFile(img, 'chart.png'), caption: actualCaption, parse_mode: 'HTML' },
-            { reply_markup: kb },
-          );
-          return;
-        }
-
-        // silently drop — no data on any TF
+        const actualCaption = pair ? buildChartCaption(pair, actualTf) : `📊 <b>${esc(sym)}</b>  ·  ${actualTf}`;
+        const img = await generateCandleChart(ohlcv, sym, actualTf);
+        await ctx.editMessageMedia(
+          { type: 'photo', media: new InputFile(img, 'chart.png'), caption: actualCaption, parse_mode: 'HTML' },
+          { reply_markup: kb },
+        );
       } catch { /* */ }
     });
 
@@ -2082,6 +2108,25 @@ export class TelegramBot {
       const pairs: any[] = body?.pairs ?? [];
       if (!pairs.length) return null;
       return pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+    } catch { return null; }
+  }
+
+  private async fetchGeckoPool(address: string, chain: string): Promise<{ poolAddress: string; symbol: string; network: string } | null> {
+    const network = chain === 'SOLANA' ? 'solana' : chain === 'ETH' ? 'eth' : 'solana';
+    try {
+      const res = await fetch(
+        `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`,
+        { headers: { Accept: 'application/json', 'User-Agent': 'qwai/1.0' }, signal: AbortSignal.timeout(6_000) },
+      );
+      if (!res.ok) return null;
+      const body = await res.json() as any;
+      const pool = body?.data?.[0];
+      if (!pool?.attributes?.address) return null;
+      return {
+        poolAddress: pool.attributes.address as string,
+        symbol: (pool.attributes.name as string | undefined)?.split(' / ')?.[0]?.replace(/^\$/, '') ?? address.slice(0, 8) + '…',
+        network,
+      };
     } catch { return null; }
   }
 
