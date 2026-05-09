@@ -1247,19 +1247,89 @@ export class TelegramBot {
     bot.command('lore', async (ctx) => {
       const input = ctx.match?.trim();
       if (!input) return ctx.reply('Usage: /lore <token_address_or_name>\nExample: /lore BONK');
-      const msg   = await ctx.reply('📖 <i>Generating lore…</i>', { parse_mode: 'HTML' });
+      const msg = await ctx.reply('📖 <i>Gathering intel…</i>', { parse_mode: 'HTML' });
       try {
-        let context = `Token: ${input}`;
-        if (detectChain(input)) {
-          const data = await this.fetchDexPair(input).catch(() => null);
-          if (data) context = `Token: $${data.baseToken?.symbol} (${data.baseToken?.name})\nAddress: ${input}\nPrice: ${fmtPriceUsd(data.priceUsd ?? 0)}\nMCap: ${fmtUsd(data.fdv ?? 0)}`;
+        const isAddr = !!detectChain(input);
+        const pairData = isAddr ? await this.fetchDexPair(input).catch(() => null) : null;
+        const sym  = pairData?.baseToken?.symbol ?? input.toUpperCase();
+        const name = pairData?.baseToken?.name   ?? sym;
+
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          `📖 <i>Researching $${esc(sym)}…</i>`, { parse_mode: 'HTML' }).catch(() => {});
+
+        const parts: string[] = [];
+
+        // 1 — on-chain basics from DexScreener
+        if (pairData) {
+          const age = pairData.pairCreatedAt
+            ? `Created ${Math.round((Date.now() - pairData.pairCreatedAt) / 86_400_000)}d ago`
+            : '';
+          const basics = [
+            `TOKEN: $${sym} (${name})`,
+            `Price: ${fmtPriceUsd(parseFloat(pairData.priceUsd ?? '0'))}  MCap: ${fmtUsd(pairData.fdv ?? 0)}`,
+            `1h: ${(pairData.priceChange?.h1 ?? 0) >= 0 ? '+' : ''}${(pairData.priceChange?.h1 ?? 0).toFixed(1)}%  24h: ${(pairData.priceChange?.h24 ?? 0) >= 0 ? '+' : ''}${(pairData.priceChange?.h24 ?? 0).toFixed(1)}%`,
+            age,
+          ].filter(Boolean);
+          parts.push(...basics);
+        } else {
+          parts.push(`TOKEN: ${input}`);
         }
+
+        // 2 — CoinGecko description (established tokens)
+        const cgNetwork = pairData?.chainId === 'solana' ? 'solana' : 'ethereum';
+        const cgAddr = isAddr ? input : null;
+        if (cgAddr) {
+          const cg = await fetch(
+            `https://api.coingecko.com/api/v3/coins/${cgNetwork}/contract/${cgAddr}`,
+            { signal: AbortSignal.timeout(5_000) },
+          ).then(r => r.ok ? r.json() : null).catch(() => null) as any;
+          const desc = (cg?.description?.en ?? '').replace(/<[^>]+>/g, '').slice(0, 600).trim();
+          if (desc) parts.push(`\nCOINGECKO DESCRIPTION:\n${desc}`);
+        }
+
+        // 3 — Token website text
+        const websiteUrl = pairData?.info?.websites?.[0]?.url;
+        if (websiteUrl) {
+          const text = await this.fetchUrlText(websiteUrl);
+          if (text) parts.push(`\nWEBSITE CONTENT:\n${text.slice(0, 800)}`);
+        }
+
+        // 4 — Twitter/X: profile, last tweets, $SYM community mentions
+        const twitterSocial = pairData?.info?.socials?.find((s: any) => s.type === 'twitter');
+        if (twitterSocial?.url) {
+          const tUrl: string = twitterSocial.url;
+          const handle = tUrl.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1];
+          if (handle) {
+            const twitterCtx = await this.fetchTwitterContext(handle, sym);
+            if (twitterCtx) parts.push('\n' + twitterCtx);
+          }
+        } else {
+          // No handle in DexScreener — still search community mentions by ticker
+          const twitterCtx = await this.fetchTwitterContext('', sym);
+          if (twitterCtx) parts.push('\n' + twitterCtx);
+        }
+
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          `📖 <i>Analysing $${esc(sym)} lore…</i>`, { parse_mode: 'HTML' }).catch(() => {});
+
+        const context = parts.join('\n');
         const lore = await this.llm.chat([
-          { role: 'system', content: 'Write a short 3-4 sentence crypto origin story for this token in a mythological/meme style. Use Telegram HTML: <b>,<i>. No markdown. Max 350 chars.' },
-          { role: 'user',   content: context },
-        ], 350);
-        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📖 <b>Lore</b>\n\n${lore}`, { parse_mode: 'HTML' });
+          {
+            role: 'system',
+            content:
+              'You are a sharp crypto cultural analyst. Based on the REAL data provided, write a concise lore analysis (4-6 sentences). ' +
+              'Cover: what the token actually is, the genuine cultural hook or meme behind it, why it resonates, and the community vibe. ' +
+              'If data is thin, be honest about it. No invented facts. Use Telegram HTML bold (<b>) for key terms only. No markdown. Max 500 chars.',
+          },
+          { role: 'user', content: context },
+        ], 500);
+
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          `📖 <b>${esc(sym)} Lore</b>\n\n${lore}`,
+          { parse_mode: 'HTML' },
+        );
       } catch (e: any) {
+        this.logger.error(`/lore failed: ${e.message}`);
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
       }
     });
@@ -2274,6 +2344,74 @@ export class TelegramBot {
       const label = s.type === 'twitter' ? '🐦 Twitter' : s.type === 'telegram' ? '✈️ Telegram' : `🔗 ${esc(s.type)}`;
       parts.push(`${label}: <a href="${s.url}">${esc(s.url.replace(/https?:\/\//, '').slice(0, 40))}</a>`);
     }
+    return parts.join('\n');
+  }
+
+  /**
+   * Fetches Twitter context for a token via twitterapi.io:
+   * - Profile bio + follower count
+   * - Last 10 tweets from the account
+   * - Recent $SYM mentions (advanced search)
+   * Returns a formatted text block to feed into the LLM.
+   */
+  private async fetchTwitterContext(handle: string, sym: string): Promise<string> {
+    const key = process.env.TWITTER_API_IO_KEY;
+    if (!key) return '';
+    const h = { 'X-API-Key': key, Accept: 'application/json' };
+    const parts: string[] = [];
+
+    const extractTweets = (body: any): string[] =>
+      (body?.data?.tweets ?? body?.tweets ?? [])
+        .map((t: any) => (t.text ?? t.full_text ?? '').replace(/https?:\/\/\S+/g, '').trim())
+        .filter((t: string) => t.length > 20);
+
+    try {
+      if (handle) {
+        // 1. Profile info
+        const profileRes = await fetch(
+          `https://api.twitterapi.io/twitter/user/info?userName=${encodeURIComponent(handle)}`,
+          { headers: h, signal: AbortSignal.timeout(6_000) },
+        );
+        if (profileRes.ok) {
+          const p = (await profileRes.json() as any)?.data;
+          if (p) {
+            parts.push(
+              `TWITTER @${handle} (${(p.followers_count ?? 0).toLocaleString()} followers):`,
+              `Bio: ${(p.description ?? '').slice(0, 200)}`,
+            );
+          }
+        }
+
+        // 2. Last tweets from account
+        const tweetsRes = await fetch(
+          `https://api.twitterapi.io/twitter/user/last_tweets?userName=${encodeURIComponent(handle)}`,
+          { headers: h, signal: AbortSignal.timeout(8_000) },
+        );
+        if (tweetsRes.ok) {
+          const tweets = extractTweets(await tweetsRes.json()).slice(0, 8);
+          if (tweets.length) {
+            parts.push(`\nRECENT TWEETS FROM @${handle}:`);
+            tweets.forEach((t, i) => parts.push(`${i + 1}. ${t.slice(0, 200)}`));
+          }
+        }
+      }
+
+      // 3. Community $SYM mentions
+      const searchRes = await fetch(
+        `https://api.twitterapi.io/twitter/tweet/advanced_search?query=${encodeURIComponent(`$${sym} -is:retweet`)}&queryType=Latest`,
+        { headers: h, signal: AbortSignal.timeout(8_000) },
+      );
+      if (searchRes.ok) {
+        const mentions = extractTweets(await searchRes.json()).slice(0, 6);
+        if (mentions.length) {
+          parts.push(`\nCOMMUNITY TWEETS ABOUT $${sym}:`);
+          mentions.forEach((t, i) => parts.push(`${i + 1}. ${t.slice(0, 200)}`));
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`fetchTwitterContext failed: ${e.message}`);
+    }
+
     return parts.join('\n');
   }
 }
