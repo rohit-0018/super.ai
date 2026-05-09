@@ -1,7 +1,7 @@
 import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { Bot, InlineKeyboard } from 'grammy';
-import { ApprovalChannel, RejectCategory } from '@prisma/client';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
+import { AgentKind, AgentStatus, ApprovalChannel, RejectCategory, TradeMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { LlmService, ChatMessage } from '../ai-agent/llm.service';
@@ -18,6 +18,7 @@ import {
   formatKillReport,
   formatPlaceholder,
 } from './telegram-scan.formatter';
+import { fetchOhlcv, generateCandleChart, buildChartCaption, gtNetwork } from './telegram-chart';
 
 const NOT_LINKED_TEXT =
   '🔗 Account not linked. Send /login for a one-tap connect link.';
@@ -39,6 +40,8 @@ export class TelegramBot {
 
   // Guest (unlinked) conversation history — 15-min TTL, max 8 messages per session
   private guestSessions = new Map<string, GuestSession>();
+  // In-memory reminder timers — chatId:ts → timeout handle
+  private reminders = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -86,6 +89,10 @@ export class TelegramBot {
       this.logger.error(`Unhandled bot error: ${(err as Error)?.message ?? err}`);
     });
     this._bot = bot;
+    // Register command list with Telegram so the autocomplete menu works
+    bot.api.setMyCommands(BOT_COMMANDS).catch((e) =>
+      this.logger.warn(`setMyCommands failed: ${e?.message}`),
+    );
     return bot;
   }
 
@@ -176,7 +183,7 @@ export class TelegramBot {
 
   private registerHandlers(bot: Bot) {
 
-    /* ── /start ────────────────────────────────────────────────────────────── */
+    /* ── 1. /start ──────────────────────────────────────────────────────────── */
     bot.command('start', (ctx) =>
       ctx.reply(
         [
@@ -191,10 +198,15 @@ export class TelegramBot {
           '',
           '<b>Commands:</b>',
           '/scan &lt;address&gt; — deep-scan a token',
+          '/top — hot tokens right now',
           '/login — link your QWAI account (1-tap)',
-          '/portfolio — your positions &amp; P&amp;L (linked only)',
-          '/buy /sell — trade (linked only)',
-          '/snipe — sniper bot',
+          '/portfolio — your positions &amp; P&amp;L (linked)',
+          '/buy /sell — execute trades (linked)',
+          '/dca — dollar-cost average bot (linked)',
+          '/alerts — recent alerts (linked)',
+          '/kill — emergency stop all agents (linked)',
+          '/paper — toggle paper trading mode (linked)',
+          '/snipe — sniper bot (linked)',
         ].join('\n'),
         {
           parse_mode: 'HTML',
@@ -209,7 +221,7 @@ export class TelegramBot {
       ),
     );
 
-    /* ── /login (TG→Web magic link) ───────────────────────────────────────── */
+    /* ── 2. /login (TG→Web magic link) ─────────────────────────────────────── */
     bot.command('login', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (userId) {
@@ -238,7 +250,7 @@ export class TelegramBot {
       );
     });
 
-    /* ── /link ─────────────────────────────────────────────────────────────── */
+    /* ── 3. /link ───────────────────────────────────────────────────────────── */
     bot.command('link', async (ctx) => {
       const code = ctx.match?.trim();
       if (!code) {
@@ -255,7 +267,7 @@ export class TelegramBot {
       }
     });
 
-    /* ── /scan ─────────────────────────────────────────────────────────────── */
+    /* ── 4. /scan ───────────────────────────────────────────────────────────── */
     bot.command('scan', async (ctx) => {
       const parts = (ctx.message?.text ?? '').split(/\s+/);
       const address = parts[1]?.trim();
@@ -268,85 +280,307 @@ export class TelegramBot {
       return this.runScan(ctx, address);
     });
 
-    /* ── /portfolio ────────────────────────────────────────────────────────── */
-    /* ── /top — fast-lane hot tokens, no LLM ─────────────────────────────── */
+    /* ── 5. /top / /top10 — fast-lane hot tokens, no LLM ───────────────────── */
     bot.command('top', async (ctx) => this.runHotTokens(ctx));
     bot.command('top10', async (ctx) => this.runHotTokens(ctx));
 
+    /* ── 6. /portfolio ──────────────────────────────────────────────────────── */
     bot.command('portfolio', async (ctx) => {
-      try {
-        return ctx.reply(await this.chat(ctx.chat.id, 'Give me my portfolio summary with current positions and P&L.'), {
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true },
-        });
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      return this.replyPortfolio(ctx, userId);
     });
 
-    /* ── /buy /sell ────────────────────────────────────────────────────────── */
+    /* ── 7. /buy ────────────────────────────────────────────────────────────── */
     bot.command('buy', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+
       const args = ctx.match?.trim();
-      if (!args) return ctx.reply('Usage: /buy 200 SOL');
+      if (!args) {
+        return ctx.reply(
+          [
+            '📋 <b>Buy Usage:</b>',
+            '<code>/buy &lt;amount&gt; SOL &lt;token_address&gt;</code>',
+            '<code>/buy &lt;amount&gt; USDC &lt;token_address&gt;</code>',
+            '',
+            '<b>Examples:</b>',
+            '<code>/buy 0.5 SOL HfMbF9X...F5p</code>',
+            '<code>/buy 100 USDC 0x123...abc</code>',
+            '',
+            '<i>Paste a token address first for a /scan to see safety details before buying.</i>',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      }
+
       try {
-        const reply = await this.chat(ctx.chat.id, `Buy ${args}`);
-        return ctx.reply(reply, {
+        const loadMsg = await ctx.reply('⏳ <i>Preparing order preview…</i>', { parse_mode: 'HTML' });
+        const reply = await this.agent.chat(
+          userId,
+          `I want to buy ${args}. Show me the order preview with token details, estimated price impact, and fees. Do NOT execute the trade yet — just show me the details so I can confirm.`,
+          'telegram',
+        );
+        try {
+          await ctx.api.deleteMessage(ctx.chat.id, loadMsg.message_id);
+        } catch { /* */ }
+        return ctx.reply(reply ?? '…', {
           parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
           reply_markup: new InlineKeyboard()
-            .text('✅ Confirm', `confirm:buy:${args}`)
+            .text('✅ Confirm Buy', `confirm:buy:${args}`)
             .text('❌ Cancel', 'confirm:cancel'),
         });
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
+    /* ── 8. /sell ───────────────────────────────────────────────────────────── */
     bot.command('sell', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+
       const args = ctx.match?.trim();
-      if (!args) return ctx.reply('Usage: /sell 1 SOL');
+      if (!args) {
+        return ctx.reply(
+          [
+            '📋 <b>Sell Usage:</b>',
+            '<code>/sell &lt;amount&gt; SOL</code>',
+            '<code>/sell &lt;amount&gt; &lt;token_address&gt;</code>',
+            '<code>/sell 50% &lt;token_address&gt;</code>',
+            '',
+            '<b>Examples:</b>',
+            '<code>/sell 1 SOL</code>',
+            '<code>/sell 50% HfMbF9X...F5p</code>',
+            '<code>/sell all HfMbF9X...F5p</code>',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      }
+
       try {
-        const reply = await this.chat(ctx.chat.id, `Sell ${args}`);
-        return ctx.reply(reply, {
+        const loadMsg = await ctx.reply('⏳ <i>Preparing sell preview…</i>', { parse_mode: 'HTML' });
+        const reply = await this.agent.chat(
+          userId,
+          `I want to sell ${args}. Show me the order preview with current price, estimated proceeds, and fees. Do NOT execute yet — just show me the details so I can confirm.`,
+          'telegram',
+        );
+        try {
+          await ctx.api.deleteMessage(ctx.chat.id, loadMsg.message_id);
+        } catch { /* */ }
+        return ctx.reply(reply ?? '…', {
           parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
           reply_markup: new InlineKeyboard()
-            .text('✅ Confirm', `confirm:sell:${args}`)
+            .text('✅ Confirm Sell', `confirm:sell:${args}`)
             .text('❌ Cancel', 'confirm:cancel'),
         });
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
-    /* ── /dca /alerts /kill /paper ─────────────────────────────────────────── */
+    /* ── 9. /dca ────────────────────────────────────────────────────────────── */
     bot.command('dca', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+
       const args = ctx.match?.trim();
-      if (!args) return ctx.reply('Usage: /dca 50 SOL daily');
+
+      // No args → list existing DCAs
+      if (!args) {
+        try {
+          const dcas = await this.prisma.agent.findMany({
+            where: { userId, kind: AgentKind.DCA },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (dcas.length === 0) {
+            return ctx.reply(
+              [
+                '⏱ <b>DCA Bot</b>',
+                '',
+                'No active DCA orders.',
+                '',
+                '<b>Create one:</b>',
+                '<code>/dca &lt;amount_usd&gt; &lt;token_address&gt; &lt;interval&gt;</code>',
+                '',
+                'Intervals: <code>hourly</code> | <code>daily</code> | <code>weekly</code> | <code>monthly</code>',
+                '',
+                '<b>Example:</b>',
+                '<code>/dca 50 HfMbF9X...F5p daily</code>',
+              ].join('\n'),
+              { parse_mode: 'HTML' },
+            );
+          }
+          const lines = ['⏱ <b>DCA Orders</b>', ''];
+          for (const d of dcas) {
+            const p = d.params as any;
+            const addr = (p.tokenOut ?? 'unknown') as string;
+            const statusIcon = d.status === AgentStatus.RUNNING ? '🟢' : '🔴';
+            lines.push(`${statusIcon} <b>$${p.amountUsd}</b> → <code>${addr.slice(0, 8)}…${addr.slice(-4)}</code>  every <b>${p.interval}</b>`);
+            lines.push(`   Created ${timeAgo(d.createdAt)}`);
+          }
+          lines.push('');
+          lines.push('<i>/dca &lt;amount&gt; &lt;address&gt; &lt;interval&gt; to add more</i>');
+          return ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+        } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
+      }
+
+      // Parse: /dca <amount_usd> <token_address> <interval>
+      const parts = args.split(/\s+/);
+      if (parts.length < 3) {
+        return ctx.reply(
+          'Usage: <code>/dca &lt;amount_usd&gt; &lt;token_address&gt; &lt;interval&gt;</code>\nExample: <code>/dca 50 HfMbF9X...F5p daily</code>',
+          { parse_mode: 'HTML' },
+        );
+      }
+
+      const amountUsd = parseFloat(parts[0]);
+      const tokenAddress = parts[1];
+      const intervalStr = parts[2]?.toLowerCase();
+      const VALID_INTERVALS = ['hourly', 'daily', 'weekly', 'monthly'];
+
+      if (isNaN(amountUsd) || amountUsd <= 0) {
+        return ctx.reply('❌ Invalid amount. Use a number like <code>50</code>', { parse_mode: 'HTML' });
+      }
+      if (!VALID_INTERVALS.includes(intervalStr)) {
+        return ctx.reply(`❌ Invalid interval. Use: ${VALID_INTERVALS.join(' | ')}`);
+      }
+      const chain = detectChain(tokenAddress);
+      if (!chain) {
+        return ctx.reply('❌ Invalid token address. Paste a Solana (base58) or EVM (0x…) address.');
+      }
+
       try {
-        return ctx.reply(await this.chat(ctx.chat.id, `Set up a DCA: buy ${args}`), {
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true },
+        const wallet = await this.prisma.wallet.findFirst({ where: { userId, isPrimary: true } })
+          ?? await this.prisma.wallet.findFirst({ where: { userId } });
+        if (!wallet) {
+          return ctx.reply('❌ No wallet found. Create one at the QWAI dashboard first.\n\n' + WEB_URL + '/wallets');
+        }
+
+        await this.prisma.agent.create({
+          data: {
+            userId,
+            kind: AgentKind.DCA,
+            status: AgentStatus.RUNNING,
+            params: {
+              walletId: wallet.id,
+              tokenIn: chain === 'SOLANA' ? 'SOL' : 'ETH',
+              tokenOut: tokenAddress,
+              amountUsd,
+              interval: intervalStr,
+              chain,
+            },
+          },
         });
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+
+        return ctx.reply(
+          [
+            '✅ <b>DCA Created</b>',
+            '',
+            `Buying <b>$${amountUsd}</b> of <code>${tokenAddress.slice(0, 8)}…${tokenAddress.slice(-6)}</code>`,
+            `Every: <b>${intervalStr}</b>`,
+            `Wallet: <code>${wallet.address.slice(0, 8)}…${wallet.address.slice(-6)}</code>`,
+            `Chain: <b>${chain}</b>`,
+            '',
+            '<i>View all orders with /dca · Stop via the web dashboard.</i>',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
+    /* ── 10. /alerts ────────────────────────────────────────────────────────── */
     bot.command('alerts', async (ctx) => {
-      try {
-        return ctx.reply(await this.chat(ctx.chat.id, 'Show me my recent alerts and notifications.'), {
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true },
-        });
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      return this.replyAlerts(ctx, userId);
     });
 
-    bot.command('kill', async (ctx) =>
-      ctx.reply('🚨 Are you sure you want to engage the kill switch? This pauses ALL agents.', {
-        reply_markup: new InlineKeyboard()
-          .text('🛑 Yes, kill all', 'confirm:kill')
-          .text('Cancel', 'confirm:cancel'),
-      }),
-    );
+    /* ── 11. /kill ──────────────────────────────────────────────────────────── */
+    bot.command('kill', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
 
-    bot.command('paper', async (ctx) =>
-      ctx.reply('Paper mode can be toggled in the web dashboard under Settings. Both Telegram and web share the same mode.'),
-    );
+      // Show current status
+      const cfg = await this.prisma.guardrailConfig.findUnique({ where: { userId } });
+      const already = cfg?.killSwitch ?? false;
 
-    /* ── /snipe commands ───────────────────────────────────────────────────── */
+      if (already) {
+        return ctx.reply(
+          [
+            '🛑 <b>Kill Switch is already ON</b>',
+            '',
+            'All trading is currently paused.',
+            '<i>Re-enable from the web dashboard → Settings → Guardrails.</i>',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      }
+
+      const runningCount = await this.prisma.agent.count({ where: { userId, status: AgentStatus.RUNNING } });
+      return ctx.reply(
+        [
+          '🚨 <b>Engage Kill Switch?</b>',
+          '',
+          `This will pause ALL trading and stop <b>${runningCount}</b> running agent(s).`,
+          'No new orders will be placed until you re-enable from the dashboard.',
+        ].join('\n'),
+        {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard()
+            .text('🛑 Yes, kill all', 'confirm:kill')
+            .text('Cancel', 'confirm:cancel'),
+        },
+      );
+    });
+
+    /* ── 12. /paper ─────────────────────────────────────────────────────────── */
+    bot.command('paper', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+
+      try {
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { paperMode: true },
+        });
+        const current = user?.paperMode ?? false;
+        const newMode = !current;
+
+        await this.prisma.user.update({ where: { id: userId }, data: { paperMode: newMode } });
+
+        if (newMode) {
+          // Seed paper balance on first enable
+          await this.prisma.paperBalance.upsert({
+            where: { userId_token: { userId, token: 'USDC' } },
+            update: {},
+            create: { userId, token: 'USDC', amount: '10000000000' }, // 10k USDC (6 dec)
+          });
+          return ctx.reply(
+            [
+              '📄 <b>Paper Mode ON</b>',
+              '',
+              'You now have <b>$10,000 virtual USDC</b> to practise trading.',
+              'All trades are simulated — no real money at risk.',
+              '',
+              '<i>Toggle off with /paper again to go live.</i>',
+            ].join('\n'),
+            { parse_mode: 'HTML' },
+          );
+        } else {
+          return ctx.reply(
+            [
+              '🔴 <b>Live Mode ON</b>',
+              '',
+              'Paper trading disabled. Trades now execute with <b>real funds</b>.',
+              '',
+              '⚠️ <i>Use /kill to emergency-stop all agents if needed.</i>',
+            ].join('\n'),
+            { parse_mode: 'HTML' },
+          );
+        }
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
+    });
+
+    /* ── 13-15. /snipe commands ─────────────────────────────────────────────── */
     bot.command('snipe', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
@@ -362,47 +596,938 @@ export class TelegramBot {
               `Slippage: ${(config.maxSlippageBps / 100).toFixed(0)}%`,
               `Groups: ${config.groupIds.length} monitored`,
             ].join('\n')
-          : 'No config yet. Set via REST API POST /api/snipe/config',
+          : 'No config yet. Configure via web dashboard → Sniper.',
         '',
         'Commands: /snipe_on  /snipe_off  /snipe_status',
       ];
-      return ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+      return ctx.reply(lines.join('\n'), {
+        parse_mode: 'HTML',
+        reply_markup: config
+          ? new InlineKeyboard()
+              .text(config.enabled ? '🔴 Disable' : '🟢 Enable', config.enabled ? 'snipe:off' : 'snipe:on')
+              .url('⚙️ Configure', `${WEB_URL}/settings`)
+          : new InlineKeyboard().url('⚙️ Configure', `${WEB_URL}/settings`),
+      });
     });
 
+    /* ── 16. /snipe_on ──────────────────────────────────────────────────────── */
     bot.command('snipe_on', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
       try {
         const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
-        if (!config) return ctx.reply('No snipe config found. Configure at /api/snipe/config first.');
+        if (!config) {
+          return ctx.reply(
+            '❌ No snipe config found.\n\nConfigure at the web dashboard first: ' + WEB_URL + '/settings',
+          );
+        }
         await this.prisma.snipeConfig.update({ where: { userId }, data: { enabled: true } });
-        return ctx.reply('✅ Sniper enabled. Add this bot to your groups with privacy mode OFF in BotFather.');
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+        return ctx.reply('✅ <b>Sniper enabled.</b>\n\nAdd this bot to your groups with privacy mode OFF in BotFather.', { parse_mode: 'HTML' });
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
+    /* ── 17. /snipe_off ─────────────────────────────────────────────────────── */
     bot.command('snipe_off', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
       try {
         await this.prisma.snipeConfig.updateMany({ where: { userId }, data: { enabled: false } });
         this.snipeGroup?.stopUserSession(userId);
-        return ctx.reply('🔴 Sniper disabled.');
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+        return ctx.reply('🔴 <b>Sniper disabled.</b>', { parse_mode: 'HTML' });
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
+    /* ── /snipe_status ──────────────────────────────────────────────────────── */
     bot.command('snipe_status', async (ctx) => {
       const userId = await this.resolveUserId(ctx.chat.id);
       if (!userId) return ctx.reply(NOT_LINKED_TEXT);
       const status = this.snipeGroup ? this.snipeGroup.getUserSessionStatus(userId) : { active: false };
       const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
-      return ctx.reply([
-        `Session: ${status.active ? `🟢 Active` : '🔴 Inactive'}`,
-        `Sniper: ${config?.enabled ? '🟢 Enabled' : '🔴 Disabled'}`,
-        `Groups: ${config?.groupIds?.join(', ') || 'none'}`,
-      ].join('\n'));
+      return ctx.reply(
+        [
+          '⚡ <b>Sniper Status</b>',
+          '',
+          `Session: ${status.active ? '🟢 Active' : '🔴 Inactive'}`,
+          `Sniper: ${config?.enabled ? '🟢 Enabled' : '🔴 Disabled'}`,
+          `Groups: ${config?.groupIds?.join(', ') || 'none'}`,
+        ].join('\n'),
+        { parse_mode: 'HTML' },
+      );
     });
 
-    /* ── Inline callbacks ──────────────────────────────────────────────────── */
+    /* ════════════════════════════════════════════════════════════════════════
+       RICKBOT-STYLE INFORMATIONAL COMMANDS
+       ════════════════════════════════════════════════════════════════════════ */
+
+    /* ── 🔍 /z — Quick compact scan ────────────────────────────────────────── */
+    bot.command('z', async (ctx) => {
+      const addr = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr) return ctx.reply('Usage: /z <token_address>  — quick token scan');
+      const chain = detectChain(addr);
+      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const msg = await ctx.reply('⚡ <i>Quick scan…</i>', { parse_mode: 'HTML' });
+      try {
+        const data = await this.fetchDexPair(addr);
+        if (!data) {
+          return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ No DEX data found for that address.');
+        }
+        const ch24 = data.priceChange?.h24 ?? 0;
+        const ch1h = data.priceChange?.h1 ?? 0;
+        const dexLink = `https://dexscreener.com/${data.chainId}/${addr}`;
+        const bmChain = chain === 'SOLANA' ? 'sol' : 'eth';
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [
+            `⚡ <b>$${esc(data.baseToken?.symbol ?? '?')}</b>  ·  <code>${addr.slice(0, 8)}…${addr.slice(-6)}</code>`,
+            '',
+            `Price: <b>${fmtPriceUsd(data.priceUsd ?? 0)}</b>`,
+            `1h: <b>${ch1h >= 0 ? '+' : ''}${ch1h.toFixed(2)}%</b>  ·  24h: <b>${ch24 >= 0 ? '+' : ''}${ch24.toFixed(2)}%</b>`,
+            `Vol 24h: <b>${fmtUsd(data.volume?.h24 ?? 0)}</b>  ·  MCap: <b>${fmtUsd(data.fdv ?? 0)}</b>`,
+            `Liq: <b>${fmtUsd(data.liquidity?.usd ?? 0)}</b>  ·  Age: <b>${tokenAge(data.pairCreatedAt)}</b>`,
+          ].join('\n'),
+          {
+            parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
+            reply_markup: new InlineKeyboard()
+              .url('📊 Chart', dexLink)
+              .url('🫧 Bubblemap', `https://app.bubblemaps.io/${bmChain}/token/${addr}`)
+              .row()
+              .text('🔍 Full Scan', `rescan:${addr}`),
+          },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🔍 /pf — PumpFun scan ──────────────────────────────────────────────── */
+    bot.command('pf', async (ctx) => {
+      const addr = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr) return ctx.reply('Usage: /pf <solana_token_address>');
+      if (!detectChain(addr) || detectChain(addr) !== 'SOLANA') {
+        return ctx.reply('❌ PumpFun is Solana-only. Provide a Solana base58 address.');
+      }
+      const pfLink  = `https://pump.fun/${addr}`;
+      const dexLink = `https://dexscreener.com/solana/${addr}`;
+      await ctx.reply(
+        `🟣 <b>PumpFun</b>  ·  <code>${addr.slice(0, 8)}…${addr.slice(-6)}</code>\n\nRunning full scan… ↓`,
+        {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+          reply_markup: new InlineKeyboard()
+            .url('🟣 PumpFun', pfLink)
+            .url('📊 DexScreener', dexLink)
+            .row()
+            .url('🫧 Bubblemap', `https://app.bubblemaps.io/sol/token/${addr}`),
+        },
+      );
+      return this.runScan(ctx, addr);
+    });
+
+    /* ── 🔍 /ds — DexScreener pair search ──────────────────────────────────── */
+    bot.command('ds', async (ctx) => {
+      const query = ctx.match?.trim();
+      if (!query) return ctx.reply('Usage: /ds <token_name_or_symbol>\nExample: /ds BONK');
+      const msg = await ctx.reply('🔍 <i>Searching DEX pairs…</i>', { parse_mode: 'HTML' });
+      try {
+        const pairs = await this.fetchDexSearch(query);
+        if (!pairs.length) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ No pairs found for "${esc(query)}".`);
+        const lines = [`🔍 <b>DEX Search:</b> ${esc(query)}`, ''];
+        for (let i = 0; i < Math.min(pairs.length, 6); i++) {
+          const p = pairs[i];
+          const ch24 = p.priceChange?.h24 ?? 0;
+          const dex  = `https://dexscreener.com/${p.chainId}/${p.pairAddress}`;
+          const addr = p.baseToken?.address ?? '';
+          lines.push(`${i + 1}. <b>$${esc(p.baseToken?.symbol ?? '?')}</b>/<b>${esc(p.quoteToken?.symbol ?? '?')}</b>  <code>${p.chainId}</code>`);
+          lines.push(`   ${fmtPriceUsd(p.priceUsd ?? 0)}  ${ch24 >= 0 ? '📈' : '📉'} <b>${ch24.toFixed(1)}%</b>  Vol ${fmtUsd(p.volume?.h24 ?? 0)}  <a href="${dex}">📊</a>`);
+          if (addr) lines.push(`   <code>${addr.slice(0, 10)}…</code>`);
+          lines.push('');
+        }
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🔍 /pfs — PumpFun search ───────────────────────────────────────────── */
+    bot.command('pfs', async (ctx) => {
+      const query = ctx.match?.trim();
+      if (!query) return ctx.reply('Usage: /pfs <token_name>\nExample: /pfs pepe');
+      const msg = await ctx.reply('🔍 <i>Searching PumpFun…</i>', { parse_mode: 'HTML' });
+      try {
+        const pairs = await this.fetchDexSearch(query);
+        const pumpPairs = pairs.filter(p => p.chainId === 'solana').slice(0, 5);
+        if (!pumpPairs.length) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ No Solana tokens found for "${esc(query)}".`);
+        const lines = [`🟣 <b>PumpFun Search:</b> ${esc(query)}`, ''];
+        for (let i = 0; i < pumpPairs.length; i++) {
+          const p    = pumpPairs[i];
+          const addr = p.baseToken?.address ?? '';
+          const ch24 = p.priceChange?.h24 ?? 0;
+          lines.push(`${i + 1}. <b>$${esc(p.baseToken?.symbol ?? '?')}</b>  ${fmtPriceUsd(p.priceUsd ?? 0)}  ${ch24 >= 0 ? '📈' : '📉'} ${ch24.toFixed(1)}%`);
+          lines.push(`   Vol ${fmtUsd(p.volume?.h24 ?? 0)}  ·  <code>${addr.slice(0, 8)}…</code>  <a href="https://pump.fun/${addr}">🟣</a>  <a href="https://dexscreener.com/solana/${addr}">📊</a>`);
+          lines.push('');
+        }
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🔍 /dp — DexPaid check ─────────────────────────────────────────────── */
+    bot.command('dp', async (ctx) => {
+      const addr = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr) return ctx.reply('Usage: /dp <token_address>');
+      const msg = await ctx.reply('💰 <i>Checking DexPaid…</i>', { parse_mode: 'HTML' });
+      try {
+        const result = await this.checkDexPaid(addr);
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [
+            `💰 <b>DexPaid Check</b>`,
+            `<code>${addr.slice(0, 12)}…${addr.slice(-6)}</code>`,
+            '',
+            result.paid
+              ? `✅ <b>DEX Paid</b>  ·  ${result.details ?? 'Active DexScreener boost'}`
+              : `❌ <b>Not Paid</b>  ·  No active promotion found`,
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🔍 /a — CoinGecko lookup ───────────────────────────────────────────── */
+    bot.command('a', async (ctx) => {
+      const query = ctx.match?.trim();
+      if (!query) return ctx.reply('Usage: /a <coin_id_or_name>\nExample: /a bitcoin');
+      const msg = await ctx.reply('🦎 <i>Looking up CoinGecko…</i>', { parse_mode: 'HTML' });
+      try {
+        const coin = await this.fetchCgCoin(query);
+        if (!coin) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Coin not found: "${esc(query)}"`);
+        const ch24 = coin.price_change_percentage_24h ?? 0;
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [
+            `🦎 <b>${esc(coin.name)}</b>  <code>$${esc((coin.symbol ?? '').toUpperCase())}</code>  Rank <b>#${coin.market_cap_rank ?? '?'}</b>`,
+            '',
+            `Price: <b>$${fmtNum(coin.current_price ?? 0)}</b>  ${ch24 >= 0 ? '📈' : '📉'} <b>${ch24 >= 0 ? '+' : ''}${ch24.toFixed(2)}%</b> 24h`,
+            `MCap: <b>${fmtUsd(coin.market_cap ?? 0)}</b>  ·  Vol 24h: <b>${fmtUsd(coin.total_volume ?? 0)}</b>`,
+            `ATH: <b>$${fmtNum(coin.ath ?? 0)}</b>  (<b>${(coin.ath_change_percentage ?? 0).toFixed(0)}%</b> from ATH)`,
+          ].join('\n'),
+          {
+            parse_mode: 'HTML',
+            reply_markup: new InlineKeyboard().url('🦎 CoinGecko', `https://www.coingecko.com/en/coins/${coin.id}`),
+          },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🔍 /soc — Find socials ─────────────────────────────────────────────── */
+    bot.command('soc', async (ctx) => {
+      const addr = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr) return ctx.reply('Usage: /soc <contract_address>');
+      const msg = await ctx.reply('🔍 <i>Finding socials…</i>', { parse_mode: 'HTML' });
+      try {
+        const data = await this.fetchDexPair(addr);
+        if (!data) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ Token not found on DexScreener.');
+        const socials = this.formatSocials(data);
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [`🔗 <b>Socials</b>  ·  <b>$${esc(data.baseToken?.symbol ?? '?')}</b>`, '', socials || '<i>No socials found.</i>'].join('\n'),
+          { parse_mode: 'HTML', link_preview_options: { is_disabled: true } },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🔍 /bsoc — Base chain socials ─────────────────────────────────────── */
+    bot.command('bsoc', async (ctx) => {
+      const addr = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr) return ctx.reply('Usage: /bsoc <base_contract_address>  (0x… format)');
+      if (!addr.startsWith('0x')) return ctx.reply('❌ Base chain uses 0x addresses.');
+      const msg = await ctx.reply('🔵 <i>Finding Base socials…</i>', { parse_mode: 'HTML' });
+      try {
+        const data = await this.fetchDexPair(addr);
+        if (!data) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ Token not found on DexScreener.');
+        const socials = this.formatSocials(data);
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [`🔵 <b>Base Socials</b>  ·  <b>$${esc(data.baseToken?.symbol ?? '?')}</b>  <code>${data.chainId}</code>`, '', socials || '<i>No socials found.</i>'].join('\n'),
+          { parse_mode: 'HTML', link_preview_options: { is_disabled: true } },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 📊 /c — Candlestick chart + info ──────────────────────────────────── */
+    bot.command('c', async (ctx) => {
+      const parts = (ctx.match?.trim() ?? '').split(/\s+/);
+      const addr  = parts[0];
+      const tf    = parts[1] ?? '15m';
+      if (!addr) return ctx.reply('Usage: /c <token_address> [5m|15m|1h|4h|1d]\nExample: /c HfMb...F5p 1h');
+      const chain = detectChain(addr);
+      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const msg = await ctx.reply('📊 <i>Generating chart…</i>', { parse_mode: 'HTML' });
+      try {
+        const [data, candles] = await Promise.allSettled([
+          this.fetchDexPair(addr),
+          (async () => {
+            const pair = await this.fetchDexPair(addr);
+            if (!pair?.pairAddress) throw new Error('no pair');
+            const net = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+            return fetchOhlcv(net, pair.pairAddress, tf);
+          })(),
+        ]);
+        const pairData = data.status === 'fulfilled' ? data.value : null;
+        const ohlcv    = candles.status === 'fulfilled' ? candles.value : [];
+        const sym      = pairData?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
+        const caption  = pairData ? buildChartCaption(pairData, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
+        const kb       = new InlineKeyboard()
+          .text('5m', `chart:${addr}:5m`).text('15m', `chart:${addr}:15m`).text('1h', `chart:${addr}:1h`).text('4h', `chart:${addr}:4h`).text('1d', `chart:${addr}:1d`);
+
+        await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+
+        if (ohlcv.length >= 2) {
+          const img = await generateCandleChart(ohlcv, sym, tf);
+          await ctx.replyWithPhoto(new InputFile(img, 'chart.png'), {
+            caption,
+            parse_mode: 'HTML',
+            reply_markup: kb,
+          });
+        } else {
+          await ctx.reply(caption, {
+            parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
+            reply_markup: kb,
+          });
+        }
+      } catch (e: any) {
+        await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await ctx.reply(`❌ ${e.message?.slice(0, 100)}`);
+      }
+    });
+
+    /* ── 📊 /cc — Chart only ────────────────────────────────────────────────── */
+    bot.command('cc', async (ctx) => {
+      const addr  = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr)  return ctx.reply('Usage: /cc <token_address>');
+      const chain = detectChain(addr);
+      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const url   = `https://dexscreener.com/${chain === 'SOLANA' ? 'solana' : 'ethereum'}/${addr}`;
+      return ctx.reply(
+        `📊 <code>${addr.slice(0, 8)}…${addr.slice(-6)}</code>`,
+        { parse_mode: 'HTML', reply_markup: new InlineKeyboard().url('📊 Open Chart', url).text('+ Info', `rescan:${addr}`) },
+      );
+    });
+
+    /* ── 📊 /cx — Chart minimal ─────────────────────────────────────────────── */
+    bot.command('cx', async (ctx) => {
+      const addr  = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr)  return ctx.reply('Usage: /cx <token_address>');
+      const chain = detectChain(addr);
+      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const url   = `https://dexscreener.com/${chain === 'SOLANA' ? 'solana' : 'ethereum'}/${addr}`;
+      return ctx.reply(`<a href="${url}">📊</a> <code>${addr.slice(0, 8)}…${addr.slice(-6)}</code>`, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
+    });
+
+    /* ── 📊 /hm — Heatmap ───────────────────────────────────────────────────── */
+    bot.command('hm', async (ctx) => {
+      return ctx.reply('🌡️ <b>Market Heatmap</b>', {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard()
+          .url('🌡️ Coinglass Liq Map', 'https://www.coinglass.com/pro/futures/LiquidationHeatMap')
+          .row()
+          .url('🔥 CMC Heatmap', 'https://coinmarketcap.com/charts/')
+          .url('🦎 CoinGecko', 'https://www.coingecko.com/en/global-charts'),
+      });
+    });
+
+    /* ── 📊 /bm — Bubblemap ─────────────────────────────────────────────────── */
+    bot.command('bm', async (ctx) => {
+      const addr  = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr)  return ctx.reply('Usage: /bm <token_address>');
+      const chain = detectChain(addr);
+      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const slug  = chain === 'SOLANA' ? 'sol' : 'eth';
+      const url   = `https://app.bubblemaps.io/${slug}/token/${addr}`;
+      return ctx.reply(
+        `🫧 <b>Bubblemap</b>  ·  <code>${addr.slice(0, 8)}…${addr.slice(-6)}</code>`,
+        { parse_mode: 'HTML', reply_markup: new InlineKeyboard().url('🫧 Open Bubblemap', url) },
+      );
+    });
+
+    /* ── 📈 /macro — Market snapshot ────────────────────────────────────────── */
+    bot.command('macro', async (ctx) => {
+      const msg = await ctx.reply('📈 <i>Fetching market data…</i>', { parse_mode: 'HTML' });
+      try {
+        const [global, fng] = await Promise.all([this.fetchCgGlobal(), this.fetchFearGreed()]);
+        const btcDom = (global.market_cap_percentage?.btc ?? 0).toFixed(1);
+        const ethDom = (global.market_cap_percentage?.eth ?? 0).toFixed(1);
+        const totalMcap = global.total_market_cap?.usd ?? 0;
+        const vol24h    = global.total_volume?.usd ?? 0;
+        const ch24      = global.market_cap_change_percentage_24h_usd ?? 0;
+        const fngVal    = fng?.value ?? '?';
+        const fngClass  = fng?.value_classification ?? '?';
+        const fngIcon   = Number(fngVal) >= 60 ? '😀' : Number(fngVal) >= 40 ? '😐' : '😨';
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [
+            '📈 <b>Crypto Market Snapshot</b>',
+            '',
+            `Total MCap: <b>${fmtUsd(totalMcap)}</b>  ${ch24 >= 0 ? '📈' : '📉'} <b>${ch24 >= 0 ? '+' : ''}${ch24.toFixed(2)}%</b> 24h`,
+            `Vol 24h:    <b>${fmtUsd(vol24h)}</b>`,
+            '',
+            `BTC Dom: <b>${btcDom}%</b>  ·  ETH Dom: <b>${ethDom}%</b>`,
+            '',
+            `${fngIcon} Fear &amp; Greed: <b>${fngVal}</b> — <i>${esc(fngClass)}</i>`,
+          ].join('\n'),
+          {
+            parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
+            reply_markup: new InlineKeyboard()
+              .url('📊 Global Chart', 'https://www.coingecko.com/en/global-charts')
+              .url('😨 Fear &amp; Greed', 'https://alternative.me/crypto/fear-and-greed-index/'),
+          },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 📈 /index — Top coins ──────────────────────────────────────────────── */
+    bot.command('index', async (ctx) => {
+      const page = parseInt(ctx.match?.trim() || '1') || 1;
+      const msg  = await ctx.reply('📋 <i>Fetching top coins…</i>', { parse_mode: 'HTML' });
+      try {
+        const coins  = await this.fetchCgMarkets(page);
+        const offset = (page - 1) * 10;
+        const lines  = [`📋 <b>Top Coins</b>  ·  Page ${page}`, ''];
+        for (let i = 0; i < coins.length; i++) {
+          const c   = coins[i];
+          const ch  = c.price_change_percentage_24h ?? 0;
+          const ico = ch >= 5 ? '🚀' : ch >= 0 ? '📈' : ch >= -5 ? '📉' : '🔴';
+          lines.push(`${offset + i + 1}. ${ico} <b>${esc(c.name)}</b>  $${fmtNum(c.current_price ?? 0)}  <b>${ch >= 0 ? '+' : ''}${ch.toFixed(1)}%</b>`);
+        }
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard()
+            .text('◀️', `index:${Math.max(1, page - 1)}`)
+            .text(`· ${page} ·`, 'noop')
+            .text('▶️', `index:${page + 1}`),
+        });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 📈 /gas — ETH gas ──────────────────────────────────────────────────── */
+    bot.command('gas', async (ctx) => {
+      const msg = await ctx.reply('⛽ <i>Fetching gas prices…</i>', { parse_mode: 'HTML' });
+      try {
+        const gas = await this.fetchEthGas();
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [
+            '⛽ <b>ETH Gas Prices</b>',
+            '',
+            `🐢 Slow:     <b>${gas.slow} gwei</b>`,
+            `🚗 Standard: <b>${gas.standard} gwei</b>`,
+            `⚡ Fast:     <b>${gas.fast} gwei</b>`,
+            `🚀 Instant:  <b>${gas.instant} gwei</b>`,
+          ].join('\n'),
+          { parse_mode: 'HTML', reply_markup: new InlineKeyboard().url('⛽ Etherscan Gas', 'https://etherscan.io/gastracker') },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 📈 /vol — Volume stats ─────────────────────────────────────────────── */
+    bot.command('vol', async (ctx) => {
+      const msg = await ctx.reply('📊 <i>Fetching volume…</i>', { parse_mode: 'HTML' });
+      try {
+        const [global, coins] = await Promise.all([this.fetchCgGlobal(), this.fetchCgMarkets(1)]);
+        const vol24h  = global.total_volume?.usd ?? 0;
+        const sorted  = [...coins].sort((a, b) => (b.total_volume ?? 0) - (a.total_volume ?? 0)).slice(0, 5);
+        const lines   = ['📊 <b>Volume Stats</b>', '', `Total 24h: <b>${fmtUsd(vol24h)}</b>`, '', '<b>Top by 24h Volume:</b>'];
+        for (const c of sorted) lines.push(`• <b>${esc(c.name)}</b>  ${fmtUsd(c.total_volume ?? 0)}`);
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), { parse_mode: 'HTML' });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 📈 /dt — DEX trending ──────────────────────────────────────────────── */
+    bot.command('dt', async (ctx) => {
+      const msg = await ctx.reply('🔥 <i>Fetching DEX trending…</i>', { parse_mode: 'HTML' });
+      try {
+        const items = await this.fetchDexTrending();
+        if (!items.length) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ No trending data right now.');
+        const lines = ['🔥 <b>DEX Trending</b>  ·  Top Boosted', ''];
+        for (let i = 0; i < Math.min(items.length, 10); i++) {
+          const t  = items[i];
+          const ch = t.chainId ?? '?';
+          const addr = t.tokenAddress ?? '';
+          const dexLink = addr ? `https://dexscreener.com/${ch}/${addr}` : (t.url ?? '#');
+          lines.push(`${i + 1}. <b>${esc(t.description ?? addr.slice(0, 8) ?? '?')}</b>  <code>${ch}</code>  <a href="${dexLink}">📊</a>`);
+          if (addr) lines.push(`   <code>${addr.slice(0, 10)}…</code>`);
+          lines.push('');
+        }
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 📈 /pft — PumpFun trending ─────────────────────────────────────────── */
+    bot.command('pft', async (ctx) => {
+      const svc  = this.getHotTokens();
+      if (!svc)  return ctx.reply('❌ Scanner unavailable.');
+      const scan = svc.getLatest('meme_hunter');
+      if (!scan?.tokens.length) return ctx.reply('📡 <b>Scanner warming up</b> — retry in ~60s.', { parse_mode: 'HTML' });
+      const tokens = scan.tokens.slice(0, 8);
+      const lines  = ['🟣 <b>PumpFun Trending</b>', ''];
+      for (let i = 0; i < tokens.length; i++) {
+        const t   = tokens[i];
+        const ch  = `${t.priceChange1h >= 0 ? '+' : ''}${t.priceChange1h.toFixed(1)}%`;
+        const pf  = `https://pump.fun/${t.address}`;
+        const dex = t.dexUrl ?? `https://dexscreener.com/solana/${t.address}`;
+        lines.push(`${i + 1}. <b>$${esc(t.symbol)}</b>  ${fmtPriceUsd(t.priceUsd)}  <b>${ch} 1h</b>`);
+        lines.push(`   <code>${t.address.slice(0, 8)}…</code>  <a href="${pf}">🟣</a>  <a href="${dex}">📊</a>`);
+        lines.push('');
+      }
+      return ctx.reply(lines.join('\n'), {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        reply_markup: new InlineKeyboard().text('🔄 Refresh', 'action:hot').url('🌐 QWAI', WEB_URL),
+      });
+    });
+
+    /* ── 👥 /h — Top holders ────────────────────────────────────────────────── */
+    bot.command('h', async (ctx) => {
+      const addr  = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr)  return ctx.reply('Usage: /h <token_address>');
+      const chain = detectChain(addr);
+      if (!chain) return ctx.reply('❌ Invalid address format.');
+      if (chain !== 'SOLANA') {
+        return ctx.reply('👥 <b>Top Holders</b>\n\nEVM holder data on Etherscan:', {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard()
+            .url('👥 Etherscan Holders', `https://etherscan.io/token/${addr}#balances`)
+            .url('🫧 Bubblemap', `https://app.bubblemaps.io/eth/token/${addr}`),
+        });
+      }
+      const msg = await ctx.reply('👥 <i>Fetching top holders…</i>', { parse_mode: 'HTML' });
+      try {
+        const holders = await this.fetchSolanaTopHolders(addr);
+        if (!holders.length) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ No holder data found.');
+        const total = holders.reduce((s: number, h: any) => s + (h.uiAmount ?? 0), 0);
+        const lines = [`👥 <b>Top Holders</b>  ·  <code>${addr.slice(0, 8)}…</code>`, ''];
+        for (let i = 0; i < Math.min(holders.length, 10); i++) {
+          const h   = holders[i];
+          const pct = total > 0 ? ((h.uiAmount / total) * 100).toFixed(2) : '?';
+          lines.push(`${i + 1}. <code>${(h.address ?? '?').slice(0, 6)}…</code>  <b>${pct}%</b>  (${fmtNum(h.uiAmount)})`);
+        }
+        lines.push('');
+        lines.push(`<a href="https://solscan.io/token/${addr}#holders">📋 Full list</a>  ·  <a href="https://app.bubblemaps.io/sol/token/${addr}">🫧 Bubblemap</a>`);
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 👥 /w — Wallet scan ────────────────────────────────────────────────── */
+    bot.command('w', async (ctx) => {
+      const addr   = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr)   return ctx.reply('Usage: /w <wallet_address>');
+      const isSol  = addr.length >= 32 && addr.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(addr);
+      const isEvm  = /^0x[a-fA-F0-9]{40}$/i.test(addr);
+      if (!isSol && !isEvm) return ctx.reply('❌ Invalid wallet address format.');
+      const short  = `${addr.slice(0, 8)}…${addr.slice(-6)}`;
+      if (isSol) {
+        return ctx.reply(`👛 <b>Solana Wallet</b>  ·  <code>${short}</code>`, {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard()
+            .url('🔍 Solscan', `https://solscan.io/account/${addr}`)
+            .url('📊 SolanaTracker', `https://solanatracker.io/wallet/${addr}`)
+            .row()
+            .url('🫧 Bubblemap', `https://app.bubblemaps.io/sol/address/${addr}`),
+        });
+      }
+      return ctx.reply(`👛 <b>EVM Wallet</b>  ·  <code>${short}</code>`, {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard()
+          .url('🔍 Etherscan', `https://etherscan.io/address/${addr}`)
+          .url('💼 DeBank', `https://debank.com/profile/${addr}`),
+      });
+    });
+
+    /* ── 🤖 /ask — Explicit AI question ────────────────────────────────────── */
+    bot.command('ask', async (ctx) => {
+      const question = ctx.match?.trim();
+      if (!question) return ctx.reply('Usage: /ask <question>\nExample: /ask What is a bonding curve?');
+      return this.runChat(ctx, question);
+    });
+
+    /* ── 🤖 /tldr — Summarize URL ───────────────────────────────────────────── */
+    bot.command('tldr', async (ctx) => {
+      const url = ctx.match?.trim();
+      if (!url || !url.startsWith('http')) return ctx.reply('Usage: /tldr <url>\nExample: /tldr https://example.com/article');
+      const msg = await ctx.reply('⏳ <i>Reading and summarizing…</i>', { parse_mode: 'HTML' });
+      try {
+        const content = await this.fetchUrlText(url);
+        if (!content) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ Could not read that URL.');
+        const summary = await this.llm.chat([
+          { role: 'system', content: 'Summarize in 4-5 tight bullet points using Telegram HTML (<b>,<i>). No markdown. Max 400 chars. Lead with the key insight.' },
+          { role: 'user',   content: `Summarize:\n\n${content.slice(0, 8000)}` },
+        ], 400);
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          `📄 <b>Summary</b>\n<i>${esc(url.slice(0, 60))}</i>\n\n${summary}`,
+          { parse_mode: 'HTML', link_preview_options: { is_disabled: true } },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🤖 /lore — Token lore / backstory ─────────────────────────────────── */
+    bot.command('lore', async (ctx) => {
+      const input = ctx.match?.trim();
+      if (!input) return ctx.reply('Usage: /lore <token_address_or_name>\nExample: /lore BONK');
+      const msg   = await ctx.reply('📖 <i>Generating lore…</i>', { parse_mode: 'HTML' });
+      try {
+        let context = `Token: ${input}`;
+        if (detectChain(input)) {
+          const data = await this.fetchDexPair(input).catch(() => null);
+          if (data) context = `Token: $${data.baseToken?.symbol} (${data.baseToken?.name})\nAddress: ${input}\nPrice: ${fmtPriceUsd(data.priceUsd ?? 0)}\nMCap: ${fmtUsd(data.fdv ?? 0)}`;
+        }
+        const lore = await this.llm.chat([
+          { role: 'system', content: 'Write a short 3-4 sentence crypto origin story for this token in a mythological/meme style. Use Telegram HTML: <b>,<i>. No markdown. Max 350 chars.' },
+          { role: 'user',   content: context },
+        ], 350);
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📖 <b>Lore</b>\n\n${lore}`, { parse_mode: 'HTML' });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🤖 /aica — AI contract audit ───────────────────────────────────────── */
+    bot.command('aica', async (ctx) => {
+      const addr  = ctx.match?.trim().split(/\s+/)[0];
+      if (!addr)  return ctx.reply('Usage: /aica <contract_address>');
+      const chain = detectChain(addr);
+      if (!chain) return ctx.reply('❌ Invalid contract address format.');
+      return this.runScan(ctx, addr);
+    });
+
+    /* ── 🏆 /rank — User rank & XP ─────────────────────────────────────────── */
+    bot.command('rank', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      try {
+        const [scans, trades, alerts] = await Promise.all([
+          this.prisma.intelSnapshot.count({ where: { userId } }),
+          this.prisma.trade.count({ where: { userId } }),
+          this.prisma.alertEvent.count({ where: { userId } }),
+        ]);
+        const xp   = scans * 10 + trades * 50 + alerts * 5;
+        const rank = xp >= 5000 ? '💎 Diamond' : xp >= 2000 ? '🥇 Gold' : xp >= 500 ? '🥈 Silver' : '🥉 Bronze';
+        return ctx.reply(
+          [
+            `🏆 <b>Your Rank</b>`,
+            '',
+            `${rank}  ·  <b>${xp} XP</b>`,
+            '',
+            `Scans:  <b>${scans}</b>  (+${scans * 10} XP)`,
+            `Trades: <b>${trades}</b>  (+${trades * 50} XP)`,
+            `Alerts: <b>${alerts}</b>  (+${alerts * 5} XP)`,
+            '',
+            '<i>Scan more tokens and trade to level up.</i>',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
+    });
+
+    /* ── 🏆 /gp — Leaderboard ───────────────────────────────────────────────── */
+    bot.command('gp', async (ctx) => {
+      const msg = await ctx.reply('🏆 <i>Loading leaderboard…</i>', { parse_mode: 'HTML' });
+      try {
+        const top = await this.prisma.trade.groupBy({
+          by: ['userId'],
+          _count: { id: true },
+          _sum:   { pnlUsd: true },
+          orderBy: { _count: { id: 'desc' } },
+          take: 10,
+        });
+        const lines = ['🏆 <b>Leaderboard</b>  ·  Most Trades', ''];
+        if (!top.length) { lines.push('<i>No traders yet.</i>'); }
+        for (let i = 0; i < top.length; i++) {
+          const t    = top[i];
+          const pnl  = t._sum.pnlUsd ?? 0;
+          const pStr = pnl !== 0 ? `  P&L <b>${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)}</b>` : '';
+          const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+          lines.push(`${medal} <code>${t.userId.slice(0, 8)}…</code>  <b>${t._count.id} trades</b>${pStr}`);
+        }
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), { parse_mode: 'HTML' });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🏆 /ga — ATH leaderboard ───────────────────────────────────────────── */
+    bot.command('ga', async (ctx) => {
+      const msg = await ctx.reply('🏆 <i>Loading ATH board…</i>', { parse_mode: 'HTML' });
+      try {
+        const best = await this.prisma.trade.findMany({
+          where:   { pnlUsd: { gt: 0 } },
+          orderBy: { pnlUsd: 'desc' },
+          take:    10,
+          select:  { userId: true, tokenOut: true, pnlUsd: true, createdAt: true },
+        });
+        const lines = ['🏆 <b>ATH Board</b>  ·  Best Trades Ever', ''];
+        if (!best.length) { lines.push('<i>No winning trades yet.</i>'); }
+        for (let i = 0; i < best.length; i++) {
+          const t     = best[i];
+          const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+          lines.push(`${medal} <b>${esc(t.tokenOut)}</b>  +$${(t.pnlUsd ?? 0).toFixed(0)}  <i>${timeAgo(t.createdAt)}</i>`);
+        }
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, lines.join('\n'), { parse_mode: 'HTML' });
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+      }
+    });
+
+    /* ── 🛠 /bridge — Bridge links ──────────────────────────────────────────── */
+    bot.command('bridge', async (ctx) => {
+      return ctx.reply('🌉 <b>Cross-Chain Bridges</b>', {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard()
+          .url('🌉 deBridge',  'https://app.debridge.finance/')
+          .url('🔗 Stargate',  'https://stargate.finance/')
+          .row()
+          .url('⚡ Wormhole',  'https://portalbridge.com/')
+          .url('🌀 Relay',     'https://relay.link/')
+          .row()
+          .url('🔵 Base Bridge','https://bridge.base.org/')
+          .url('🟡 Hop',       'https://app.hop.exchange/'),
+      });
+    });
+
+    /* ── 🛠 /tz — World timezones ───────────────────────────────────────────── */
+    bot.command('tz', async (ctx) => {
+      const now = new Date();
+      const fmt = (tz: string) => now.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      return ctx.reply(
+        [
+          '🕐 <b>World Clocks</b>  ·  ' + now.toUTCString().slice(0, 16),
+          '',
+          `🌐 UTC:           <b>${fmt('UTC')}</b>`,
+          `🗽 New York:      <b>${fmt('America/New_York')}</b>`,
+          `🏰 London:        <b>${fmt('Europe/London')}</b>`,
+          `🏛 Frankfurt:     <b>${fmt('Europe/Berlin')}</b>`,
+          `🏙 Dubai:         <b>${fmt('Asia/Dubai')}</b>`,
+          `🇸🇬 Singapore:    <b>${fmt('Asia/Singapore')}</b>`,
+          `🗼 Tokyo:         <b>${fmt('Asia/Tokyo')}</b>`,
+          `🌁 San Francisco: <b>${fmt('America/Los_Angeles')}</b>`,
+        ].join('\n'),
+        { parse_mode: 'HTML' },
+      );
+    });
+
+    /* ── 🛠 /epoch — Convert epoch timestamp ────────────────────────────────── */
+    bot.command('epoch', async (ctx) => {
+      const raw = ctx.match?.trim();
+      if (!raw) {
+        const now = Math.floor(Date.now() / 1000);
+        return ctx.reply(`🕒 Current epoch: <code>${now}</code>\n\nUsage: /epoch &lt;timestamp&gt;`, { parse_mode: 'HTML' });
+      }
+      const ts   = parseInt(raw);
+      if (isNaN(ts)) return ctx.reply('❌ Invalid timestamp. Provide a Unix epoch number.');
+      const date = new Date(ts > 1e12 ? ts : ts * 1000);
+      if (isNaN(date.getTime())) return ctx.reply('❌ Invalid timestamp.');
+      return ctx.reply(
+        `🕒 <b>Epoch → Date</b>\n\nInput: <code>${ts}</code>\nUTC:   <b>${date.toUTCString()}</b>\nISO:   <code>${date.toISOString()}</code>`,
+        { parse_mode: 'HTML' },
+      );
+    });
+
+    /* ── 🛠 /remindme — Set reminder ────────────────────────────────────────── */
+    bot.command('remindme', async (ctx) => {
+      const args = ctx.match?.trim();
+      if (!args) {
+        return ctx.reply(
+          [
+            '⏰ <b>Reminder Usage:</b>',
+            '<code>/remindme &lt;time&gt; &lt;message&gt;</code>',
+            '',
+            'Examples:',
+            '<code>/remindme 15m check BONK price</code>',
+            '<code>/remindme 1h buy the dip</code>',
+            '<code>/remindme 2d review portfolio</code>',
+            '',
+            'Units: <code>s</code> sec · <code>m</code> min · <code>h</code> hr · <code>d</code> day',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      }
+      const match = args.match(/^(\d+)(s|m|h|d)\s+(.+)$/i);
+      if (!match) return ctx.reply('❌ Format: /remindme <amount><s|m|h|d> <message>\nExample: /remindme 15m check BONK');
+      const [, amount, unit, message] = match;
+      const ms: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+      const delay = parseInt(amount) * (ms[unit.toLowerCase()] ?? 60_000);
+      if (delay > 7 * 86_400_000) return ctx.reply('❌ Max reminder time is 7 days.');
+      if (delay < 5_000)          return ctx.reply('❌ Min reminder time is 5 seconds.');
+      const chatId = ctx.chat.id;
+      const key    = `${chatId}:${Date.now()}`;
+      const timer  = setTimeout(async () => {
+        this.reminders.delete(key);
+        await this._bot?.api.sendMessage(chatId, `⏰ <b>Reminder!</b>\n\n${esc(message)}`, { parse_mode: 'HTML' }).catch(() => {});
+      }, delay);
+      this.reminders.set(key, timer);
+      const humanTime = delay < 3_600_000 ? `${Math.round(delay / 60_000)}m` : delay < 86_400_000 ? `${Math.round(delay / 3_600_000)}h` : `${Math.round(delay / 86_400_000)}d`;
+      return ctx.reply(
+        `✅ <b>Reminder set</b>  ·  <b>${humanTime}</b>\n\n<i>${esc(message)}</i>`,
+        { parse_mode: 'HTML' },
+      );
+    });
+
+    /* ── 🛠 /v — Value calculator ───────────────────────────────────────────── */
+    bot.command('v', async (ctx) => {
+      const parts = (ctx.match?.trim() ?? '').split(/\s+/);
+      const amount = parseFloat(parts[0]);
+      const token  = parts.slice(1).join(' ');
+      if (!token || isNaN(amount)) {
+        return ctx.reply(
+          '💰 <b>Value Calc:</b>\n<code>/v &lt;amount&gt; &lt;token_address_or_symbol&gt;</code>\n\nExamples:\n<code>/v 1000 HfMb...F5p</code>\n<code>/v 0.5 SOL</code>',
+          { parse_mode: 'HTML' },
+        );
+      }
+      const msg = await ctx.reply('💰 <i>Calculating…</i>', { parse_mode: 'HTML' });
+      try {
+        let priceUsd = 0;
+        let symbol   = token.toUpperCase();
+        if (detectChain(token)) {
+          const data = await this.fetchDexPair(token);
+          if (!data) throw new Error('Token not found on DexScreener');
+          priceUsd = data.priceUsd ?? 0;
+          symbol   = `$${data.baseToken?.symbol ?? token}`;
+        } else {
+          const cgId = CG_COMMON_IDS[token.toLowerCase()];
+          if (!cgId) throw new Error(`Unknown token "${token}". Use a contract address for precision.`);
+          const res  = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd`, { signal: AbortSignal.timeout(5_000) });
+          const data = await res.json() as any;
+          priceUsd   = data[cgId]?.usd ?? 0;
+          symbol     = `$${token.toUpperCase()}`;
+        }
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+          [
+            '💰 <b>Value Calculator</b>',
+            '',
+            `<b>${fmtNum(amount)}</b> ${esc(symbol)}`,
+            `@ <b>${fmtPriceUsd(priceUsd)}</b> each`,
+            '',
+            `= <b>$${fmtNum(amount * priceUsd)}</b>`,
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      } catch (e: any) {
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 150)}`).catch(() => {});
+      }
+    });
+
+    /* ── ⚙️ /settings ───────────────────────────────────────────────────────── */
+    bot.command('settings', async (ctx) => {
+      const userId = await this.resolveUserId(ctx.chat.id);
+      return ctx.reply(
+        [
+          '⚙️ <b>QWAI Bot Settings</b>',
+          '',
+          '🔗 Account: ' + (userId ? '✅ Linked' : '❌ Not linked — use /login'),
+          '',
+          '<b>Quick commands:</b>',
+          '/paper — toggle paper/live mode',
+          '/kill  — emergency stop all agents',
+          '/dca   — manage DCA orders',
+          '/snipe — sniper bot config',
+          '/alerts — view recent alerts',
+          '',
+          '<b>Full settings in the dashboard:</b>',
+        ].join('\n'),
+        {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard()
+            .url('⚙️ Open Settings', `${WEB_URL}/settings`)
+            .url('📊 Dashboard', WEB_URL),
+        },
+      );
+    });
+
+    /* ── 📊 Chart timeframe button callbacks ────────────────────────────────── */
+    bot.callbackQuery(/^chart:(.+):(\w+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery('Loading…');
+      const [, addr, tf] = ctx.match;
+      const chain = detectChain(addr);
+      if (!chain) return;
+      try {
+        const pair    = await this.fetchDexPair(addr);
+        const sym     = pair?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
+        const caption = pair ? buildChartCaption(pair, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
+        const kb      = new InlineKeyboard()
+          .text('5m', `chart:${addr}:5m`).text('15m', `chart:${addr}:15m`).text('1h', `chart:${addr}:1h`).text('4h', `chart:${addr}:4h`).text('1d', `chart:${addr}:1d`);
+
+        if (pair?.pairAddress) {
+          const net   = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
+          const ohlcv = await fetchOhlcv(net, pair.pairAddress, tf).catch(() => []);
+          if (ohlcv.length >= 2) {
+            const img = await generateCandleChart(ohlcv, sym, tf);
+            await ctx.editMessageMedia({ type: 'photo', media: new InputFile(img, 'chart.png'), caption, parse_mode: 'HTML' }, { reply_markup: kb });
+            return;
+          }
+        }
+        // Fallback: edit text (if message was a text message)
+        await ctx.editMessageText(caption, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: kb }).catch(() => {});
+      } catch { /* */ }
+    });
+
+    /* ── 📋 /index pagination callbacks ─────────────────────────────────────── */
+    bot.callbackQuery(/^index:(\d+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const page   = parseInt(ctx.match[1]) || 1;
+      const offset = (page - 1) * 10;
+      try {
+        const coins = await this.fetchCgMarkets(page);
+        const lines = [`📋 <b>Top Coins</b>  ·  Page ${page}`, ''];
+        for (let i = 0; i < coins.length; i++) {
+          const c  = coins[i];
+          const ch = c.price_change_percentage_24h ?? 0;
+          const ic = ch >= 5 ? '🚀' : ch >= 0 ? '📈' : ch >= -5 ? '📉' : '🔴';
+          lines.push(`${offset + i + 1}. ${ic} <b>${esc(c.name)}</b>  $${fmtNum(c.current_price ?? 0)}  <b>${ch >= 0 ? '+' : ''}${ch.toFixed(1)}%</b>`);
+        }
+        await ctx.editMessageText(lines.join('\n'), {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard()
+            .text('◀️', `index:${Math.max(1, page - 1)}`).text(`· ${page} ·`, 'noop').text('▶️', `index:${page + 1}`),
+        });
+      } catch { /* */ }
+    });
+
+    bot.callbackQuery('noop', async (ctx) => ctx.answerCallbackQuery());
+
+    /* ── Inline callbacks ───────────────────────────────────────────────────── */
     bot.callbackQuery(/^action:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const action = ctx.match[1];
@@ -420,25 +1545,67 @@ export class TelegramBot {
           );
         }
         case 'hot': return this.runHotTokens(ctx);
-        case 'portfolio': return ctx.reply(await this.chat(chatId, 'Portfolio summary'), {
-          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
-        });
-        case 'alerts': return ctx.reply(await this.chat(chatId, 'Show my recent alerts'), {
-          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
-        });
-        case 'kill':      return ctx.reply('Use /kill to engage the kill switch.');
-        case 'paper':     return ctx.reply('Toggle paper mode in the web Settings page.');
-        default:          return ctx.reply(`Unknown action: ${action}`);
+        case 'portfolio': {
+          const uid = await this.resolveUserId(chatId);
+          if (!uid) return ctx.reply(NOT_LINKED_TEXT);
+          return this.replyPortfolio(ctx, uid);
+        }
+        case 'alerts': {
+          const uid = await this.resolveUserId(chatId);
+          if (!uid) return ctx.reply(NOT_LINKED_TEXT);
+          return this.replyAlerts(ctx, uid);
+        }
+        case 'kill':  return ctx.reply('Use /kill to engage the emergency stop.');
+        case 'paper': return ctx.reply('Use /paper to toggle paper trading mode.');
+        default:      return ctx.reply(`Unknown action: ${action}`);
       }
+    });
+
+    /* snipe on/off inline buttons from /snipe card */
+    bot.callbackQuery(/^snipe:(on|off)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const userId = await this.resolveUserId(ctx.chat!.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      const enable = ctx.match[1] === 'on';
+      try {
+        if (enable) {
+          const config = await this.prisma.snipeConfig.findUnique({ where: { userId } });
+          if (!config) return ctx.reply('❌ Configure sniper at the dashboard first: ' + WEB_URL + '/settings');
+          await this.prisma.snipeConfig.update({ where: { userId }, data: { enabled: true } });
+          return ctx.reply('✅ Sniper enabled.', { parse_mode: 'HTML' });
+        } else {
+          await this.prisma.snipeConfig.updateMany({ where: { userId }, data: { enabled: false } });
+          this.snipeGroup?.stopUserSession(userId);
+          return ctx.reply('🔴 Sniper disabled.', { parse_mode: 'HTML' });
+        }
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^confirm:kill$/, async (ctx) => {
       await ctx.answerCallbackQuery();
+      const userId = await this.resolveUserId(ctx.chat!.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
       try {
-        return ctx.reply(await this.chat(ctx.chat!.id, 'Engage kill switch immediately. Pause all agents.'), {
-          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
+        await this.prisma.guardrailConfig.upsert({
+          where: { userId },
+          update: { killSwitch: true },
+          create: { userId, killSwitch: true, whitelist: [], blacklist: [], maxSlippageBps: 5000 },
         });
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+        const paused = await this.prisma.agent.updateMany({
+          where: { userId, status: AgentStatus.RUNNING },
+          data: { status: AgentStatus.PAUSED },
+        });
+        return ctx.reply(
+          [
+            '🛑 <b>Kill Switch Engaged</b>',
+            '',
+            `All trading halted. <b>${paused.count}</b> agent(s) paused.`,
+            '',
+            '<i>Re-enable from web dashboard → Settings → Guardrails.</i>',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^confirm:cancel$/, async (ctx) => {
@@ -449,11 +1616,20 @@ export class TelegramBot {
     bot.callbackQuery(/^confirm:(buy|sell):(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const [, action, args] = ctx.match;
+      const userId = await this.resolveUserId(ctx.chat!.id);
+      if (!userId) return ctx.reply(NOT_LINKED_TEXT);
+      const loadMsg = await ctx.reply('⏳ <i>Executing trade…</i>', { parse_mode: 'HTML' });
       try {
-        return ctx.reply(await this.chat(ctx.chat!.id, `Confirmed — ${action} ${args}. Execute now.`), {
-          parse_mode: 'HTML', link_preview_options: { is_disabled: true },
+        const reply = await this.agent.chat(userId, `Confirmed — ${action} ${args}. Execute the trade now.`, 'telegram');
+        try { await ctx.api.deleteMessage(ctx.chat!.id, loadMsg.message_id); } catch { /* */ }
+        return ctx.reply(reply ?? '…', {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
         });
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+      } catch (e: any) {
+        try { await ctx.api.deleteMessage(ctx.chat!.id, loadMsg.message_id); } catch { /* */ }
+        return ctx.reply(`❌ Trade failed: ${e.message}`);
+      }
     });
 
     bot.callbackQuery(/^approve:([\w-]+)$/, async (ctx) => {
@@ -464,7 +1640,7 @@ export class TelegramBot {
       try {
         await this.approvals.respond(userId, requestId, true, ApprovalChannel.TELEGRAM);
         return ctx.reply('✅ Approved. Executing.');
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^reject:([\w-]+)$/, async (ctx) => {
@@ -491,7 +1667,7 @@ export class TelegramBot {
           rejectCategory: category as RejectCategory,
         });
         return ctx.reply(`❌ Rejected (${category.toLowerCase().replace('_', ' ')}).`);
-      } catch (e: any) { return ctx.reply(`Error: ${e.message}`); }
+      } catch (e: any) { return ctx.reply(`❌ Error: ${e.message}`); }
     });
 
     bot.callbackQuery(/^snooze:(\d+)$/, async (ctx) => {
@@ -499,13 +1675,13 @@ export class TelegramBot {
       return ctx.reply('🔕 Alert snoozed.');
     });
 
-    /* ── Rescan callback (inline button on scan results) ───────────────────── */
+    /* ── Rescan callback (inline button on scan results) ────────────────────── */
     bot.callbackQuery(/^rescan:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery('Rescanning…');
       return this.runScan(ctx, ctx.match[1], true);
     });
 
-    /* ── Channel posts → sniper hot path ───────────────────────────────────── */
+    /* ── Channel posts → sniper hot path ────────────────────────────────────── */
     bot.on('channel_post:text', async (ctx) => {
       if (!this.snipeGroup) return;
       const groupId = String(ctx.chat.id);
@@ -513,7 +1689,7 @@ export class TelegramBot {
         .catch(e => this.logger.error(`snipeGroup channel_post: ${e.message}`));
     });
 
-    /* ── Catch-all message handler ─────────────────────────────────────────── */
+    /* ── Catch-all message handler ──────────────────────────────────────────── */
     bot.on('message:text', async (ctx) => {
       const chatType = ctx.chat.type;
       const text = (ctx.message.text ?? '').trim();
@@ -526,13 +1702,30 @@ export class TelegramBot {
         return;
       }
 
-      // Skip explicit commands (handled above)
-      if (text.startsWith('/')) return;
+      // Unknown command — suggest closest matches
+      if (text.startsWith('/')) {
+        const typed = text.slice(1).split(/[\s@]/)[0].toLowerCase();
+        const hits   = findSimilarCommands(typed);
+        if (hits.length) {
+          return ctx.reply(
+            [
+              `❓ Unknown command: <code>/${esc(typed)}</code>`,
+              '',
+              'Did you mean:',
+              ...hits.map(c => `• <code>/${c.command}</code> — ${c.description}`),
+              '',
+              '<i>Type /start for the full command list.</i>',
+            ].join('\n'),
+            { parse_mode: 'HTML' },
+          );
+        }
+        return ctx.reply(
+          `❓ Unknown command: <code>/${esc(typed)}</code>\n\nType /start to see all available commands.`,
+          { parse_mode: 'HTML' },
+        );
+      }
 
       // Private chat: auto-detect CA → scan.
-      // First try the whole text as an address (paste-only case), then fall back
-      // to extracting an address embedded in natural language like
-      //   "tell me about HfMb...F5p" / "what's HfMb...F5p" / "scan 0x123..."
       if (detectChain(text)) return this.runScan(ctx, text);
       const embedded = extractAddress(text);
       if (embedded) return this.runScan(ctx, embedded);
@@ -545,6 +1738,109 @@ export class TelegramBot {
       // Everything else → AI with loading indicator
       return this.runChat(ctx, text);
     });
+  }
+
+  /* ── Portfolio reply (shared by /portfolio command + action:portfolio button) */
+  private async replyPortfolio(ctx: any, userId: string): Promise<void> {
+    try {
+      const [wallets, trades, user] = await Promise.all([
+        this.prisma.wallet.findMany({
+          where: { userId },
+          select: { chain: true, address: true, label: true, isPrimary: true },
+        }),
+        this.prisma.trade.findMany({
+          where: { userId, mode: TradeMode.LIVE },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: { side: true, tokenIn: true, tokenOut: true, priceUsd: true, pnlUsd: true, createdAt: true },
+        }),
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { paperMode: true },
+        }),
+      ]);
+
+      const totalPnl = trades.reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
+      const lines: string[] = ['📊 <b>Portfolio</b>', ''];
+
+      if (wallets.length === 0) {
+        lines.push('<i>No wallets yet.</i>');
+        lines.push(`<a href="${WEB_URL}/wallets">Create a wallet →</a>`);
+      } else {
+        for (const w of wallets) {
+          const star = w.isPrimary ? '⭐' : '·';
+          const addr = `${w.address.slice(0, 6)}…${w.address.slice(-4)}`;
+          const label = w.label ? `  <i>${esc(w.label)}</i>` : '';
+          lines.push(`${star} <b>${w.chain}</b>  <code>${addr}</code>${label}`);
+        }
+      }
+
+      lines.push('');
+      lines.push(`Mode: ${user?.paperMode ? '📄 <b>Paper</b>' : '🔴 <b>Live</b>'}`);
+
+      if (trades.length > 0) {
+        lines.push('');
+        lines.push('<b>Recent Trades</b>');
+        for (const t of trades) {
+          const sideIcon = t.side === 'buy' ? '🟢' : '🔴';
+          const pnlStr = t.pnlUsd != null
+            ? `  P&L <b>${t.pnlUsd >= 0 ? '+' : ''}$${t.pnlUsd.toFixed(2)}</b>`
+            : '';
+          lines.push(`${sideIcon} ${t.side.toUpperCase()} <b>${esc(t.tokenOut)}</b>  $${(t.priceUsd ?? 0).toFixed(2)}${pnlStr}  <i>${timeAgo(t.createdAt)}</i>`);
+        }
+        lines.push('');
+        const pnlIcon = totalPnl >= 0 ? '📈' : '📉';
+        lines.push(`${pnlIcon} Total P&L: <b>${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}</b>`);
+      } else {
+        lines.push('');
+        lines.push('<i>No live trades yet. Use /buy to make your first trade.</i>');
+      }
+
+      await ctx.reply(lines.join('\n'), {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        reply_markup: new InlineKeyboard()
+          .url('🌐 Full Dashboard', `${WEB_URL}/wallets`)
+          .text('🔄 Refresh', 'action:portfolio'),
+      });
+    } catch (e: any) {
+      await ctx.reply(`❌ Error loading portfolio: ${e.message}`);
+    }
+  }
+
+  /* ── Alerts reply (shared by /alerts command + action:alerts button) ──────── */
+  private async replyAlerts(ctx: any, userId: string): Promise<void> {
+    const SEV_ICON: Record<string, string> = {
+      CRITICAL: '🚨', HIGH: '🔴', MEDIUM: '🟡', LOW: '🟢', INFO: 'ℹ️',
+    };
+    try {
+      const events = await this.prisma.alertEvent.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      });
+
+      if (events.length === 0) {
+        return ctx.reply('🔔 <b>Alerts</b>\n\n<i>No alerts yet. They appear here when your agents trigger signals or guardrails fire.</i>', { parse_mode: 'HTML' });
+      }
+
+      const lines = ['🔔 <b>Recent Alerts</b>', ''];
+      for (const e of events) {
+        const icon = SEV_ICON[e.severity] ?? 'ℹ️';
+        const payload = e.payload as any;
+        const msg = payload?.message ?? payload?.reason ?? payload?.token ?? '';
+        const read = e.readAt ? '' : ' <b>·</b>';
+        lines.push(`${icon}${read} <b>${esc(e.kind)}</b>  <i>${timeAgo(e.createdAt)}</i>`);
+        if (msg) lines.push(`   ${esc(String(msg).slice(0, 120))}`);
+      }
+
+      return ctx.reply(lines.join('\n'), {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
+    } catch (e: any) {
+      return ctx.reply(`❌ Error loading alerts: ${e.message}`);
+    }
   }
 
   /* ── Hot-tokens direct formatter (no LLM) ───────────────────────────────── */
@@ -612,13 +1908,9 @@ export class TelegramBot {
       const vol     = fmtUsd(t.volume24hUsd);
       const dexLink = t.dexUrl ?? `https://dexscreener.com/solana/${t.address}`;
 
-      // Line 1: rank · verdict · name · price · 1h change
       lines.push(`${i + 1}. ${icon} <b>$${esc(t.symbol)}</b>  ·  ${esc(price)}  ·  <b>${ch1h} 1h</b>${ch5m}`);
-      // Line 2: full CA (tap to copy) + DexScreener chart link
       lines.push(`   <code>${t.address}</code>  <a href="${dexLink}">📊</a>`);
-      // Line 3: heuristic score + market stats
       lines.push(`   Score <b>${t.score}</b>  ·  MCap ${mcap}  ·  Vol ${vol}`);
-      // Line 4 (optional): AI verdict overlay when pipeline has already analyzed this token
       const sig = pipeline?.getResult(t.address);
       if (sig && sig.score >= 62) {
         const t1 = sig.t1Pct != null   ? ` · T1 <b>+${sig.t1Pct.toFixed(0)}%</b>`       : '';
@@ -639,8 +1931,6 @@ export class TelegramBot {
         .url('🌐 QWAI', WEB_URL),
     };
 
-    // Callback query (button tap) → edit the existing message in-place.
-    // Falls back to a new reply if the edit fails (too old, content identical, etc.).
     if (ctx.callbackQuery) {
       try { return await ctx.editMessageText(lines.join('\n'), msgOpts); } catch { /* fall through */ }
     }
@@ -649,13 +1939,9 @@ export class TelegramBot {
 
   /* ── General chat with loading indicator ────────────────────────────────── */
   private async runChat(ctx: any, text: string): Promise<void> {
-    // Send thinking placeholder immediately
     let msgId: number | undefined;
     try {
-      const m = await ctx.reply(
-        '⏳ <i>Thinking…</i>',
-        { parse_mode: 'HTML' },
-      );
+      const m = await ctx.reply('⏳ <i>Thinking…</i>', { parse_mode: 'HTML' });
       msgId = m.message_id;
     } catch { /* */ }
 
@@ -670,14 +1956,12 @@ export class TelegramBot {
 
     try {
       if (userId) {
-        // Linked user → full agent with all tools
         const reply = await this.agent.chat(userId, text, 'telegram');
         await editOrReply(reply ?? '…', {
           parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
         });
       } else {
-        // Guest → read-only AI
         const reply = await this.guestChat(String(ctx.chat.id), text);
         await editOrReply(reply, {
           parse_mode: 'HTML',
@@ -711,36 +1995,28 @@ export class TelegramBot {
       return;
     }
 
-    // 1. Send placeholder immediately so user gets instant feedback
     let placeholderMsgId: number | undefined;
     try {
       const msg = await ctx.reply(formatPlaceholder(address), { parse_mode: 'HTML' });
       placeholderMsgId = msg.message_id;
-    } catch {
-      // If placeholder fails, we'll send a new message later
-    }
+    } catch { /* */ }
 
     const editOrReply = async (text: string, opts: Record<string, any>) => {
       if (placeholderMsgId) {
         try {
           return await ctx.api.editMessageText(ctx.chat.id, placeholderMsgId, text, opts);
-        } catch {
-          // Fall back to new message if edit fails (e.g. message too old)
-        }
+        } catch { /* */ }
       }
       return ctx.reply(text, opts);
     };
 
     try {
-      // 2. Run full analysis (in-memory + DB cache → instant if warm; pipeline if cold)
-      // Source 'telegram_scan' so IntelSnapshot rows are attributed correctly.
       const report = await svc.analyzeAddress(address, force, 'telegram_scan');
 
       const result = report.kill?.triggered
         ? formatKillReport(report, address, WEB_URL)
         : formatScanReport(report, address, WEB_URL);
 
-      // Add rescan button
       result.keyboard.row().text('🔄 Rescan', `rescan:${address}`);
 
       await editOrReply(result.text, {
@@ -749,7 +2025,6 @@ export class TelegramBot {
         reply_markup: result.keyboard,
       });
 
-      // 3. Background: pre-warm meme_hunter profile so website link loads instantly
       if (!force) {
         svc.analyzeWithProfile(address, 'meme_hunter', 'alpha', false, null, 'telegram_scan')
           .catch(() => {});
@@ -769,21 +2044,151 @@ export class TelegramBot {
       await editOrReply(errText, { parse_mode: 'HTML' }).catch(() => {});
     }
   }
+
+  /* ── API helpers ─────────────────────────────────────────────────────────── */
+
+  private async fetchDexPair(address: string): Promise<any | null> {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
+        headers: { 'User-Agent': 'qwai/1.0' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!res.ok) return null;
+      const body  = await res.json() as any;
+      const pairs: any[] = body?.pairs ?? [];
+      if (!pairs.length) return null;
+      return pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+    } catch { return null; }
+  }
+
+  private async fetchDexSearch(query: string): Promise<any[]> {
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`, {
+      headers: { 'User-Agent': 'qwai/1.0' },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return [];
+    const body = await res.json() as any;
+    return body?.pairs ?? [];
+  }
+
+  private async fetchDexTrending(): Promise<any[]> {
+    try {
+      const res = await fetch('https://api.dexscreener.com/token-boosts/top/v1', {
+        headers: { 'User-Agent': 'qwai/1.0' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!res.ok) return [];
+      const body = await res.json() as any;
+      return Array.isArray(body) ? body : [];
+    } catch { return []; }
+  }
+
+  private async checkDexPaid(address: string): Promise<{ paid: boolean; details?: string }> {
+    try {
+      const res  = await fetch('https://api.dexscreener.com/token-boosts/top/v1', { signal: AbortSignal.timeout(5_000) });
+      if (!res.ok) return { paid: false };
+      const list = await res.json() as any[];
+      const hit  = Array.isArray(list) && list.some((b: any) => b.tokenAddress?.toLowerCase() === address.toLowerCase());
+      return { paid: hit, details: hit ? 'Active DexScreener boost' : undefined };
+    } catch { return { paid: false }; }
+  }
+
+  private async fetchCgGlobal(): Promise<any> {
+    const res = await fetch('https://api.coingecko.com/api/v3/global', { signal: AbortSignal.timeout(5_000) });
+    if (!res.ok) throw new Error('CoinGecko unavailable');
+    const body = await res.json() as any;
+    return body?.data ?? {};
+  }
+
+  private async fetchCgMarkets(page: number): Promise<any[]> {
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=${page}&price_change_percentage=24h`,
+      { signal: AbortSignal.timeout(5_000) },
+    );
+    if (!res.ok) throw new Error('CoinGecko unavailable');
+    return res.json() as Promise<any[]>;
+  }
+
+  private async fetchCgCoin(query: string): Promise<any | null> {
+    const searchRes = await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(5_000) });
+    if (!searchRes.ok) return null;
+    const searchBody = await searchRes.json() as any;
+    const coins: any[] = searchBody?.coins ?? [];
+    if (!coins.length) return null;
+    const id      = coins[0].id;
+    const mktRes  = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${id}&price_change_percentage=24h`, { signal: AbortSignal.timeout(5_000) });
+    if (!mktRes.ok) return { ...coins[0], id };
+    const mkt = await mktRes.json() as any[];
+    return mkt[0] ?? { ...coins[0], id };
+  }
+
+  private async fetchFearGreed(): Promise<{ value: string; value_classification: string } | null> {
+    try {
+      const res  = await fetch('https://api.alternative.me/fng/?limit=1', { signal: AbortSignal.timeout(4_000) });
+      if (!res.ok) return null;
+      const body = await res.json() as any;
+      return body?.data?.[0] ?? null;
+    } catch { return null; }
+  }
+
+  private async fetchEthGas(): Promise<{ slow: number; standard: number; fast: number; instant: number }> {
+    try {
+      const res = await fetch('https://beaconcha.in/api/v1/execution/gasnow', { signal: AbortSignal.timeout(4_000) });
+      if (res.ok) {
+        const body = await res.json() as any;
+        const d    = body?.data;
+        if (d) {
+          const gwei = (v: number) => Math.round(v / 1e9);
+          return { slow: gwei(d.slow ?? d.standard), standard: gwei(d.standard), fast: gwei(d.fast), instant: gwei(d.rapid ?? d.fast) };
+        }
+      }
+    } catch { /* fallthrough */ }
+    const res2 = await fetch('https://ethgas.watch/api/gas', { signal: AbortSignal.timeout(4_000) });
+    if (!res2.ok) throw new Error('Gas API unavailable');
+    const d2 = await res2.json() as any;
+    return { slow: d2.slow?.gwei ?? 0, standard: d2.normal?.gwei ?? 0, fast: d2.fast?.gwei ?? 0, instant: d2.instant?.gwei ?? 0 };
+  }
+
+  private async fetchSolanaTopHolders(mint: string): Promise<Array<{ address: string; uiAmount: number }>> {
+    const rpc = process.env.HELIUS_RPC_URL ?? process.env.SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
+    const res = await fetch(rpc, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTokenLargestAccounts', params: [mint, { commitment: 'confirmed' }] }),
+      signal:  AbortSignal.timeout(6_000),
+    });
+    if (!res.ok) throw new Error('RPC unavailable');
+    const body = await res.json() as any;
+    return (body?.result?.value ?? []).map((h: any) => ({ address: h.address, uiAmount: h.uiAmount ?? 0 }));
+  }
+
+  private async fetchUrlText(url: string): Promise<string | null> {
+    try {
+      const res  = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QWAI/1.0)' }, signal: AbortSignal.timeout(8_000) });
+      if (!res.ok) return null;
+      const text = await res.text();
+      const ct   = res.headers.get('content-type') ?? '';
+      return ct.includes('html') ? text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : text;
+    } catch { return null; }
+  }
+
+  private formatSocials(data: any): string {
+    const info    = data.info ?? {};
+    const parts: string[] = [];
+    for (const w of (info.websites ?? [])) parts.push(`🌐 <a href="${w.url}">${esc(w.label ?? 'Website')}</a>`);
+    for (const s of (info.socials ?? [])) {
+      const label = s.type === 'twitter' ? '🐦 Twitter' : s.type === 'telegram' ? '✈️ Telegram' : `🔗 ${esc(s.type)}`;
+      parts.push(`${label}: <a href="${s.url}">${esc(s.url.replace(/https?:\/\//, '').slice(0, 40))}</a>`);
+    }
+    return parts.join('\n');
+  }
 }
 
 /* ── Module-level helpers ────────────────────────────────────────────────── */
 
-/**
- * Pull a token contract address out of arbitrary natural-language input.
- * Matches Solana base58 (32-44 chars, no 0/O/I/l) and EVM hex (0x + 40 hex).
- * Returns the first valid candidate or null. detectChain re-validates the
- * winner so junk false-positives never reach the scanner.
- */
 function extractAddress(text: string): string | null {
-  // EVM first — distinctive prefix means very low false-positive rate
   const evmMatch = text.match(/0x[a-fA-F0-9]{40}/);
   if (evmMatch && detectChain(evmMatch[0])) return evmMatch[0];
-  // Solana base58 — split on whitespace and any non-base58 char then test each
   const candidates = text.split(/[^1-9A-HJ-NP-Za-km-z]+/);
   for (const c of candidates) {
     if (c.length >= 32 && c.length <= 44 && detectChain(c)) return c;
@@ -801,3 +2206,147 @@ function fmtUsd(v: number): string {
   if (v >= 1_000)         return `$${(v / 1_000).toFixed(0)}K`;
   return `$${v.toFixed(0)}`;
 }
+
+function timeAgo(date: Date): string {
+  const secs = Math.floor((Date.now() - new Date(date).getTime()) / 1000);
+  if (secs < 60)    return 'just now';
+  if (secs < 3600)  return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+function fmtNum(v: number): string {
+  if (!v || isNaN(v)) return '0';
+  if (v >= 1_000_000) return (v / 1_000_000).toFixed(2) + 'M';
+  if (v >= 1_000)     return (v / 1_000).toFixed(2) + 'K';
+  if (v >= 1)         return v.toFixed(4);
+  if (v >= 0.01)      return v.toFixed(6);
+  return v.toPrecision(4);
+}
+
+function tokenAge(createdAt: number | undefined): string {
+  if (!createdAt) return '?';
+  const days = Math.floor((Date.now() - createdAt) / 86_400_000);
+  if (days === 0)  return 'today';
+  if (days < 30)   return `${days}d`;
+  if (days < 365)  return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
+/* ── Bot command registry (shown in Telegram autocomplete menu) ──────────── */
+
+const BOT_COMMANDS: Array<{ command: string; description: string }> = [
+  // Core
+  { command: 'start',      description: 'Welcome message & full command list' },
+  { command: 'login',      description: 'Link your QWAI account (1-tap magic link)' },
+  { command: 'link',       description: 'Link via code: /link <code>' },
+  // Scanning
+  { command: 'scan',       description: 'Full token scan: /scan <address>' },
+  { command: 'z',          description: 'Quick compact scan: /z <address>' },
+  { command: 'pf',         description: 'PumpFun scan: /pf <sol_address>' },
+  { command: 'ds',         description: 'Search DEX pairs: /ds <name>' },
+  { command: 'pfs',        description: 'Search PumpFun tokens: /pfs <name>' },
+  { command: 'dp',         description: 'DexPaid check: /dp <address>' },
+  { command: 'a',          description: 'CoinGecko lookup: /a <coin_name>' },
+  { command: 'soc',        description: 'Find socials: /soc <contract>' },
+  { command: 'bsoc',       description: 'Base chain socials: /bsoc <0x_address>' },
+  // Charts
+  { command: 'c',          description: 'Chart + info: /c <address> [5m|15m|1h|4h|1d]' },
+  { command: 'cc',         description: 'Chart link only: /cc <address>' },
+  { command: 'cx',         description: 'Minimal chart link: /cx <address>' },
+  { command: 'hm',         description: 'Market heatmap links' },
+  { command: 'bm',         description: 'Bubblemap: /bm <address>' },
+  // Market
+  { command: 'macro',      description: 'Market snapshot — MCap, dominance, Fear & Greed' },
+  { command: 'index',      description: 'Top coins by MCap: /index [page]' },
+  { command: 'gas',        description: 'ETH gas prices (slow/standard/fast)' },
+  { command: 'vol',        description: 'Global 24h volume stats' },
+  { command: 'dt',         description: 'DEX trending tokens (DexScreener boosted)' },
+  { command: 'pft',        description: 'PumpFun trending tokens' },
+  { command: 'top',        description: 'Hot tokens right now (AI scored)' },
+  // Holders
+  { command: 'h',          description: 'Top holders: /h <address>' },
+  { command: 'w',          description: 'Wallet scan: /w <wallet_address>' },
+  // AI
+  { command: 'ask',        description: 'Ask AI anything: /ask <question>' },
+  { command: 'tldr',       description: 'Summarize a URL: /tldr <url>' },
+  { command: 'lore',       description: 'Token lore / backstory: /lore <address>' },
+  { command: 'aica',       description: 'AI contract audit: /aica <address>' },
+  // Trading (linked account)
+  { command: 'portfolio',  description: 'Your wallets, trades & P&L' },
+  { command: 'buy',        description: 'Buy tokens: /buy <amount> <SOL|USDC> <address>' },
+  { command: 'sell',       description: 'Sell tokens: /sell <amount> <address>' },
+  { command: 'dca',        description: 'DCA bot: /dca <amount> <address> <interval>' },
+  { command: 'alerts',     description: 'Recent alerts & notifications' },
+  { command: 'kill',       description: 'Emergency stop — pause all agents' },
+  { command: 'paper',      description: 'Toggle paper / live trading mode' },
+  // Sniper
+  { command: 'snipe',      description: 'Sniper bot status & config' },
+  { command: 'snipe_on',   description: 'Enable sniper bot' },
+  { command: 'snipe_off',  description: 'Disable sniper bot' },
+  { command: 'snipe_status', description: 'Sniper session & enabled status' },
+  // Group
+  { command: 'rank',       description: 'Your XP rank (linked account)' },
+  { command: 'gp',         description: 'Leaderboard — most trades' },
+  { command: 'ga',         description: 'ATH board — best trades ever' },
+  // Tools
+  { command: 'bridge',     description: 'Cross-chain bridge links' },
+  { command: 'tz',         description: 'World clock — major timezones' },
+  { command: 'epoch',      description: 'Convert epoch timestamp: /epoch <ts>' },
+  { command: 'remindme',   description: 'Set reminder: /remindme 15m <message>' },
+  { command: 'v',          description: 'Value calc: /v <amount> <token>' },
+  // Settings
+  { command: 'settings',   description: 'Bot settings & dashboard link' },
+];
+
+function findSimilarCommands(typed: string): typeof BOT_COMMANDS {
+  const lower = typed.toLowerCase();
+  // 1. Prefix matches (e.g. "por" → "portfolio")
+  const prefix = BOT_COMMANDS.filter(c => c.command.startsWith(lower));
+  if (prefix.length) return prefix.slice(0, 3);
+  // 2. Substring matches (e.g. "chart" → "c", "cc", "cx")
+  const sub = BOT_COMMANDS.filter(c => c.command.includes(lower) || lower.includes(c.command));
+  if (sub.length) return sub.slice(0, 3);
+  // 3. Levenshtein distance ≤ 2
+  return BOT_COMMANDS
+    .map(c => ({ ...c, d: levenshtein(lower, c.command) }))
+    .filter(c => c.d <= 2)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 3);
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[m][n];
+}
+
+const CG_COMMON_IDS: Record<string, string> = {
+  btc: 'bitcoin',       bitcoin: 'bitcoin',
+  eth: 'ethereum',      ethereum: 'ethereum',
+  sol: 'solana',        solana: 'solana',
+  bnb: 'binancecoin',
+  usdc: 'usd-coin',     usdt: 'tether',
+  xrp: 'ripple',
+  ada: 'cardano',       cardano: 'cardano',
+  avax: 'avalanche-2',  avalanche: 'avalanche-2',
+  dot: 'polkadot',      polkadot: 'polkadot',
+  link: 'chainlink',    chainlink: 'chainlink',
+  matic: 'matic-network', polygon: 'matic-network',
+  uni: 'uniswap',       uniswap: 'uniswap',
+  atom: 'cosmos',       cosmos: 'cosmos',
+  ltc: 'litecoin',      litecoin: 'litecoin',
+  doge: 'dogecoin',     dogecoin: 'dogecoin',
+  shib: 'shiba-inu',
+  pepe: 'pepe',
+  bonk: 'bonk',
+  wif: 'dogwifcoin',
+  jup: 'jupiter-exchange-solana',
+  sui: 'sui',
+  apt: 'aptos',
+  op: 'optimism',       optimism: 'optimism',
+  arb: 'arbitrum',      arbitrum: 'arbitrum',
+};
