@@ -877,54 +877,44 @@ export class TelegramBot {
       try {
         const pairData = await this.fetchDexPair(addr);
         let ohlcv: any[] = [];
-        let chartErr = '';
+        let actualTf = tf;
         let net = '';
         if (pairData?.pairAddress) {
           net = gtNetwork(pairData.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
-          try {
-            ohlcv = await fetchOhlcv(net, pairData.pairAddress, tf);
-          } catch (e: any) {
-            chartErr = e.message ?? 'chart data unavailable';
+          const tryOrder = [tf, ...['5m', '15m', '1h', '4h', '1d'].filter(t => t !== tf)];
+          for (const tryTf of tryOrder) {
+            try {
+              const data = await fetchOhlcv(net, pairData.pairAddress, tryTf);
+              if (data.length >= 2) { ohlcv = data; actualTf = tryTf; break; }
+            } catch { /* try next TF */ }
           }
-        } else {
-          chartErr = 'no trading pair found';
         }
 
-        // Only probe for available TFs when main fetch succeeded (skip if rate-limited)
-        const availableTfs = (pairData?.pairAddress && !chartErr)
-          ? await getAvailableTfs(net, pairData.pairAddress, tf, ohlcv.length)
+        const availableTfs = (pairData?.pairAddress && ohlcv.length >= 2)
+          ? await getAvailableTfs(net, pairData.pairAddress, actualTf, ohlcv.length)
           : null;
 
         const sym     = pairData?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
-        const caption = pairData ? buildChartCaption(pairData, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
+        const caption = pairData ? buildChartCaption(pairData, actualTf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${actualTf}`;
 
-        // Fall back to all TF buttons when probing was skipped (e.g. rate-limited)
         const kb = new InlineKeyboard();
-        const ALL_TFS = ['5m', '15m', '1h', '4h', '1d'];
-        for (const t of ALL_TFS) {
-          if (!availableTfs || availableTfs.includes(t)) kb.text(t === tf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+        for (const t of ['5m', '15m', '1h', '4h', '1d']) {
+          if (!availableTfs || availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
         }
 
         await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
 
         if (ohlcv.length >= 2) {
-          const img = await generateCandleChart(ohlcv, sym, tf);
+          const img = await generateCandleChart(ohlcv, sym, actualTf);
           await ctx.replyWithPhoto(new InputFile(img, 'chart.png'), {
             caption,
             parse_mode: 'HTML',
             reply_markup: kb,
           });
-        } else {
-          const note = chartErr ? `\n\n⚠️ <i>Chart unavailable: ${chartErr}</i>` : '\n\n⚠️ <i>Not enough candle data for chart</i>';
-          await ctx.reply(caption + note, {
-            parse_mode: 'HTML',
-            link_preview_options: { is_disabled: true },
-            reply_markup: pairData ? kb : undefined,
-          });
         }
-      } catch (e: any) {
+        // silently drop when no pair data or no data on any TF
+      } catch {
         await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.reply(`❌ ${e.message?.slice(0, 100)}`);
       }
     });
 
@@ -1503,37 +1493,37 @@ export class TelegramBot {
         const caption = pair ? buildChartCaption(pair, tf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${tf}`;
 
         if (!pair?.pairAddress) {
-          await ctx.editMessageText(caption, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }).catch(() => {});
-          return;
+          return; // silently ignore — no pair found
         }
 
         const net = gtNetwork(pair.chainId ?? (chain === 'SOLANA' ? 'solana' : 'ethereum'));
         let ohlcv: any[] = [];
-        let chartErr = '';
-        try { ohlcv = await fetchOhlcv(net, pair.pairAddress, tf); } catch (e: any) { chartErr = e.message; }
+        let actualTf = tf;
+        const tryOrder = [tf, ...['5m', '15m', '1h', '4h', '1d'].filter(t => t !== tf)];
+        for (const tryTf of tryOrder) {
+          try {
+            const data = await fetchOhlcv(net, pair.pairAddress, tryTf);
+            if (data.length >= 2) { ohlcv = data; actualTf = tryTf; break; }
+          } catch { /* try next TF */ }
+        }
 
-        // Only probe when fetch succeeded; fall back to all TF buttons if rate-limited
-        const availableTfs = !chartErr ? await getAvailableTfs(net, pair.pairAddress, tf, ohlcv.length) : null;
+        const availableTfs = ohlcv.length >= 2 ? await getAvailableTfs(net, pair.pairAddress, actualTf, ohlcv.length) : null;
         const kb = new InlineKeyboard();
         for (const t of ['5m', '15m', '1h', '4h', '1d']) {
-          if (!availableTfs || availableTfs.includes(t)) kb.text(t === tf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
+          if (!availableTfs || availableTfs.includes(t)) kb.text(t === actualTf ? `· ${t} ·` : t, `chart:${addr}:${t}`);
         }
 
         if (ohlcv.length >= 2) {
-          const img = await generateCandleChart(ohlcv, sym, tf);
+          const actualCaption = pair ? buildChartCaption(pair, actualTf) : `📊 <code>${addr.slice(0, 12)}…</code> — ${actualTf}`;
+          const img = await generateCandleChart(ohlcv, sym, actualTf);
           await ctx.editMessageMedia(
-            { type: 'photo', media: new InputFile(img, 'chart.png'), caption, parse_mode: 'HTML' },
+            { type: 'photo', media: new InputFile(img, 'chart.png'), caption: actualCaption, parse_mode: 'HTML' },
             { reply_markup: kb },
           );
           return;
         }
 
-        // No candle data — update the message text/caption with reason
-        const note = chartErr
-          ? `\n\n⚠️ <i>${chartErr.slice(0, 120)}</i>`
-          : `\n\n⚠️ <i>No ${tf} data for this pool yet</i>`;
-        await ctx.editMessageCaption({ caption: caption + note, parse_mode: 'HTML', reply_markup: kb })
-          .catch(() => ctx.editMessageText(caption + note, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: kb }).catch(() => {}));
+        // silently drop — no data on any TF
       } catch { /* */ }
     });
 
