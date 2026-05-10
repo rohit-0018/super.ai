@@ -834,15 +834,23 @@ export class TelegramBot {
       if (!addr) return ctx.reply('Usage: /soc <contract_address>');
       const msg = await ctx.reply('🔍 <i>Finding socials…</i>', { parse_mode: 'HTML' });
       try {
-        const data = await this.fetchDexPair(addr);
-        if (!data) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ Token not found on DexScreener.');
-        const socials = this.formatSocials(data);
+        const result = await this.gatherSocials(addr);
+        if (!result) {
+          return ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+            '❌ Could not find this token on DexScreener, GeckoTerminal, or DexScreener search. Double-check the address.');
+        }
+        const body = this.renderSocials(result.websites, result.socials);
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-          [`🔗 <b>Socials</b>  ·  <b>$${esc(data.baseToken?.symbol ?? '?')}</b>`, '', socials || '<i>No socials found.</i>'].join('\n'),
+          [
+            `🔗 <b>Socials</b>  ·  <b>$${esc(result.symbol ?? '?')}</b>`,
+            `<i>via ${result.sources.join(' + ')}</i>`,
+            '',
+            body || '<i>No socials published by the team on any source.</i>',
+          ].join('\n'),
           { parse_mode: 'HTML', link_preview_options: { is_disabled: true } },
         );
       } catch (e: any) {
-        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 120)}`).catch(() => {});
       }
     });
 
@@ -853,15 +861,23 @@ export class TelegramBot {
       if (!addr.startsWith('0x')) return ctx.reply('❌ Base chain uses 0x addresses.');
       const msg = await ctx.reply('🔵 <i>Finding Base socials…</i>', { parse_mode: 'HTML' });
       try {
-        const data = await this.fetchDexPair(addr);
-        if (!data) return ctx.api.editMessageText(ctx.chat.id, msg.message_id, '❌ Token not found on DexScreener.');
-        const socials = this.formatSocials(data);
+        const result = await this.gatherSocials(addr);
+        if (!result) {
+          return ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+            '❌ Could not find this token on DexScreener, GeckoTerminal, or DexScreener search.');
+        }
+        const body = this.renderSocials(result.websites, result.socials);
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-          [`🔵 <b>Base Socials</b>  ·  <b>$${esc(data.baseToken?.symbol ?? '?')}</b>  <code>${data.chainId}</code>`, '', socials || '<i>No socials found.</i>'].join('\n'),
+          [
+            `🔵 <b>Base Socials</b>  ·  <b>$${esc(result.symbol ?? '?')}</b>  <code>${esc(result.chainId ?? '?')}</code>`,
+            `<i>via ${result.sources.join(' + ')}</i>`,
+            '',
+            body || '<i>No socials published by the team on any source.</i>',
+          ].join('\n'),
           { parse_mode: 'HTML', link_preview_options: { is_disabled: true } },
         );
       } catch (e: any) {
-        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 120)}`).catch(() => {});
       }
     });
 
@@ -875,7 +891,9 @@ export class TelegramBot {
       if (!chain) return ctx.reply('❌ Invalid address format.');
       const msg = await ctx.reply('📊 <i>Generating chart…</i>', { parse_mode: 'HTML' });
       try {
-        const pairData = await this.fetchDexPair(addr);
+        // Suppress fetchDexPair throws here so the search + GeckoTerminal
+        // fallback below still runs; we only need a chart, not the full pair.
+        const pairData = await this.fetchDexPair(addr).catch(() => null);
         let ohlcv: any[] = [];
         let actualTf = tf;
         let net = '';
@@ -1593,7 +1611,8 @@ export class TelegramBot {
       if (!chain) { await ctx.answerCallbackQuery(); return; }
       await ctx.answerCallbackQuery('Loading…');
       try {
-        const pair = await this.fetchDexPair(addr);
+        // Suppress throws so the GeckoTerminal fallback still runs.
+        const pair = await this.fetchDexPair(addr).catch(() => null);
         let sym = pair?.baseToken?.symbol ?? addr.slice(0, 8) + '…';
         let net = '';
         let poolAddr = '';
@@ -2188,17 +2207,38 @@ export class TelegramBot {
   /* ── API helpers ─────────────────────────────────────────────────────────── */
 
   private async fetchDexPair(address: string): Promise<any | null> {
-    try {
-      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
-        headers: { 'User-Agent': 'qwai/1.0' },
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (!res.ok) return null;
-      const body  = await res.json() as any;
-      const pairs: any[] = body?.pairs ?? [];
-      if (!pairs.length) return null;
-      return pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
-    } catch { return null; }
+    // Distinguish "DexScreener said no pairs" (return null) from transient
+    // failures (throw). The /soc, /bsoc, /c, /info handlers' catch blocks
+    // surface the thrown message so users see the real reason instead of a
+    // misleading "Token not found".
+    const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
+    let lastErr: string | null = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': 'qwai/1.0' },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (res.status === 429) {
+          lastErr = 'DexScreener rate-limited (429), try again in a moment';
+        } else if (res.status >= 500) {
+          lastErr = `DexScreener upstream error (${res.status})`;
+        } else if (!res.ok) {
+          throw new Error(`DexScreener returned ${res.status}`);
+        } else {
+          const body = await res.json() as any;
+          const pairs: any[] = Array.isArray(body?.pairs) ? body.pairs : [];
+          if (!pairs.length) return null;
+          return pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+        }
+      } catch (e: any) {
+        lastErr = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+          ? 'DexScreener request timed out'
+          : `DexScreener fetch failed: ${e?.message ?? 'unknown'}`;
+      }
+      if (attempt === 1) await new Promise((r) => setTimeout(r, 400));
+    }
+    throw new Error(lastErr ?? 'DexScreener unreachable');
   }
 
   private async fetchGeckoPool(address: string, chain: string): Promise<{ poolAddress: string; symbol: string; network: string } | null> {
@@ -2343,6 +2383,167 @@ export class TelegramBot {
     for (const s of (info.socials ?? [])) {
       const label = s.type === 'twitter' ? '🐦 Twitter' : s.type === 'telegram' ? '✈️ Telegram' : `🔗 ${esc(s.type)}`;
       parts.push(`${label}: <a href="${s.url}">${esc(s.url.replace(/https?:\/\//, '').slice(0, 40))}</a>`);
+    }
+    return parts.join('\n');
+  }
+
+  /**
+   * Resilient socials fetch. Tries DexScreener tokens, DexScreener search, and
+   * GeckoTerminal token-info in parallel and merges the results — so /soc
+   * succeeds as long as ANY one source has the token, and surfaces socials
+   * even when one provider has the website but the other has the twitter.
+   */
+  private async gatherSocials(address: string): Promise<{
+    symbol: string | null;
+    chainId: string | null;
+    websites: Array<{ url: string; label: string }>;
+    socials: Array<{ type: string; url: string }>;
+    sources: string[];
+  } | null> {
+    const chain = detectChain(address);
+    // GeckoTerminal needs a specific network slug. We don't know which EVM chain
+    // it is from the address alone, so default EVM → ethereum and let the
+    // DexScreener providers cover non-eth EVM chains (base, bsc, arbitrum, …).
+    const gtNetwork = chain === 'SOLANA' ? 'solana' : 'eth';
+
+    const [dexPair, dexSearch, gtInfo] = await Promise.all([
+      this.fetchDexPair(address).catch((e: any) => {
+        this.logger.warn(`gatherSocials dex/tokens failed for ${address}: ${e?.message}`);
+        return null;
+      }),
+      this.fetchDexSearch(address).catch((e: any) => {
+        this.logger.warn(`gatherSocials dex/search failed for ${address}: ${e?.message}`);
+        return [] as any[];
+      }),
+      this.fetchGeckoTokenInfo(address, gtNetwork).catch((e: any) => {
+        this.logger.warn(`gatherSocials gecko/info failed for ${address}: ${e?.message}`);
+        return null;
+      }),
+    ]);
+
+    const websiteMap  = new Map<string, { url: string; label: string }>();
+    const socialMap   = new Map<string, { type: string; url: string }>();
+    const sources: string[] = [];
+    let symbol: string | null = null;
+    let chainId: string | null = null;
+
+    const ingestPair = (p: any, source: string) => {
+      if (!p) return false;
+      let touched = false;
+      const info = p.info ?? {};
+      for (const w of (info.websites ?? [])) {
+        if (!w?.url) continue;
+        const key = w.url.toLowerCase();
+        if (!websiteMap.has(key)) websiteMap.set(key, { url: w.url, label: w.label ?? 'Website' });
+        touched = true;
+      }
+      for (const s of (info.socials ?? [])) {
+        if (!s?.url || !s?.type) continue;
+        const key = `${s.type}:${s.url.toLowerCase()}`;
+        if (!socialMap.has(key)) socialMap.set(key, { type: s.type, url: s.url });
+        touched = true;
+      }
+      symbol  ??= p.baseToken?.symbol ?? null;
+      chainId ??= p.chainId ?? null;
+      if (touched && !sources.includes(source)) sources.push(source);
+      return touched || !!p.baseToken;
+    };
+
+    if (ingestPair(dexPair, 'dexscreener')) { /* counted */ }
+    else if (dexPair) { symbol ??= dexPair.baseToken?.symbol ?? null; chainId ??= dexPair.chainId ?? null; if (!sources.includes('dexscreener')) sources.push('dexscreener'); }
+
+    // DexScreener search returns the same pair shape; merge top hits.
+    const sortedSearch = [...dexSearch].sort((a, b) => (b?.liquidity?.usd ?? 0) - (a?.liquidity?.usd ?? 0));
+    for (const p of sortedSearch.slice(0, 3)) ingestPair(p, 'dexscreener-search');
+
+    if (gtInfo) {
+      const a = gtInfo.attributes ?? {};
+      symbol  ??= a.symbol ?? null;
+      chainId ??= gtNetwork;
+      let touched = false;
+      for (const url of (a.websites ?? [])) {
+        if (!url) continue;
+        const key = url.toLowerCase();
+        if (!websiteMap.has(key)) websiteMap.set(key, { url, label: 'Website' });
+        touched = true;
+      }
+      const pushHandle = (type: string, handle: string | null | undefined, prefix: string) => {
+        if (!handle) return;
+        const url = handle.startsWith('http') ? handle : `${prefix}${handle.replace(/^@/, '')}`;
+        const key = `${type}:${url.toLowerCase()}`;
+        if (!socialMap.has(key)) socialMap.set(key, { type, url });
+        touched = true;
+      };
+      pushHandle('twitter',  a.twitter_handle,  'https://x.com/');
+      pushHandle('telegram', a.telegram_handle, 'https://t.me/');
+      pushHandle('discord',  a.discord_url,     '');
+      pushHandle('farcaster', a.farcaster_url,  '');
+      if (touched && !sources.includes('geckoterminal')) sources.push('geckoterminal');
+    }
+
+    if (!sources.length) return null;
+
+    return {
+      symbol,
+      chainId,
+      websites: [...websiteMap.values()],
+      socials:  [...socialMap.values()],
+      sources,
+    };
+  }
+
+  private async fetchGeckoTokenInfo(address: string, network: string): Promise<any | null> {
+    const headers: Record<string, string> = { Accept: 'application/json', 'User-Agent': 'qwai/1.0' };
+    const gtKey = process.env.GECKO_TERMINAL_API_KEY;
+    if (gtKey) headers['x-cg-demo-api-key'] = gtKey;
+    let lastErr: string | null = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await fetch(
+          `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/info`,
+          { headers, signal: AbortSignal.timeout(8_000) },
+        );
+        if (res.status === 404) return null;
+        if (res.status === 429) { lastErr = 'GeckoTerminal rate-limited (429)'; }
+        else if (res.status >= 500) { lastErr = `GeckoTerminal upstream ${res.status}`; }
+        else if (!res.ok) { lastErr = `GeckoTerminal returned ${res.status}`; }
+        else {
+          const body = await res.json() as any;
+          return body?.data ?? null;
+        }
+      } catch (e: any) {
+        lastErr = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+          ? 'GeckoTerminal request timed out'
+          : `GeckoTerminal fetch failed: ${e?.message ?? 'unknown'}`;
+      }
+      if (attempt === 1) await new Promise((r) => setTimeout(r, 400));
+    }
+    throw new Error(lastErr ?? 'GeckoTerminal unreachable');
+  }
+
+  private renderSocials(
+    websites: Array<{ url: string; label: string }>,
+    socials:  Array<{ type: string; url: string }>,
+  ): string {
+    const parts: string[] = [];
+    for (const w of websites) parts.push(`🌐 <a href="${w.url}">${esc(w.label || 'Website')}</a>`);
+    const iconFor = (t: string) => {
+      const k = t.toLowerCase();
+      if (k === 'twitter' || k === 'x') return '🐦 Twitter';
+      if (k === 'telegram') return '✈️ Telegram';
+      if (k === 'discord')  return '💬 Discord';
+      if (k === 'farcaster') return '🟣 Farcaster';
+      if (k === 'youtube')  return '▶️ YouTube';
+      if (k === 'tiktok')   return '🎵 TikTok';
+      if (k === 'github')   return '💻 GitHub';
+      if (k === 'medium')   return '📝 Medium';
+      if (k === 'reddit')   return '🤖 Reddit';
+      if (k === 'instagram') return '📸 Instagram';
+      return `🔗 ${esc(t)}`;
+    };
+    for (const s of socials) {
+      const display = s.url.replace(/https?:\/\//, '').replace(/\/$/, '').slice(0, 50);
+      parts.push(`${iconFor(s.type)}: <a href="${s.url}">${esc(display)}</a>`);
     }
     return parts.join('\n');
   }
