@@ -1325,14 +1325,15 @@ export class TelegramBot {
 
         // 4 — Twitter/X: engagement-ranked origin + amplifiers (catalyst hunt)
         const twitterSocial = pairData?.info?.socials?.find((s: any) => s.type === 'twitter');
-        const handle = twitterSocial?.url
-          ? (twitterSocial.url.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1] ?? null)
-          : null;
-        const { context: twitterCtx, sources } = await this.gatherLoreFromTwitter({
+        const { handle, tweetId: seedTweetId } = twitterSocial?.url
+          ? parseTwitterUrl(twitterSocial.url)
+          : { handle: null, tweetId: null };
+        const { context: twitterCtx, sources, highlights } = await this.gatherLoreFromTwitter({
           sym,
           name,
           addr: isAddr ? input : null,
           handle,
+          seedTweetId,
           tokenCreatedAt,
           budget,
         });
@@ -1346,24 +1347,64 @@ export class TelegramBot {
           {
             role: 'system',
             content:
-              'You are a sharp crypto cultural analyst writing lore for a token. Use ONLY the data provided — never invent handles, tweets, or facts. ' +
-              'Your job is to identify the CATALYST (who or what triggered this coin) and tell its story. Structure: ' +
-              '(1) State what the token is and what genuinely sparked it — if there is an ORIGIN TWEET, name its @handle explicitly. ' +
-              '(2) Describe the cultural hook or meme. ' +
-              '(3) Name 1-2 key amplifiers driving the narrative (with @handles). ' +
-              '(4) Read the community vibe honestly. ' +
-              'If no clear catalyst exists in the data, say so plainly — call it organic speculation or too-new. ' +
-              '5-7 sentences. Use Telegram HTML <b> for the ticker and key @handles only. No markdown. Max 700 chars.',
+              'You are a sharp crypto cultural analyst writing the NARRATIVE BODY of a token lore card. ' +
+              'A separate header above your text will already display: the origin tweet author, follower count, engagement stats, the quoted tweet, and an amplifier list. ' +
+              'DO NOT restate those numbers, follower counts, or repeat the origin tweet verbatim — the header already shows them. Reference them by @handle only. ' +
+              'Your job: explain the CULTURAL meaning and trajectory. Why does this resonate? What\'s the meme/reference? What\'s the community vibe? ' +
+              'Hard facts (@handles, tweet content, numbers): use ONLY what\'s in the data — never invent. ' +
+              'Cultural context (well-known memes, viral phrases, characters the name evokes): you MAY draw on general knowledge to ground the lore in real history. ' +
+              'If the data shows an ORIGIN TWEET marked [DELETED — reconstructed from reply chain], explicitly say "@<handle>\'s now-deleted tweet" and explain why that catalyst mattered. ' +
+              'If there is NO origin and the name references a well-known meme, tell that meme\'s real backstory (when it emerged, where it spread) and clearly note this is a community meme revival, not celebrity-driven. ' +
+              'If no catalyst and no meme reference: call it pure speculation, no fluff. ' +
+              '3-5 sentences. Use Telegram HTML <b> for key @handles ONLY (sparingly). No markdown. No bullet lists. No re-stating the catalyst quote. Max 500 chars.',
           },
           { role: 'user', content: context },
-        ], 700);
+        ], 500);
 
-        let output = `📖 <b>${esc(sym)} Lore</b>\n\n${lore}`;
-        if (sources.length) {
-          const links = sources.map(s => `<a href="${s.url}">${esc(s.label)}</a>`).join(' · ');
-          output += `\n\n📎 ${links}`;
+        // Build the structured output: header → catalyst block → LLM narrative → amplifiers → sources.
+        const blocks: string[] = [`📖 <b>$${esc(sym)} Lore</b>`];
+
+        if (highlights.origin) {
+          const o = highlights.origin;
+          const verifiedBadge = o.authorVerified ? ' ✓' : '';
+          const deletedTag = o.isReconstructed ? ' · <i>now-deleted</i>' : '';
+          const stats = o.isReconstructed
+            ? `${fmtNum(o.likes)} agg-likes · ${o.replies} reply chains`
+            : `${fmtNum(o.likes)} likes · ${fmtNum(o.retweets)} RTs · ${fmtNum(o.views)} views`;
+          blocks.push(
+            `\n🔥 <b>CATALYST</b>` +
+            `\n<b>@${esc(o.authorHandle)}</b>${verifiedBadge} · ${fmtNum(o.authorFollowers)} followers${deletedTag}` +
+            `\n<i>${stats}</i>`,
+          );
+          if (!o.isReconstructed && o.text) {
+            blocks.push(`<blockquote>${esc(o.text.slice(0, 280))}</blockquote>`);
+          } else if (o.isReconstructed && o.text) {
+            // Reconstructed text already has the "(catalyst tweet appears deleted...)" framing — strip the prefix and quote the inferred phrase.
+            const inferred = o.text.match(/Inferred content: "([^"]+)"/)?.[1];
+            if (inferred) blocks.push(`<blockquote>${esc(inferred.slice(0, 280))}</blockquote>`);
+          }
         }
 
+        blocks.push(`\n${lore}`);
+
+        if (highlights.amplifiers.length) {
+          const amps = highlights.amplifiers.map(a =>
+            `• <b>@${esc(a.authorHandle)}</b> — ${fmtNum(a.authorFollowers)} followers · ${fmtNum(a.likes)} likes`,
+          ).join('\n');
+          blocks.push(`\n📣 <b>Top amplifiers</b>\n${amps}`);
+        }
+
+        if (highlights.projectProfile && !highlights.origin?.authorHandle?.toLowerCase().includes(highlights.projectProfile.handle.toLowerCase())) {
+          const p = highlights.projectProfile;
+          blocks.push(`\n🐦 <b>Project account</b>: <b>@${esc(p.handle)}</b> · ${fmtNum(p.followers)} followers`);
+        }
+
+        if (sources.length) {
+          const links = sources.map(s => `<a href="${s.url}">${esc(s.label)}</a>`).join(' · ');
+          blocks.push(`\n🔗 ${links}`);
+        }
+
+        const output = blocks.join('\n');
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id, output, {
           parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
@@ -2593,6 +2634,29 @@ export class TelegramBot {
   }
 
   /**
+   * Fetches a single tweet by ID via twitterapi.io. Used to honor DexScreener
+   * twitter "socials" that point at a specific /status/<id> URL — those are
+   * provider-curated catalyst tweets and shouldn't be reduced to just a handle.
+   */
+  private async fetchTweetById(id: string): Promise<TweetRich | null> {
+    const key = process.env.TWITTER_API_IO_KEY;
+    if (!key) return null;
+    try {
+      const res = await fetch(
+        `https://api.twitterapi.io/twitter/tweets?tweet_ids=${encodeURIComponent(id)}`,
+        { headers: { 'X-API-Key': key, Accept: 'application/json' }, signal: AbortSignal.timeout(6_000) },
+      );
+      if (!res.ok) return null;
+      const body = await res.json() as any;
+      const t = (body?.tweets ?? body?.data?.tweets ?? [])[0];
+      return t ? normalizeTweet(t) : null;
+    } catch (e: any) {
+      this.logger.warn(`fetchTweetById(${id}) failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Project handle profile + last tweets — what the token's own account says about itself.
    */
   private async fetchTwitterProfile(handle: string): Promise<{ bio: string; followers: number; lastTweets: string[] } | null> {
@@ -2625,6 +2689,71 @@ export class TelegramBot {
   }
 
   /**
+   * Detects when search results cluster around a shared parent tweet (reply target),
+   * then resolves that parent — either by fetching it directly, or by synthesizing
+   * a virtual TweetRich from the parent's profile + aggregated reply engagement when
+   * the parent has been deleted (a frequent pattern for celebrity meme catalysts).
+   *
+   * Returns null when no cluster has ≥2 replies (no clear shared catalyst).
+   */
+  private async reconstructOriginFromReplies(
+    searchTweets: TweetRich[],
+    seedTweetId: string | null,
+  ): Promise<TweetRich | null> {
+    const clusters = new Map<string, { username: string | null; replies: TweetRich[] }>();
+    for (const t of searchTweets) {
+      if (!t.inReplyToId) continue;
+      if (t.inReplyToId === seedTweetId) continue;
+      const c = clusters.get(t.inReplyToId) ?? { username: t.inReplyToUsername, replies: [] };
+      if (!c.username && t.inReplyToUsername) c.username = t.inReplyToUsername;
+      c.replies.push(t);
+      clusters.set(t.inReplyToId, c);
+    }
+
+    // Sort by cluster size (more replies = stronger catalyst signal). Min 2 to count.
+    const ranked = [...clusters.entries()]
+      .filter(([, c]) => c.replies.length >= 2)
+      .sort((a, b) => b[1].replies.length - a[1].replies.length);
+    const best = ranked[0];
+    if (!best) return null;
+
+    const [parentId, { username, replies }] = best;
+
+    // 1. Try to fetch the actual parent. If it exists, use the real thing.
+    const fetched = await this.fetchTweetById(parentId);
+    if (fetched) return fetched;
+
+    // 2. Parent missing → likely deleted. Synthesize a virtual origin.
+    if (!username) return null;
+    const profile = await this.fetchTwitterProfile(username).catch(() => null);
+    const aggLikes   = replies.reduce((s, r) => s + r.likes, 0);
+    const aggReplies = replies.reduce((s, r) => s + r.replies, 0);
+    const aggRTs     = replies.reduce((s, r) => s + r.retweets, 0);
+    const earliestReplyTs = Math.min(...replies.map(r => r.createdAt));
+    // Pull a representative quote from the highest-engagement reply that quotes the catalyst.
+    const topReply = [...replies].sort((a, b) => b.likes - a.likes)[0];
+    const inferredText = topReply?.text?.slice(0, 200) ?? '';
+
+    return {
+      id: parentId,
+      text: `(catalyst tweet appears deleted — reconstructed from ${replies.length} reply chains. Inferred content: "${inferredText}")`,
+      url: `https://x.com/${username}/status/${parentId}`,
+      authorHandle: username,
+      authorFollowers: profile?.followers ?? 0,
+      authorVerified: false,
+      likes: aggLikes,
+      retweets: aggRTs,
+      replies: aggReplies,
+      views: 0,
+      // Place virtual origin just before the earliest reply so the ranker treats it as pre-launch.
+      createdAt: earliestReplyTs - 60_000,
+      inReplyToId: null,
+      inReplyToUsername: null,
+      isReconstructed: true,
+    };
+  }
+
+  /**
    * Engagement-aware Twitter lore gatherer. Searches multiple queries in parallel,
    * ranks results to find the catalyst tweet + amplifiers + community vibe, and
    * returns a formatted LLM context block plus clickable source links.
@@ -2639,31 +2768,65 @@ export class TelegramBot {
     name: string;
     addr: string | null;
     handle: string | null;
+    seedTweetId: string | null;
     tokenCreatedAt: number | null;
     budget: LoreBudget;
-  }): Promise<{ context: string; sources: Array<{ label: string; url: string }> }> {
-    const { sym, name, addr, handle, tokenCreatedAt, budget } = args;
+  }): Promise<{
+    context: string;
+    sources: Array<{ label: string; url: string }>;
+    highlights: {
+      origin: TweetRich | null;
+      amplifiers: TweetRich[];
+      projectProfile: { handle: string; followers: number; bio: string } | null;
+    };
+  }> {
+    const { sym, name, addr, handle, seedTweetId, tokenCreatedAt, budget } = args;
+    // Celebrity / influencer tweets (Elon, Trump, etc.) rarely use the $ prefix —
+    // searching the bare ticker is the only way to catch a catalyst tweet that
+    // simply mentions the meme by name. We run BOTH $SYM and SYM at every tier.
     const queries: Array<{ q: string; type: 'Top' | 'Latest' }> = [
       { q: `$${sym} -is:retweet`, type: 'Top' },
+      { q: `${sym} -is:retweet`,  type: 'Top' },
     ];
-    const genericNames = /^(pepe|doge|cat|inu|moon|shiba|frog|wojak|chad|baby|safe|elon|trump)$/i;
+    const nameDiffersFromSym = name && name.toUpperCase() !== sym && name.length >= 3;
     if (budget !== 'light') {
       if (addr) queries.push({ q: `${addr} -is:retweet`, type: 'Top' });
-      if (name && name.toUpperCase() !== sym && name.length > 4 && !genericNames.test(name)) {
-        queries.push({ q: `"${name}" -is:retweet`, type: 'Top' });
+      if (nameDiffersFromSym) {
+        // Unquoted = AND of words (broader); quoted = exact phrase (sharper).
+        // We run both so we don't miss either flavor of catalyst tweet.
+        queries.push({ q: `${name} -is:retweet`, type: 'Top' });
+        if (/\s/.test(name)) queries.push({ q: `"${name}" -is:retweet`, type: 'Top' });
       }
     }
     if (budget === 'aggressive') {
       queries.push({ q: `$${sym} min_faves:500 -is:retweet`, type: 'Top' });
+      queries.push({ q: `${sym} min_faves:1000 -is:retweet`, type: 'Top' });
       if (handle) queries.push({ q: `from:${handle}`, type: 'Latest' });
     }
 
-    const [profile, ...batches] = await Promise.all([
+    const [profile, seedTweet, ...batches] = await Promise.all([
       handle ? this.fetchTwitterProfile(handle) : Promise.resolve(null),
+      seedTweetId ? this.fetchTweetById(seedTweetId) : Promise.resolve(null),
       ...queries.map(({ q, type }) => this.searchTweetsTop(q, type)),
     ]);
 
-    const allTweets = batches.flat();
+    const flatSearchTweets = batches.flat();
+
+    // Reply-chain catalyst detection: when N≥2 high-signal tweets reply to the
+    // SAME parent, that parent is almost certainly the trigger tweet. Try to
+    // fetch it — if the API returns empty, the catalyst was deleted (very common
+    // for celebrity meme tweets), so we synthesize a "virtual origin" from the
+    // reply cluster and the parent author's profile.
+    const reconstructedOrigin = await this.reconstructOriginFromReplies(
+      flatSearchTweets,
+      seedTweetId,
+    );
+
+    const allTweets: TweetRich[] = [
+      ...(reconstructedOrigin ? [reconstructedOrigin] : []),
+      ...(seedTweet ? [seedTweet] : []),
+      ...flatSearchTweets,
+    ];
     const { origin, amplifiers, community } = rankTweetsForLore(allTweets, tokenCreatedAt);
 
     const lines: string[] = [];
@@ -2677,9 +2840,13 @@ export class TelegramBot {
     }
 
     if (origin) {
+      const reconstructedTag = origin.isReconstructed ? ' [DELETED — reconstructed from reply chain]' : '';
+      const engagementSuffix = origin.isReconstructed
+        ? `aggregated ${fmtNum(origin.likes)} reply-chain likes`
+        : `${fmtNum(origin.likes)} likes, ${fmtNum(origin.retweets)} RTs`;
       lines.push(
-        `\nORIGIN TWEET (${new Date(origin.createdAt).toISOString().slice(0, 10)}, @${origin.authorHandle}, ${fmtNum(origin.authorFollowers)} followers, ${fmtNum(origin.likes)} likes, ${fmtNum(origin.retweets)} RTs):`,
-        `"${origin.text.slice(0, 280)}"`,
+        `\nORIGIN TWEET (${new Date(origin.createdAt).toISOString().slice(0, 10)}, @${origin.authorHandle}, ${fmtNum(origin.authorFollowers)} followers, ${engagementSuffix})${reconstructedTag}:`,
+        `"${origin.text.slice(0, 320)}"`,
       );
     }
     if (amplifiers.length) {
@@ -2697,10 +2864,25 @@ export class TelegramBot {
     }
 
     const sources: Array<{ label: string; url: string }> = [];
-    if (origin) sources.push({ label: `Origin: @${origin.authorHandle}`, url: origin.url });
+    if (origin) {
+      const label = origin.isReconstructed
+        ? `Origin: @${origin.authorHandle} (deleted tweet)`
+        : `Origin: @${origin.authorHandle}`;
+      sources.push({ label, url: origin.url });
+    }
     amplifiers.slice(0, 2).forEach(t => sources.push({ label: `@${t.authorHandle}`, url: t.url }));
 
-    return { context: lines.join('\n'), sources };
+    return {
+      context: lines.join('\n'),
+      sources,
+      highlights: {
+        origin,
+        amplifiers: amplifiers.slice(0, 3),
+        projectProfile: handle && profile
+          ? { handle, followers: profile.followers, bio: profile.bio }
+          : null,
+      },
+    };
   }
 }
 
@@ -2719,9 +2901,27 @@ type TweetRich = {
   replies: number;
   views: number;
   createdAt: number; // ms epoch
+  inReplyToId: string | null;
+  inReplyToUsername: string | null;
+  /** True when this entry was synthesized from a reply-cluster (catalyst was likely deleted). */
+  isReconstructed?: boolean;
 };
 
 type LoreBudget = 'light' | 'balanced' | 'aggressive';
+
+/**
+ * Parse a twitter/x.com URL. Distinguishes profile URLs from tweet permalinks.
+ * Examples:
+ *   https://x.com/elonmusk            → { handle: 'elonmusk', tweetId: null }
+ *   https://x.com/solus1000x/status/2053355503384760779?s=20
+ *                                     → { handle: 'solus1000x', tweetId: '2053355503384760779' }
+ */
+function parseTwitterUrl(url: string): { handle: string | null; tweetId: string | null } {
+  const statusMatch = url.match(/(?:twitter|x)\.com\/([^/?#]+)\/status\/(\d+)/);
+  if (statusMatch) return { handle: statusMatch[1], tweetId: statusMatch[2] };
+  const handleMatch = url.match(/(?:twitter|x)\.com\/([^/?#]+)/);
+  return { handle: handleMatch?.[1] ?? null, tweetId: null };
+}
 
 /** twitterapi.io returns slightly different field names across endpoints — normalize defensively. */
 function normalizeTweet(t: any): TweetRich | null {
@@ -2745,6 +2945,8 @@ function normalizeTweet(t: any): TweetRich | null {
     replies: Number(t.replyCount ?? t.reply_count ?? 0),
     views: Number(t.viewCount ?? t.view_count ?? 0),
     createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+    inReplyToId: t.inReplyToId || t.in_reply_to_status_id || t.in_reply_to_status_id_str || null,
+    inReplyToUsername: t.inReplyToUsername || t.in_reply_to_screen_name || null,
   };
 }
 
@@ -2764,13 +2966,27 @@ function rankTweetsForLore(
 
   const HIGH_ENGAGEMENT = 500;
   const BIG_AUTHOR = 100_000;
-  const launchWindow = tokenCreatedAt ? tokenCreatedAt + 7 * 86_400_000 : null;
+  // Catalyst window: a pre-launch tweet within ~90d is the most likely trigger;
+  // post-launch tweets within ~7d can also be the spark for fast-following coins.
+  const PRELAUNCH_MS  = 90 * 86_400_000;
+  const POSTLAUNCH_MS =  7 * 86_400_000;
 
-  const originPool = unique
+  const inWindow = (t: TweetRich) =>
+    !tokenCreatedAt ||
+    (t.createdAt >= tokenCreatedAt - PRELAUNCH_MS && t.createdAt <= tokenCreatedAt + POSTLAUNCH_MS);
+
+  const highSignal = unique
     .filter(t => t.likes >= HIGH_ENGAGEMENT || t.authorFollowers >= BIG_AUTHOR)
-    .filter(t => !launchWindow || t.createdAt <= launchWindow)
-    .sort((a, b) => a.createdAt - b.createdAt);
-  const origin = originPool[0] ?? null;
+    .filter(inWindow);
+
+  // Prefer pre-launch catalyst (Elon-tweets-first, coin-follows pattern); fall back to post-launch.
+  const preLaunch = tokenCreatedAt
+    ? highSignal.filter(t => t.createdAt <= tokenCreatedAt).sort((a, b) => score(b) - score(a))
+    : [];
+  const postLaunchOrAll = highSignal
+    .filter(t => !tokenCreatedAt || t.createdAt > tokenCreatedAt)
+    .sort((a, b) => score(b) - score(a));
+  const origin = preLaunch[0] ?? postLaunchOrAll[0] ?? null;
 
   const dedupAuthor = new Map<string, TweetRich>();
   for (const t of [...unique].sort((a, b) => score(b) - score(a))) {
