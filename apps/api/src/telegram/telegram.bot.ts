@@ -1263,24 +1263,35 @@ export class TelegramBot {
 
     /* ── 🤖 /lore — Token lore / backstory ─────────────────────────────────── */
     bot.command('lore', async (ctx) => {
-      const input = ctx.match?.trim();
-      if (!input) return ctx.reply('Usage: /lore <token_address_or_name>\nExample: /lore BONK');
+      const tokens = (ctx.match ?? '').trim().split(/\s+/).filter(Boolean);
+      const input = tokens[0];
+      if (!input) return ctx.reply(
+        'Usage: /lore <token_address_or_name> [light|balanced|aggressive]\n' +
+        'Example: /lore BONK\nExample: /lore 7GCi... aggressive (default)',
+      );
+      const budgetArg = tokens[1]?.toLowerCase().replace(/^--/, '');
+      const budget: LoreBudget =
+        budgetArg === 'light' ? 'light' :
+        budgetArg === 'balanced' ? 'balanced' :
+        'aggressive';
+
       const msg = await ctx.reply('📖 <i>Gathering intel…</i>', { parse_mode: 'HTML' });
       try {
         const isAddr = !!detectChain(input);
         const pairData = isAddr ? await this.fetchDexPair(input).catch(() => null) : null;
         const sym  = pairData?.baseToken?.symbol ?? input.toUpperCase();
         const name = pairData?.baseToken?.name   ?? sym;
+        const tokenCreatedAt: number | null = pairData?.pairCreatedAt ?? null;
 
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-          `📖 <i>Researching $${esc(sym)}…</i>`, { parse_mode: 'HTML' }).catch(() => {});
+          `📖 <i>Hunting $${esc(sym)} catalyst on X…</i>`, { parse_mode: 'HTML' }).catch(() => {});
 
         const parts: string[] = [];
 
         // 1 — on-chain basics from DexScreener
         if (pairData) {
-          const age = pairData.pairCreatedAt
-            ? `Created ${Math.round((Date.now() - pairData.pairCreatedAt) / 86_400_000)}d ago`
+          const age = tokenCreatedAt
+            ? `Created ${Math.round((Date.now() - tokenCreatedAt) / 86_400_000)}d ago`
             : '';
           const basics = [
             `TOKEN: $${sym} (${name})`,
@@ -1312,40 +1323,51 @@ export class TelegramBot {
           if (text) parts.push(`\nWEBSITE CONTENT:\n${text.slice(0, 800)}`);
         }
 
-        // 4 — Twitter/X: profile, last tweets, $SYM community mentions
+        // 4 — Twitter/X: engagement-ranked origin + amplifiers (catalyst hunt)
         const twitterSocial = pairData?.info?.socials?.find((s: any) => s.type === 'twitter');
-        if (twitterSocial?.url) {
-          const tUrl: string = twitterSocial.url;
-          const handle = tUrl.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1];
-          if (handle) {
-            const twitterCtx = await this.fetchTwitterContext(handle, sym);
-            if (twitterCtx) parts.push('\n' + twitterCtx);
-          }
-        } else {
-          // No handle in DexScreener — still search community mentions by ticker
-          const twitterCtx = await this.fetchTwitterContext('', sym);
-          if (twitterCtx) parts.push('\n' + twitterCtx);
-        }
+        const handle = twitterSocial?.url
+          ? (twitterSocial.url.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1] ?? null)
+          : null;
+        const { context: twitterCtx, sources } = await this.gatherLoreFromTwitter({
+          sym,
+          name,
+          addr: isAddr ? input : null,
+          handle,
+          tokenCreatedAt,
+          budget,
+        });
+        if (twitterCtx) parts.push('\n' + twitterCtx);
 
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-          `📖 <i>Analysing $${esc(sym)} lore…</i>`, { parse_mode: 'HTML' }).catch(() => {});
+          `📖 <i>Writing $${esc(sym)} lore…</i>`, { parse_mode: 'HTML' }).catch(() => {});
 
         const context = parts.join('\n');
         const lore = await this.llm.chat([
           {
             role: 'system',
             content:
-              'You are a sharp crypto cultural analyst. Based on the REAL data provided, write a concise lore analysis (4-6 sentences). ' +
-              'Cover: what the token actually is, the genuine cultural hook or meme behind it, why it resonates, and the community vibe. ' +
-              'If data is thin, be honest about it. No invented facts. Use Telegram HTML bold (<b>) for key terms only. No markdown. Max 500 chars.',
+              'You are a sharp crypto cultural analyst writing lore for a token. Use ONLY the data provided — never invent handles, tweets, or facts. ' +
+              'Your job is to identify the CATALYST (who or what triggered this coin) and tell its story. Structure: ' +
+              '(1) State what the token is and what genuinely sparked it — if there is an ORIGIN TWEET, name its @handle explicitly. ' +
+              '(2) Describe the cultural hook or meme. ' +
+              '(3) Name 1-2 key amplifiers driving the narrative (with @handles). ' +
+              '(4) Read the community vibe honestly. ' +
+              'If no clear catalyst exists in the data, say so plainly — call it organic speculation or too-new. ' +
+              '5-7 sentences. Use Telegram HTML <b> for the ticker and key @handles only. No markdown. Max 700 chars.',
           },
           { role: 'user', content: context },
-        ], 500);
+        ], 700);
 
-        await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-          `📖 <b>${esc(sym)} Lore</b>\n\n${lore}`,
-          { parse_mode: 'HTML' },
-        );
+        let output = `📖 <b>${esc(sym)} Lore</b>\n\n${lore}`;
+        if (sources.length) {
+          const links = sources.map(s => `<a href="${s.url}">${esc(s.label)}</a>`).join(' · ');
+          output += `\n\n📎 ${links}`;
+        }
+
+        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, output, {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+        });
       } catch (e: any) {
         this.logger.error(`/lore failed: ${e.message}`);
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
@@ -2549,75 +2571,219 @@ export class TelegramBot {
   }
 
   /**
-   * Fetches Twitter context for a token via twitterapi.io:
-   * - Profile bio + follower count
-   * - Last 10 tweets from the account
-   * - Recent $SYM mentions (advanced search)
-   * Returns a formatted text block to feed into the LLM.
+   * Low-level twitterapi.io search. Returns rich Tweet objects with engagement + author metadata.
+   * queryType=Top sorts by engagement (catalyst-hunting); Latest returns reverse-chronological.
    */
-  private async fetchTwitterContext(handle: string, sym: string): Promise<string> {
+  private async searchTweetsTop(query: string, queryType: 'Top' | 'Latest' = 'Top'): Promise<TweetRich[]> {
     const key = process.env.TWITTER_API_IO_KEY;
-    if (!key) return '';
-    const h = { 'X-API-Key': key, Accept: 'application/json' };
-    const parts: string[] = [];
-
-    const extractTweets = (body: any): string[] =>
-      (body?.data?.tweets ?? body?.tweets ?? [])
-        .map((t: any) => (t.text ?? t.full_text ?? '').replace(/https?:\/\/\S+/g, '').trim())
-        .filter((t: string) => t.length > 20);
-
+    if (!key) return [];
     try {
-      if (handle) {
-        // 1. Profile info
-        const profileRes = await fetch(
-          `https://api.twitterapi.io/twitter/user/info?userName=${encodeURIComponent(handle)}`,
-          { headers: h, signal: AbortSignal.timeout(6_000) },
-        );
-        if (profileRes.ok) {
-          const p = (await profileRes.json() as any)?.data;
-          if (p) {
-            parts.push(
-              `TWITTER @${handle} (${(p.followers_count ?? 0).toLocaleString()} followers):`,
-              `Bio: ${(p.description ?? '').slice(0, 200)}`,
-            );
-          }
-        }
-
-        // 2. Last tweets from account
-        const tweetsRes = await fetch(
-          `https://api.twitterapi.io/twitter/user/last_tweets?userName=${encodeURIComponent(handle)}`,
-          { headers: h, signal: AbortSignal.timeout(8_000) },
-        );
-        if (tweetsRes.ok) {
-          const tweets = extractTweets(await tweetsRes.json()).slice(0, 8);
-          if (tweets.length) {
-            parts.push(`\nRECENT TWEETS FROM @${handle}:`);
-            tweets.forEach((t, i) => parts.push(`${i + 1}. ${t.slice(0, 200)}`));
-          }
-        }
-      }
-
-      // 3. Community $SYM mentions
-      const searchRes = await fetch(
-        `https://api.twitterapi.io/twitter/tweet/advanced_search?query=${encodeURIComponent(`$${sym} -is:retweet`)}&queryType=Latest`,
-        { headers: h, signal: AbortSignal.timeout(8_000) },
+      const res = await fetch(
+        `https://api.twitterapi.io/twitter/tweet/advanced_search?query=${encodeURIComponent(query)}&queryType=${queryType}`,
+        { headers: { 'X-API-Key': key, Accept: 'application/json' }, signal: AbortSignal.timeout(8_000) },
       );
-      if (searchRes.ok) {
-        const mentions = extractTweets(await searchRes.json()).slice(0, 6);
-        if (mentions.length) {
-          parts.push(`\nCOMMUNITY TWEETS ABOUT $${sym}:`);
-          mentions.forEach((t, i) => parts.push(`${i + 1}. ${t.slice(0, 200)}`));
-        }
-      }
+      if (!res.ok) return [];
+      const body = await res.json() as any;
+      const raw: any[] = body?.data?.tweets ?? body?.tweets ?? [];
+      return raw.map(normalizeTweet).filter((t): t is TweetRich => t != null);
     } catch (e: any) {
-      this.logger.warn(`fetchTwitterContext failed: ${e.message}`);
+      this.logger.warn(`searchTweetsTop failed (${query}): ${e.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Project handle profile + last tweets — what the token's own account says about itself.
+   */
+  private async fetchTwitterProfile(handle: string): Promise<{ bio: string; followers: number; lastTweets: string[] } | null> {
+    const key = process.env.TWITTER_API_IO_KEY;
+    if (!key || !handle) return null;
+    const h = { 'X-API-Key': key, Accept: 'application/json' };
+    try {
+      const [profileRes, tweetsRes] = await Promise.all([
+        fetch(`https://api.twitterapi.io/twitter/user/info?userName=${encodeURIComponent(handle)}`,
+          { headers: h, signal: AbortSignal.timeout(6_000) }),
+        fetch(`https://api.twitterapi.io/twitter/user/last_tweets?userName=${encodeURIComponent(handle)}`,
+          { headers: h, signal: AbortSignal.timeout(8_000) }),
+      ]);
+      const p = profileRes.ok ? (await profileRes.json() as any)?.data : null;
+      const tweetsBody = tweetsRes.ok ? await tweetsRes.json() as any : null;
+      const lastTweets: string[] = (tweetsBody?.data?.tweets ?? tweetsBody?.tweets ?? [])
+        .map((t: any) => (t.text ?? t.full_text ?? '').replace(/https?:\/\/\S+/g, '').trim())
+        .filter((t: string) => t.length > 20)
+        .slice(0, 8);
+      if (!p && !lastTweets.length) return null;
+      return {
+        bio: (p?.description ?? '').slice(0, 200),
+        followers: Number(p?.followers_count ?? p?.followers ?? 0),
+        lastTweets,
+      };
+    } catch (e: any) {
+      this.logger.warn(`fetchTwitterProfile @${handle} failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Engagement-aware Twitter lore gatherer. Searches multiple queries in parallel,
+   * ranks results to find the catalyst tweet + amplifiers + community vibe, and
+   * returns a formatted LLM context block plus clickable source links.
+   *
+   * Budget tiers (cost ↑ / signal ↑):
+   *   light       → 1 Top search on $SYM
+   *   balanced    → + name + contract-address searches
+   *   aggressive  → + min_faves filter + project-handle profile (default)
+   */
+  private async gatherLoreFromTwitter(args: {
+    sym: string;
+    name: string;
+    addr: string | null;
+    handle: string | null;
+    tokenCreatedAt: number | null;
+    budget: LoreBudget;
+  }): Promise<{ context: string; sources: Array<{ label: string; url: string }> }> {
+    const { sym, name, addr, handle, tokenCreatedAt, budget } = args;
+    const queries: Array<{ q: string; type: 'Top' | 'Latest' }> = [
+      { q: `$${sym} -is:retweet`, type: 'Top' },
+    ];
+    const genericNames = /^(pepe|doge|cat|inu|moon|shiba|frog|wojak|chad|baby|safe|elon|trump)$/i;
+    if (budget !== 'light') {
+      if (addr) queries.push({ q: `${addr} -is:retweet`, type: 'Top' });
+      if (name && name.toUpperCase() !== sym && name.length > 4 && !genericNames.test(name)) {
+        queries.push({ q: `"${name}" -is:retweet`, type: 'Top' });
+      }
+    }
+    if (budget === 'aggressive') {
+      queries.push({ q: `$${sym} min_faves:500 -is:retweet`, type: 'Top' });
+      if (handle) queries.push({ q: `from:${handle}`, type: 'Latest' });
     }
 
-    return parts.join('\n');
+    const [profile, ...batches] = await Promise.all([
+      handle ? this.fetchTwitterProfile(handle) : Promise.resolve(null),
+      ...queries.map(({ q, type }) => this.searchTweetsTop(q, type)),
+    ]);
+
+    const allTweets = batches.flat();
+    const { origin, amplifiers, community } = rankTweetsForLore(allTweets, tokenCreatedAt);
+
+    const lines: string[] = [];
+    if (handle && profile) {
+      lines.push(`PROJECT ACCOUNT @${handle} (${profile.followers.toLocaleString()} followers):`);
+      if (profile.bio) lines.push(`Bio: ${profile.bio}`);
+      if (profile.lastTweets.length) {
+        lines.push(`Recent tweets from @${handle}:`);
+        profile.lastTweets.slice(0, 5).forEach((t, i) => lines.push(`  ${i + 1}. ${t.slice(0, 200)}`));
+      }
+    }
+
+    if (origin) {
+      lines.push(
+        `\nORIGIN TWEET (${new Date(origin.createdAt).toISOString().slice(0, 10)}, @${origin.authorHandle}, ${fmtNum(origin.authorFollowers)} followers, ${fmtNum(origin.likes)} likes, ${fmtNum(origin.retweets)} RTs):`,
+        `"${origin.text.slice(0, 280)}"`,
+      );
+    }
+    if (amplifiers.length) {
+      lines.push('\nTOP AMPLIFIERS (engagement-ranked, deduped by author):');
+      amplifiers.forEach((t, i) =>
+        lines.push(`${i + 1}. @${t.authorHandle} (${fmtNum(t.authorFollowers)} followers, ${fmtNum(t.likes)} likes): "${t.text.slice(0, 200)}"`),
+      );
+    }
+    if (community.length && budget !== 'light') {
+      lines.push('\nCOMMUNITY VIBE:');
+      community.forEach((t, i) => lines.push(`${i + 1}. @${t.authorHandle}: "${t.text.slice(0, 150)}"`));
+    }
+    if (!origin && !amplifiers.length) {
+      lines.push(`\nNO HIGH-ENGAGEMENT TWITTER CATALYST FOUND for $${sym}. Likely organic speculation or too new to have surfaced.`);
+    }
+
+    const sources: Array<{ label: string; url: string }> = [];
+    if (origin) sources.push({ label: `Origin: @${origin.authorHandle}`, url: origin.url });
+    amplifiers.slice(0, 2).forEach(t => sources.push({ label: `@${t.authorHandle}`, url: t.url }));
+
+    return { context: lines.join('\n'), sources };
   }
 }
 
 /* ── Module-level helpers ────────────────────────────────────────────────── */
+
+/** Engagement-rich tweet shape used by /lore — agnostic to twitterapi.io's field-name drift. */
+type TweetRich = {
+  id: string;
+  text: string;
+  url: string;
+  authorHandle: string;
+  authorFollowers: number;
+  authorVerified: boolean;
+  likes: number;
+  retweets: number;
+  replies: number;
+  views: number;
+  createdAt: number; // ms epoch
+};
+
+type LoreBudget = 'light' | 'balanced' | 'aggressive';
+
+/** twitterapi.io returns slightly different field names across endpoints — normalize defensively. */
+function normalizeTweet(t: any): TweetRich | null {
+  const id = t?.id ?? t?.id_str ?? t?.tweet_id;
+  const author = t?.author ?? t?.user ?? {};
+  const handle = author?.userName ?? author?.screen_name ?? author?.username;
+  if (!id || !handle) return null;
+  const text = (t.text ?? t.full_text ?? '').replace(/https?:\/\/\S+/g, '').trim();
+  if (text.length < 10) return null;
+  const createdRaw = t.createdAt ?? t.created_at;
+  const createdAt = createdRaw ? new Date(createdRaw).getTime() : Date.now();
+  return {
+    id: String(id),
+    text,
+    url: `https://x.com/${handle}/status/${id}`,
+    authorHandle: String(handle),
+    authorFollowers: Number(author.followers ?? author.followers_count ?? 0),
+    authorVerified: !!(author.isBlueVerified ?? author.verified),
+    likes: Number(t.likeCount ?? t.like_count ?? t.favorite_count ?? 0),
+    retweets: Number(t.retweetCount ?? t.retweet_count ?? 0),
+    replies: Number(t.replyCount ?? t.reply_count ?? 0),
+    views: Number(t.viewCount ?? t.view_count ?? 0),
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+  };
+}
+
+/**
+ * Picks the origin tweet (oldest with real signal, ideally ≤7d after token launch),
+ * top engagement-ranked amplifiers (deduped by author), and remaining community vibe.
+ */
+function rankTweetsForLore(
+  tweets: TweetRich[],
+  tokenCreatedAt: number | null,
+): { origin: TweetRich | null; amplifiers: TweetRich[]; community: TweetRich[] } {
+  const seen = new Set<string>();
+  const unique = tweets.filter(t => (seen.has(t.id) ? false : (seen.add(t.id), true)));
+
+  const score = (t: TweetRich) =>
+    t.likes + 2 * t.retweets + 3 * t.replies + Math.log10(Math.max(t.authorFollowers, 1)) * 100;
+
+  const HIGH_ENGAGEMENT = 500;
+  const BIG_AUTHOR = 100_000;
+  const launchWindow = tokenCreatedAt ? tokenCreatedAt + 7 * 86_400_000 : null;
+
+  const originPool = unique
+    .filter(t => t.likes >= HIGH_ENGAGEMENT || t.authorFollowers >= BIG_AUTHOR)
+    .filter(t => !launchWindow || t.createdAt <= launchWindow)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const origin = originPool[0] ?? null;
+
+  const dedupAuthor = new Map<string, TweetRich>();
+  for (const t of [...unique].sort((a, b) => score(b) - score(a))) {
+    if (origin && t.id === origin.id) continue;
+    if (!dedupAuthor.has(t.authorHandle)) dedupAuthor.set(t.authorHandle, t);
+  }
+  const amplifiers = [...dedupAuthor.values()].slice(0, 5);
+
+  const used = new Set<string>([origin?.id, ...amplifiers.map(t => t.id)].filter(Boolean) as string[]);
+  const community = unique.filter(t => !used.has(t.id)).slice(0, 5);
+
+  return { origin, amplifiers, community };
+}
 
 function extractAddress(text: string): string | null {
   const evmMatch = text.match(/0x[a-fA-F0-9]{40}/);
@@ -2703,7 +2869,7 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   // AI
   { command: 'ask',        description: 'Ask AI anything: /ask <question>' },
   { command: 'tldr',       description: 'Summarize a URL: /tldr <url>' },
-  { command: 'lore',       description: 'Token lore / backstory: /lore <address>' },
+  { command: 'lore',       description: 'Token lore / backstory: /lore <address> [light|balanced|aggressive]' },
   { command: 'aica',       description: 'AI contract audit: /aica <address>' },
   // Trading (linked account)
   { command: 'portfolio',  description: 'Your wallets, trades & P&L' },
