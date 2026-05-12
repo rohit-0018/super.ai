@@ -143,6 +143,9 @@ async function gradeStrategy(
   perf: StrategyPerformance,
   rejections: Array<{ rejectCategory: string | null; rejectReason: string | null }>,
 ): Promise<LlmQualitative> {
+  if (process.env.STRATEGY_SCORER_LLM_ENABLED !== 'true') {
+    return { score: 0.5, rationale: 'llm_disabled' };
+  }
   const def = (definition ?? {}) as { prompt?: string; trigger?: unknown; notes?: string };
   const system = [
     'You are a trading-strategy qualitative grader.',

@@ -325,6 +325,7 @@ async function proposeIntent(
   maxTradeUsd: number,
   episodicBlock?: string,
 ): Promise<TradeIntent | null> {
+  if (process.env.AUTONOMOUS_TRADER_LLM_ENABLED !== 'true') return null;
   const def = (definition ?? {}) as { prompt?: string; notes?: string };
   const system = [
     'You are a trading-decision generator.',
