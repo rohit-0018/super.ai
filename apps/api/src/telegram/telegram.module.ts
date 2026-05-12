@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AiAgentModule } from '../ai-agent/ai-agent.module';
 import { ApprovalsModule } from '../approvals/approvals.module';
 import { SnipeModule } from '../snipe/snipe.module';
+import { SocialModule } from '../social/social.module';
 import { TelegramBot } from './telegram.bot';
 import { TelegramService } from './telegram.service';
 import { TelegramController } from './telegram.controller';
