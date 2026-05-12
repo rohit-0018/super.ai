@@ -148,8 +148,8 @@ export default function IntelTrackPage() {
       .slice(0, 20)
       .map((i) => ({ address: i.address, symbol: i.symbol ?? i.address.slice(0, 6), profileKey: i.profileKey ?? 'meme_hunter' }));
     if (!toAnalyze.length) return;
-    api.post('/hot-tokens/signals/analyze', { items: toAnalyze })
-      .then(() => setAnalysisTriggered(true))
+    api.post<{ queued: number; disabled?: boolean }>('/hot-tokens/signals/analyze', { items: toAnalyze })
+      .then((r) => { if (!r?.data?.disabled) setAnalysisTriggered(true); })
       .catch(() => {});
   }, [baseItems]);
 

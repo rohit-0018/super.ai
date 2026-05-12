@@ -22,6 +22,10 @@ export interface HotToken {
   dexUrl?: string;
   profileKey: string;
   scannedAt: string;       // ISO timestamp
+  // Phase 1 tape-quality fields (DexScreener-sourced, optional fallback paths).
+  buys1h?: number;
+  sells1h?: number;
+  volume1hUsd?: number;
 }
 
 export interface HotTokensScan {

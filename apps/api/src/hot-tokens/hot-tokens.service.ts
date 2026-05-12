@@ -64,6 +64,14 @@ interface DexTokenData {
   pairAgeHours: number;
   dexUrl?: string;
   launchPlatform?: string;
+  // Phase 1 gem-hunter signals — DexScreener tape quality. Optional because
+  // GeckoTerminal/pump.fun fallback paths don't always populate them.
+  buys1h?: number;
+  sells1h?: number;
+  buys5m?: number;
+  sells5m?: number;
+  volume1hUsd?: number;
+  volume5mUsd?: number;
 }
 
 interface Candidate {
@@ -248,9 +256,13 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Pre-warm full analysis for unique hot addresses so clicking any chip is instant.
-      // Fire-and-forget — we don't await; a stagger avoids slamming provider rate limits.
-      const uniqueAddrs = [...new Set(Object.values(byProfile).flat().map((t) => t.address))].slice(0, 8);
-      this.prewarmAnalysis(uniqueAddrs);
+      // Skipped when SIGNAL_PIPELINE_ENABLED=false — prewarm runs analyzeAddress
+      // which is the same LLM path the pipeline gate disables. Without this guard
+      // we'd still spend tokens (and spam CoinGecko 400s on memecoin addresses).
+      if (process.env.SIGNAL_PIPELINE_ENABLED !== 'false') {
+        const uniqueAddrs = [...new Set(Object.values(byProfile).flat().map((t) => t.address))].slice(0, 8);
+        this.prewarmAnalysis(uniqueAddrs);
+      }
     } catch (err) {
       this.logger.error(`Hot scan error: ${(err as Error).message}`);
     } finally {
@@ -554,6 +566,12 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
           pairAgeHours,
           dexUrl: pair.url,
           launchPlatform: (pair.labels as string[] | undefined)?.includes('pump') ? 'pump.fun' : pair.dexId,
+          buys1h: pair.txns?.h1?.buys,
+          sells1h: pair.txns?.h1?.sells,
+          buys5m: pair.txns?.m5?.buys,
+          sells5m: pair.txns?.m5?.sells,
+          volume1hUsd: pair.volume?.h1,
+          volume5mUsd: pair.volume?.m5,
         } satisfies DexTokenData];
       });
     } catch { return []; }
@@ -574,10 +592,12 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       let priceChange5m = 0, priceChange1h = 0, priceChange24h = 0;
       let volume24hUsd = 0, marketCapUsd = 0, liquidityUsd = 0;
       let pairAgeHours = 999, dexUrl: string | undefined, launchPlatform: string | undefined;
+      let buys1h: number | undefined, sells1h: number | undefined, volume1hUsd: number | undefined;
 
       if (dex) {
         ({ symbol, name, priceUsd, priceChange5m, priceChange1h, priceChange24h,
           volume24hUsd, marketCapUsd, liquidityUsd, pairAgeHours, dexUrl, launchPlatform } = dex);
+        ({ buys1h, sells1h, volume1hUsd } = dex);
       } else if (pumpFunRaw) {
         symbol = String(pumpFunRaw.symbol ?? '???');
         name = String(pumpFunRaw.name ?? 'Unknown');
@@ -598,7 +618,11 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       if (maxAge != null && pairAgeHours > maxAge) continue;
 
       const { score, verdict, summary } = this.computeScore(
-        { priceChange1h, priceChange5m, priceChange24h, volume24hUsd, liquidityUsd, pairAgeHours, source },
+        {
+          priceChange1h, priceChange5m, priceChange24h,
+          volume24hUsd, liquidityUsd, marketCapUsd, pairAgeHours, source,
+          buys1h, sells1h, volume1hUsd,
+        },
         profileKey,
       );
 
@@ -608,6 +632,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         volume24hUsd, marketCapUsd, liquidityUsd, pairAgeHours,
         source, launchPlatform, score, verdict, summary, dexUrl,
         profileKey, scannedAt,
+        buys1h, sells1h, volume1hUsd,
       });
     }
 
@@ -617,52 +642,132 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   private computeScore(
     d: {
       priceChange1h: number; priceChange5m: number; priceChange24h: number;
-      volume24hUsd: number; liquidityUsd: number; pairAgeHours: number;
-      source: HotTokenSource;
+      volume24hUsd: number; liquidityUsd: number; marketCapUsd: number;
+      pairAgeHours: number; source: HotTokenSource;
+      buys1h?: number; sells1h?: number; volume1hUsd?: number;
     },
     profileKey: TradingProfile,
   ): { score: number; verdict: HotTokenVerdict; summary: string } {
-    let score = 35;
+    const BASE = 35;
+    let posDelta = 0;
+    let negDelta = 0;
     const pos: string[] = [];
     const neg: string[] = [];
-    const { priceChange1h, priceChange5m, volume24hUsd, liquidityUsd, pairAgeHours, source } = d;
+    const add = (n: number, tag?: string) => { posDelta += n; if (tag) pos.push(tag); };
+    const sub = (n: number, tag?: string) => { negDelta -= n; if (tag) neg.push(tag); };
+
+    const {
+      priceChange1h, priceChange5m, volume24hUsd, liquidityUsd,
+      marketCapUsd, pairAgeHours, source, buys1h, sells1h, volume1hUsd,
+    } = d;
     const volLiq = liquidityUsd > 0 ? volume24hUsd / liquidityUsd : 0;
 
-    if (priceChange1h > 100) { score += 22; pos.push(`+${priceChange1h.toFixed(0)}% 1h`); }
-    else if (priceChange1h > 50) { score += 15; pos.push(`+${priceChange1h.toFixed(0)}% 1h`); }
-    else if (priceChange1h > 20) { score += 9; pos.push(`+${priceChange1h.toFixed(0)}% 1h`); }
-    else if (priceChange1h > 5) { score += 3; }
-    else if (priceChange1h < -30) { score -= 12; neg.push(`${priceChange1h.toFixed(0)}% 1h`); }
-    else if (priceChange1h < -15) { score -= 6; }
+    if (priceChange1h > 100) add(22, `+${priceChange1h.toFixed(0)}% 1h`);
+    else if (priceChange1h > 50) add(15, `+${priceChange1h.toFixed(0)}% 1h`);
+    else if (priceChange1h > 20) add(9, `+${priceChange1h.toFixed(0)}% 1h`);
+    else if (priceChange1h > 5) add(3);
+    else if (priceChange1h < -30) sub(12, `${priceChange1h.toFixed(0)}% 1h`);
+    else if (priceChange1h < -15) sub(6);
 
-    if (priceChange5m > 15) { score += 10; pos.push(`+${priceChange5m.toFixed(0)}% 5m`); }
-    else if (priceChange5m > 5) { score += 5; }
-    else if (priceChange5m < -10) { score -= 5; }
+    if (priceChange5m > 15) add(10, `+${priceChange5m.toFixed(0)}% 5m`);
+    else if (priceChange5m > 5) add(5);
+    else if (priceChange5m < -10) sub(5);
 
-    if (volLiq > 20) { score += 14; pos.push(`${volLiq.toFixed(0)}x vol/liq`); }
-    else if (volLiq > 8) { score += 8; pos.push(`${volLiq.toFixed(0)}x vol/liq`); }
-    else if (volLiq > 3) { score += 4; }
-    else if (volLiq < 0.5 && liquidityUsd > 0) { score -= 5; }
+    if (volLiq > 20) add(14, `${volLiq.toFixed(0)}x vol/liq`);
+    else if (volLiq > 8) add(8, `${volLiq.toFixed(0)}x vol/liq`);
+    else if (volLiq > 3) add(4);
+    else if (volLiq < 0.5 && liquidityUsd > 0) sub(5);
 
-    if (liquidityUsd >= 200_000) score += 7;
-    else if (liquidityUsd >= 50_000) score += 3;
-    else if (0 < liquidityUsd && liquidityUsd < 5_000) { score -= 8; neg.push('thin liq'); }
+    if (liquidityUsd >= 200_000) add(7);
+    else if (liquidityUsd >= 50_000) add(3);
+    else if (0 < liquidityUsd && liquidityUsd < 5_000) sub(8, 'thin liq');
 
     if (profileKey === 'meme_hunter' || profileKey === 'degen_sniper') {
-      if (pairAgeHours < 1) { score += 14; pos.push(`${(pairAgeHours * 60).toFixed(0)}m old`); }
-      else if (pairAgeHours < 4) { score += 9; pos.push(`${pairAgeHours.toFixed(1)}h old`); }
-      else if (pairAgeHours < 12) { score += 4; pos.push(`${pairAgeHours.toFixed(0)}h old`); }
-      else if (pairAgeHours > 72) score -= 8;
-      if (source === 'pumpfun') score += 5;
+      if (pairAgeHours < 1) add(14, `${(pairAgeHours * 60).toFixed(0)}m old`);
+      else if (pairAgeHours < 4) add(9, `${pairAgeHours.toFixed(1)}h old`);
+      else if (pairAgeHours < 12) add(4, `${pairAgeHours.toFixed(0)}h old`);
+      else if (pairAgeHours > 72) sub(8);
+      if (source === 'pumpfun') add(5);
     } else if (profileKey === 'swing_trader') {
-      if (pairAgeHours >= 6 && pairAgeHours <= 168) score += 5;
-      else if (pairAgeHours < 6) { score -= 5; neg.push('too new'); }
+      if (pairAgeHours >= 6 && pairAgeHours <= 168) add(5);
+      else if (pairAgeHours < 6) sub(5, 'too new');
     } else if (profileKey === 'gem_hunt') {
-      if (pairAgeHours >= 72) score += 10;
-      else { score -= 12; neg.push('too new'); }
+      if (pairAgeHours >= 72) add(10);
+      else sub(12, 'too new');
     }
 
-    const final = Math.max(0, Math.min(100, score));
+    // ── Phase 1 gem-hunter tape signals (DexScreener buys/sells/vol) ───────
+    const txCount = (buys1h ?? 0) + (sells1h ?? 0);
+    const hasTape = buys1h != null && sells1h != null && txCount > 0;
+    const avgTradeUsd = hasTape && volume1hUsd ? volume1hUsd / txCount : 0;
+    const buyRatio = hasTape ? (buys1h as number) / txCount : 0;
+
+    // Buy/sell ratio — directional pressure
+    if (hasTape) {
+      if (buyRatio > 0.65) add(7, `${(buyRatio * 100).toFixed(0)}% buys`);
+      else if (buyRatio > 0.55) add(3);
+      else if (buyRatio < 0.40) sub(8, `${(buyRatio * 100).toFixed(0)}% buys`);
+      else if (buyRatio < 0.45) sub(3);
+    }
+
+    // Trade-size quality — only meaningful once MC is non-trivial.
+    // Dust-only flow on a big-MC token is the user's "high MC, small buys"
+    // failure mode and earns a sharp penalty.
+    if (hasTape && marketCapUsd >= 200_000 && avgTradeUsd > 0) {
+      if (avgTradeUsd > 500) add(6, `$${avgTradeUsd.toFixed(0)} avg`);
+      else if (avgTradeUsd > 150) add(3);
+      else if (avgTradeUsd < 15) sub(10, 'pure dust');
+      else if (avgTradeUsd < 40) sub(5, 'dust trades');
+    }
+
+    // Activity level — too few prints on an aged pair = dead tape.
+    if (hasTape) {
+      if (txCount > 200) add(4, 'active');
+      else if (txCount > 80) add(2);
+      else if (pairAgeHours > 1 && txCount < 8) sub(10, 'dead tape');
+    }
+
+    // Vol/MC sweet-spot (1h) — stacked, not laddered. Healthy discovery
+    // starts at ~5% MC turned over in 1h. Penalize only at FOMO extremes
+    // (>300%) so we don't punish memes mid-pump (1–2× MC turnover is normal).
+    if (volume1hUsd != null && marketCapUsd > 0) {
+      const volMc1h = volume1hUsd / marketCapUsd;
+      if (volMc1h > 0.05) add(3);
+      if (volMc1h > 0.20) add(2, 'hot tape');
+      if (volMc1h > 3.0)  sub(4, 'fomo peak');
+      if (marketCapUsd > 500_000 && volMc1h < 0.002) sub(6, 'illiquid for size');
+    }
+
+    // ── Dampeners — multipliers on positive delta only ────────────────────
+    // Thin-tape: the user's exact failure mode (big MC, dust prints, few txs).
+    let dampener = 1;
+    if (
+      hasTape && volume1hUsd != null && marketCapUsd >= 1_000_000 &&
+      avgTradeUsd > 0 && avgTradeUsd < 50 && txCount < 30
+    ) {
+      dampener = Math.min(dampener, 0.3);
+      neg.push('paper tape');
+    } else if (
+      hasTape && volume1hUsd != null && marketCapUsd >= 500_000 &&
+      avgTradeUsd > 0 && avgTradeUsd < 80 && txCount < 50
+    ) {
+      dampener = Math.min(dampener, 0.5);
+      neg.push('thin tape');
+    }
+
+    // Wash-trade: huge 24h volume relative to MC but almost no live tx.
+    if (
+      hasTape && marketCapUsd > 0 &&
+      volume24hUsd / marketCapUsd > 1.0 && txCount < 20
+    ) {
+      dampener = Math.min(dampener, 0.7);
+      neg.push('maybe wash');
+    }
+
+    const adjustedPos = posDelta * dampener;
+    const raw = BASE + adjustedPos + negDelta;
+    const final = Math.max(0, Math.min(100, raw));
+
     let verdict: HotTokenVerdict;
     if (final >= 78) verdict = 'STRONG_BUY';
     else if (final >= 62) verdict = 'BUY';

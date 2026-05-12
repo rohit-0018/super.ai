@@ -70,6 +70,9 @@ export default function HotFeedPage() {
   const seenIds    = useRef<Set<string>>(new Set());
   const liveCount  = useRef(0);
   const enqueuedRef = useRef(false);
+  // True when the signal pipeline is server-side disabled. Used to avoid
+  // showing an "Analyzing…" spinner that will never resolve.
+  const pipelineDisabledRef = useRef(false);
 
   useEffect(() => {
     if (Array.isArray(initial) && items.length === 0) {
@@ -109,8 +112,11 @@ export default function HotFeedPage() {
       .slice(0, 20)
       .map((i) => ({ address: i.address, symbol: i.symbol ?? i.address.slice(0, 6), profileKey: i.profileKey ?? 'meme_hunter' }));
     if (!toAnalyze.length) return;
-    api.post('/hot-tokens/signals/analyze', { items: toAnalyze })
-      .then(() => setAnalysisTriggered(true))
+    api.post<{ queued: number; disabled?: boolean }>('/hot-tokens/signals/analyze', { items: toAnalyze })
+      .then((r) => {
+        if (r?.data?.disabled) pipelineDisabledRef.current = true;
+        else setAnalysisTriggered(true);
+      })
       .catch(() => {});
   }, [initial]);
 
@@ -141,8 +147,12 @@ export default function HotFeedPage() {
     });
 
     setTimeout(() => {
+      // When the pipeline is server-side disabled, no AI verdict will ever
+      // arrive — clear _isFresh entirely so the card doesn't sit in the
+      // "Analyzing…" spinner state forever.
+      const cleared = pipelineDisabledRef.current ? undefined : false;
       setItems((prev) =>
-        prev.map((i) => (i.id === stub.id ? { ...i, _isFresh: false } : i)),
+        prev.map((i) => (i.id === stub.id ? { ...i, _isFresh: cleared } : i)),
       );
     }, FRESH_FLASH_MS);
   }, []);

@@ -74,8 +74,9 @@ export class HotTokensController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('signals/analyze')
   analyzeAddresses(@Body() dto: AnalyzeBatchDto) {
-    const queued = this.pipeline?.enqueueBatch(dto.items) ?? 0;
-    return { queued };
+    const disabled = process.env.SIGNAL_PIPELINE_ENABLED === 'false' || !this.pipeline;
+    const queued = disabled ? 0 : (this.pipeline?.enqueueBatch(dto.items) ?? 0);
+    return { queued, disabled };
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
