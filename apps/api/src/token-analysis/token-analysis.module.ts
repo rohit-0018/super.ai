@@ -12,6 +12,7 @@ import { JupiterProvider } from './providers/jupiter.provider';
 import { SolanaTrackerProvider } from './providers/solana-tracker.provider';
 import { MoralisProvider } from './providers/moralis.provider';
 import { BundleCheckerProvider } from './providers/bundle-checker.provider';
+import { PumpFunProvider } from './providers/pump-fun.provider';
 import { BirdeyeProvider } from './providers/birdeye.provider';
 import { DeFiLlamaProvider } from './providers/defillama.provider';
 import { EtherscanProvider } from './providers/etherscan.provider';
@@ -33,6 +34,7 @@ import { WsModule } from '../ws/ws.module';
     // Market data
     DexScreenerProvider,
     GeckoTerminalProvider,
+    PumpFunProvider,
     // Holder intelligence
     HeliusHoldersProvider,
     SolanaTrackerProvider,
@@ -57,6 +59,6 @@ import { WsModule } from '../ws/ws.module';
     AiReasoner,
   ],
   controllers: [TokenAnalysisController, IntelController],
-  exports: [TokenAnalysisService],
+  exports: [TokenAnalysisService, PumpFunProvider],
 })
 export class TokenAnalysisModule {}
