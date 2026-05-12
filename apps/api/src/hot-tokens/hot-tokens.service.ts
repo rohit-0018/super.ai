@@ -313,6 +313,12 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       // Streak tracking — fire-and-forget so it never blocks the scan.
       void this.processPumpStreaks(byProfile, scannedAt);
 
+      // Batch-persist every unique token from this scan into IntelSnapshot.
+      // createMany({skipDuplicates}) makes it idempotent — already-captured
+      // addresses are no-ops via the (chain, address) unique constraint.
+      // 3-day cleanup runs in intel-rescan.worker.ts to keep table bounded.
+      void this.persistScanBatch(byProfile);
+
       // Feed signal pipeline with all unique tokens from this scan.
       // New tokens jump to the front of the pipeline queue so the strongest
       // candidates get AI analysis within seconds of appearing.
@@ -451,6 +457,48 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       await this.redis.setex(redisKey(profileKey), REDIS_TTL_SEC, JSON.stringify(scan));
     } catch (err) {
       this.logger.warn(`Redis write failed for ${profileKey}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Batch-persist every unique token from this scan to IntelSnapshot.
+   * Idempotent — Prisma's `skipDuplicates` makes the (chain, address) unique
+   * constraint do the dedup. New tokens get a row; already-known tokens are
+   * untouched (IntelRescanWorker handles their current-price updates).
+   * 3-day cleanup runs in intel-rescan.worker.ts:runPurge.
+   */
+  private async persistScanBatch(byProfile: Record<string, HotToken[]>): Promise<void> {
+    if (!this.intelSnapshots) return;
+    // Dedupe across profiles — same token can appear in multiple profile lists.
+    const seen = new Map<string, HotToken>();
+    for (const tokens of Object.values(byProfile)) {
+      for (const t of tokens) {
+        const cur = seen.get(t.address);
+        if (!cur || t.score > cur.score) seen.set(t.address, t);
+      }
+    }
+    const items = [...seen.values()]
+      .filter((t) => t.priceUsd > 0)
+      .map((t) => ({
+        chain: 'SOLANA' as const,
+        address: t.address,
+        source: 'hot_tokens_scan' as const,
+        profileKey: t.profileKey,
+        symbol: t.symbol,
+        name: t.name,
+        priceUsdAtCapture: t.priceUsd,
+        marketCapUsdAtCapture: t.marketCapUsd > 0 ? t.marketCapUsd : null,
+        liquidityUsdAtCapture: t.liquidityUsd > 0 ? t.liquidityUsd : null,
+        volume24hAtCapture: t.volume24hUsd > 0 ? t.volume24hUsd : null,
+        // The heuristic score IS our verdict when AI is gated — store it so
+        // intel-track can display verdict colors immediately on capture.
+        aiScore: t.score,
+        aiVerdict: t.verdict,
+      }));
+    try {
+      await this.intelSnapshots.captureBatch(items);
+    } catch (e: any) {
+      this.logger.debug(`persistScanBatch swallowed error: ${e.message}`);
     }
   }
 

@@ -230,6 +230,76 @@ export class IntelSnapshotService {
   }
 
   /**
+   * Bulk capture from the hot-tokens scanner. Skips the per-row roundtrip
+   * by using `createMany({ skipDuplicates: true })` — already-captured
+   * addresses are no-op'd by the unique (chain, address) constraint.
+   *
+   * Returns the count of NEW rows actually inserted so the caller can log
+   * capture rate. Does NOT update `reappearedAt` for existing rows
+   * (intentional: scanner ticks every 20s; updating on every tick would
+   * be DB churn for no useful signal).
+   */
+  async captureBatch(items: Array<{
+    chain: Chain;
+    address: string;
+    source: IntelSource;
+    profileKey?: string | null;
+    priceUsdAtCapture: number;
+    marketCapUsdAtCapture?: number | null;
+    liquidityUsdAtCapture?: number | null;
+    volume24hAtCapture?: number | null;
+    symbol?: string | null;
+    name?: string | null;
+    aiScore?: number | null;
+    aiVerdict?: string | null;
+  }>): Promise<number> {
+    if (!items.length) return 0;
+    const now = new Date();
+    const data = items
+      .filter((i) => i.address && Number.isFinite(i.priceUsdAtCapture) && i.priceUsdAtCapture > 0)
+      .map((i) => {
+        const normalizedAddress = i.chain === 'EVM' ? i.address.toLowerCase() : i.address;
+        return {
+          chain: i.chain,
+          address: normalizedAddress,
+          source: i.source,
+          profileKey: i.profileKey ?? null,
+          symbol: i.symbol ?? null,
+          name: i.name ?? null,
+          priceUsdAtCapture: i.priceUsdAtCapture,
+          marketCapUsdAtCapture: i.marketCapUsdAtCapture ?? null,
+          liquidityUsdAtCapture: i.liquidityUsdAtCapture ?? null,
+          volume24hAtCapture: i.volume24hAtCapture ?? null,
+          aiScore: i.aiScore ?? null,
+          aiVerdict: i.aiVerdict ?? null,
+          reportJson: {} as any,
+          sparkline: i.marketCapUsdAtCapture != null ? [Math.round(i.marketCapUsdAtCapture)] : [],
+          currentPriceUsd: i.priceUsdAtCapture,
+          currentMcapUsd: i.marketCapUsdAtCapture ?? null,
+          currentLiquidity: i.liquidityUsdAtCapture ?? null,
+          pumpedHigh: i.marketCapUsdAtCapture ?? null,
+          pumpedHighAt: i.marketCapUsdAtCapture != null ? now : null,
+          drawdownLow: i.marketCapUsdAtCapture ?? null,
+          drawdownLowAt: i.marketCapUsdAtCapture != null ? now : null,
+        };
+      });
+    if (!data.length) return 0;
+    try {
+      const result = await this.prisma.intelSnapshot.createMany({
+        data,
+        skipDuplicates: true,
+      });
+      if (result.count > 0) {
+        this.logger.log(`captureBatch: stored ${result.count}/${data.length} new snapshots from hot scan`);
+      }
+      return result.count;
+    } catch (e: any) {
+      this.logger.warn(`captureBatch failed: ${e.message}`);
+      return 0;
+    }
+  }
+
+  /**
    * Lookup by address — used by Telegram formatter to surface "we called
    * this N days ago at $X, peaked at $Y" badge on user-initiated scans.
    * Returns null if no snapshot exists.

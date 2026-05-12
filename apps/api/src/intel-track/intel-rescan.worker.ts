@@ -5,7 +5,12 @@ import { IntelSnapshotService, SPARKLINE_MAX_POINTS } from './intel-snapshot.ser
 const RESCAN_INTERVAL_SEC = parseInt(process.env.INTEL_RESCAN_INTERVAL_SEC ?? '600', 10);
 const RESCAN_BATCH_SIZE = parseInt(process.env.INTEL_RESCAN_BATCH_SIZE ?? '60', 10);
 const RESCAN_MAX_AGE_DAYS = parseInt(process.env.INTEL_RESCAN_MAX_AGE_DAYS ?? '30', 10);
-const AUTO_PURGE = (process.env.INTEL_TRACK_AUTO_PURGE ?? 'false').toLowerCase() === 'true';
+const AUTO_PURGE = (process.env.INTEL_TRACK_AUTO_PURGE ?? 'true').toLowerCase() === 'true';
+/** Hot-scan captures are high-volume + low-information once a few days old.
+ *  Purge them aggressively (3-day default, env-tunable). */
+const HOT_SCAN_PURGE_DAYS = parseInt(process.env.INTEL_HOT_SCAN_PURGE_DAYS ?? '3', 10);
+/** VerdictHistory grows unbounded; same 3-day default. */
+const VERDICT_PURGE_DAYS = parseInt(process.env.VERDICT_HISTORY_PURGE_DAYS ?? '3', 10);
 
 const RUGGED_LIQ_THRESHOLD_USD = 1_000;
 const RUGGED_CONSECUTIVE_FAILS = 3;
@@ -234,20 +239,50 @@ export class IntelRescanWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   // ── 3. Auto-purge (gated by INTEL_TRACK_AUTO_PURGE) ────────────────────
+  // Three independent cutoffs:
+  //   (a) retired/rugged older than RESCAN_MAX_AGE_DAYS (30d) — generic
+  //   (b) hot_tokens_scan source older than HOT_SCAN_PURGE_DAYS (3d) —
+  //       these are high-volume and stop being interesting fast
+  //   (c) VerdictHistory rows older than VERDICT_PURGE_DAYS (3d) — same
+  // NEVER purge graduated snapshots regardless of age — those are the
+  // "we called this when it was $50k mcap, it 10x'd" marketing trophies.
   private async runPurge(): Promise<number> {
     if (!this.prisma || !AUTO_PURGE) return 0;
-    const cutoff = new Date(Date.now() - RESCAN_MAX_AGE_DAYS * 86400_000);
-    // NEVER purge graduated — those are the marketing trophies.
-    const result = await this.prisma.intelSnapshot.deleteMany({
+    let total = 0;
+    const now = Date.now();
+
+    // (a) Generic retired/rugged purge — long retention.
+    const cutoffLong = new Date(now - RESCAN_MAX_AGE_DAYS * 86400_000);
+    const retired = await this.prisma.intelSnapshot.deleteMany({
+      where: { status: { in: ['retired', 'rugged'] }, capturedAt: { lt: cutoffLong } },
+    });
+    total += retired.count;
+
+    // (b) Hot-scan source captures — short retention since we re-capture
+    // them constantly anyway. Preserve graduated (never purge).
+    const cutoffShort = new Date(now - HOT_SCAN_PURGE_DAYS * 86400_000);
+    const hotScan = await this.prisma.intelSnapshot.deleteMany({
       where: {
-        status: { in: ['retired', 'rugged'] },
-        capturedAt: { lt: cutoff },
+        source: 'hot_tokens_scan',
+        capturedAt: { lt: cutoffShort },
+        status: { not: 'graduated' },
       },
     });
-    if (result.count > 0) {
-      this.logger.log(`auto-purged ${result.count} retired/rugged snapshots older than ${RESCAN_MAX_AGE_DAYS}d`);
+    total += hotScan.count;
+
+    // (c) VerdictHistory — append-only LLM analysis log. Cheap to drop.
+    const cutoffVerdict = new Date(now - VERDICT_PURGE_DAYS * 86400_000);
+    const verdicts = await this.prisma.verdictHistory.deleteMany({
+      where: { analyzedAt: { lt: cutoffVerdict } },
+    });
+    total += verdicts.count;
+
+    if (total > 0) {
+      this.logger.log(
+        `auto-purge: retired=${retired.count} hot-scan=${hotScan.count} verdicts=${verdicts.count} (cutoffs: ${RESCAN_MAX_AGE_DAYS}d / ${HOT_SCAN_PURGE_DAYS}d / ${VERDICT_PURGE_DAYS}d)`,
+      );
     }
-    return result.count;
+    return total;
   }
 
   // ── DexScreener batch pricing (free, no key, 30 mints/req) ─────────────
