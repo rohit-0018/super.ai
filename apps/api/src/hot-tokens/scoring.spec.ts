@@ -163,4 +163,67 @@ describe('computeHotTokenScore', () => {
     );
     expect(fresh.summary).not.toMatch(/post-ATH/);
   });
+
+  // ── Phase 3: Twitter mention signals ────────────────────────────────────
+  it('rewards tokens with high project-aligned Twitter mentions', () => {
+    const quiet = computeHotTokenScore(
+      baseline({
+        priceChange1h: 20, marketCapUsd: 100_000,
+        twitterAlignedMatches: 0, twitterUniqueAuthors: 0, twitterCallerFollowerLog: 0,
+      }),
+      'meme_hunter',
+    );
+    const buzzing = computeHotTokenScore(
+      baseline({
+        priceChange1h: 20, marketCapUsd: 100_000,
+        twitterAlignedMatches: 60, twitterUniqueAuthors: 25, twitterCallerFollowerLog: 30,
+      }),
+      'meme_hunter',
+    );
+    // +10 (>=50 posts) + 6 (KOL log >=25) + 3 (>=15 authors) = +19 minimum
+    expect(buzzing.score - quiet.score).toBeGreaterThanOrEqual(19);
+    expect(buzzing.summary).toMatch(/posts|KOL|authors/);
+  });
+
+  it('does NOT boost a token with zero aligned tweets even if total search count is high', () => {
+    // Sentiment-only shill noise — passes raw search but no narrative match
+    const r = computeHotTokenScore(
+      baseline({
+        priceChange1h: 20,
+        twitterAlignedMatches: 0,
+        twitterUniqueAuthors: 0,
+        twitterCallerFollowerLog: 0,
+      }),
+      'meme_hunter',
+    );
+    expect(r.summary).not.toMatch(/posts|KOL|team active/);
+  });
+
+  it('gives a small bonus when the project handle tweeted recently', () => {
+    const active = computeHotTokenScore(
+      baseline({ priceChange1h: 10, twitterProjectActive: true }),
+      'meme_hunter',
+    );
+    const inactive = computeHotTokenScore(
+      baseline({ priceChange1h: 10, twitterProjectActive: false }),
+      'meme_hunter',
+    );
+    expect(active.score - inactive.score).toBeGreaterThanOrEqual(3);
+  });
+
+  it('backwards-compat: undefined Twitter fields produce identical score to old callers', () => {
+    const old = computeHotTokenScore(
+      baseline({ priceChange1h: 30, marketCapUsd: 100_000 }),
+      'meme_hunter',
+    );
+    const explicit = computeHotTokenScore(
+      baseline({
+        priceChange1h: 30, marketCapUsd: 100_000,
+        twitterAlignedMatches: undefined, twitterUniqueAuthors: undefined,
+        twitterCallerFollowerLog: undefined, twitterProjectActive: undefined,
+      }),
+      'meme_hunter',
+    );
+    expect(old.score).toBe(explicit.score);
+  });
 });

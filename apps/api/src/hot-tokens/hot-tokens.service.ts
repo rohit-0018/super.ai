@@ -10,6 +10,7 @@ import { getProfile } from '../token-analysis/profile.config';
 import { fmtPriceUsd } from '../common/format-price';
 import { PumpFunProvider, type PumpFunCoinData } from '../token-analysis/providers/pump-fun.provider';
 import { isPumpFunMint } from '../token-analysis/providers/pump-fun.util';
+import { TwitterMentionsService, type MentionStats } from '../social/twitter-mentions.service';
 import { computeHotTokenScore } from './scoring';
 import type { TradingProfile } from '../token-analysis/profile.config';
 import type {
@@ -23,6 +24,21 @@ import type {
 const STREAK_THRESHOLD = parseInt(process.env.HOT_STREAK_THRESHOLD ?? '3', 10);
 // Streaks expire after the max age window so tokens auto-clear when they age out.
 const STREAK_TTL_SEC = Math.ceil(parseFloat(process.env.HOT_TOKEN_MAX_AGE_HOURS ?? '4') * 3600);
+
+// Twitter mention enrichment guards — keep TwitterAPI.io spend predictable.
+const TWITTER_MENTIONS_ENABLED = process.env.TWITTER_MENTIONS_ENABLED !== 'false';
+const TWITTER_MENTIONS_TOP_N = parseInt(process.env.TWITTER_MENTIONS_TOP_N ?? '5', 10);
+const TWITTER_MENTIONS_MIN_AGE_MIN = parseFloat(process.env.TWITTER_MENTIONS_MIN_AGE_MIN ?? '15');
+const TWITTER_MENTIONS_MIN_MCAP_USD = parseFloat(process.env.TWITTER_MENTIONS_MIN_MCAP_USD ?? '5000');
+
+/** Pluck the project's Twitter handle from a DexScreener pair.info.socials list. */
+function extractTwitterHandle(socials: any): string | undefined {
+  if (!Array.isArray(socials)) return undefined;
+  const t = socials.find((s: any) => s?.type === 'twitter' && typeof s.url === 'string');
+  if (!t) return undefined;
+  const m = t.url.match(/(?:twitter|x)\.com\/([^/?#]+)/);
+  return m?.[1];
+}
 
 interface PumpStreak {
   address: string;
@@ -75,6 +91,8 @@ interface DexTokenData {
   sells5m?: number;
   volume1hUsd?: number;
   volume5mUsd?: number;
+  /** Twitter/X handle of the project (from DexScreener pair.info.socials). */
+  twitterHandle?: string;
 }
 
 interface Candidate {
@@ -84,6 +102,9 @@ interface Candidate {
   /** Pump.fun frontend-api-v3 enrichment (bonding %, replyCount, isLive, etc.).
    *  Populated only for mints with the "pump" suffix; null for everything else. */
   pumpFunData?: PumpFunCoinData;
+  /** Twitter/X mention stats — only populated for top-N candidates per scan
+   *  to stay under the TwitterAPI.io rate budget. */
+  mentionStats?: MentionStats;
 }
 
 @Injectable()
@@ -107,6 +128,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly signalPipeline: SignalPipelineService,
     @Optional() private readonly tokenPool: TokenPoolService,
     @Optional() private readonly pumpFun: PumpFunProvider,
+    @Optional() private readonly twitterMentions: TwitterMentionsService,
   ) {
     this.redis = new IORedis(
       process.env.REDIS_URL ?? 'redis://localhost:6379',
@@ -193,6 +215,11 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     try {
       const candidates = await this.gatherCandidates();
       const enriched = await this.enrichCandidates(candidates);
+      // Twitter enrichment — only the top-N candidates per scan (rate-budgeted
+      // + 5-min cache per address). Failures here never block the scan.
+      await this.enrichWithMentions(enriched).catch((e) =>
+        this.logger.warn(`enrichWithMentions failed: ${(e as Error).message}`),
+      );
 
       const now = new Date();
       const scannedAt = now.toISOString();
@@ -554,6 +581,72 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     return results;
   }
 
+  /**
+   * Enrich the top-N hottest candidates with Twitter/X mention stats. Gated
+   * tightly so we never blast TwitterAPI.io for low-value tokens:
+   *   - Skip if env disabled (TWITTER_MENTIONS_ENABLED=false)
+   *   - Floor: MC >= TWITTER_MENTIONS_MIN_MCAP_USD ($5k default) AND age >=
+   *     TWITTER_MENTIONS_MIN_AGE_MIN (15min default)
+   *   - Only the top TWITTER_MENTIONS_TOP_N (5 default) by simple price-action
+   *     score get a fetch — everyone else stays heuristic-only
+   *   - Concurrency 3 inside the provider's batch helper
+   *
+   * The service has its own 5-min per-address cache so re-scans of the same
+   * tokens are free.
+   */
+  private async enrichWithMentions(
+    enriched: Array<Candidate & { dex: DexTokenData | null }>,
+  ): Promise<void> {
+    if (!TWITTER_MENTIONS_ENABLED || !this.twitterMentions) return;
+
+    type Scored = { entry: Candidate & { dex: DexTokenData | null }; rank: number };
+    const ranked: Scored[] = [];
+    for (const e of enriched) {
+      const dex = e.dex;
+      const mc = dex?.marketCapUsd ?? e.pumpFunData?.marketCapUsd ?? 0;
+      const age = dex?.pairAgeHours
+        ?? (e.pumpFunData?.createdAt ? (Date.now() - e.pumpFunData.createdAt) / 3_600_000 : 999);
+      // Floors — don't waste calls on lifeless candidates.
+      if (mc < TWITTER_MENTIONS_MIN_MCAP_USD) continue;
+      if (age < TWITTER_MENTIONS_MIN_AGE_MIN / 60) continue;
+      const sym = dex?.symbol ?? e.pumpFunData?.symbol ?? '';
+      if (!sym || sym === '???') continue;
+      // Cheap pre-rank: prioritize momentum + recency.
+      const p1h = dex?.priceChange1h ?? 0;
+      const p5m = dex?.priceChange5m ?? 0;
+      const rank = Math.max(p1h, 0) * 0.6 + Math.max(p5m, 0) * 0.3 - Math.min(age, 24);
+      ranked.push({ entry: e, rank });
+    }
+    ranked.sort((a, b) => b.rank - a.rank);
+    const top = ranked.slice(0, TWITTER_MENTIONS_TOP_N);
+    if (!top.length) return;
+
+    const inputs = top.map(({ entry }) => ({
+      address:        entry.address,
+      symbol:         entry.dex?.symbol ?? entry.pumpFunData?.symbol ?? '',
+      name:           entry.dex?.name ?? entry.pumpFunData?.name,
+      projectHandle:  entry.dex?.twitterHandle ?? this.extractPumpFunHandle(entry.pumpFunData),
+      description:    entry.pumpFunData?.description,
+    }));
+
+    const t0 = Date.now();
+    const statsMap = await this.twitterMentions.getMentionStatsBatch(inputs, 3);
+    for (const { entry } of top) {
+      const s = statsMap.get(entry.address);
+      if (s) entry.mentionStats = s;
+    }
+    this.logger.log(
+      `Twitter mentions: ${statsMap.size}/${top.length} enriched in ${Date.now() - t0}ms`,
+    );
+  }
+
+  /** Pull a handle from pump.fun's stored twitter URL (which may be a full link or bare handle). */
+  private extractPumpFunHandle(pf?: PumpFunCoinData): string | undefined {
+    if (!pf?.twitter) return undefined;
+    const m = pf.twitter.match(/(?:twitter|x)\.com\/([^/?#]+)/);
+    return m?.[1] ?? (pf.twitter.replace(/^@/, '').split(/\s+/)[0] || undefined);
+  }
+
   private async fetchDexBatch(addresses: string[]): Promise<DexTokenData[]> {
     if (!addresses.length) return [];
     try {
@@ -597,6 +690,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
           sells5m: pair.txns?.m5?.sells,
           volume1hUsd: pair.volume?.h1,
           volume5mUsd: pair.volume?.m5,
+          twitterHandle: extractTwitterHandle(pair.info?.socials),
         } satisfies DexTokenData];
       });
     } catch { return []; }
@@ -612,7 +706,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     const profile = getProfile(profileKey);
     const tokens: HotToken[] = [];
 
-    for (const { address, source, dex, pumpFunData } of enriched) {
+    for (const { address, source, dex, pumpFunData, mentionStats } of enriched) {
       let symbol = '???', name = 'Unknown', priceUsd = 0;
       let priceChange5m = 0, priceChange1h = 0, priceChange24h = 0;
       let volume24hUsd = 0, marketCapUsd = 0, liquidityUsd = 0;
@@ -661,6 +755,10 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
           isLive:            pumpFunData?.isLive,
           replyCount:        pumpFunData?.replyCount,
           athMarketCapUsd:   pumpFunData?.athMarketCapUsd,
+          twitterAlignedMatches:    mentionStats?.alignedMatches,
+          twitterUniqueAuthors:     mentionStats?.uniqueAuthors,
+          twitterCallerFollowerLog: mentionStats?.callerFollowerLog,
+          twitterProjectActive:     mentionStats?.projectActive,
         },
         profileKey,
       );

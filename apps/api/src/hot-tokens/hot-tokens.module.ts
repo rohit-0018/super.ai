@@ -8,9 +8,10 @@ import { TokenAnalysisModule } from '../token-analysis/token-analysis.module';
 import { IntelTrackModule } from '../intel-track/intel-track.module';
 import { ExecutionModule } from '../execution/execution.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { SocialModule } from '../social/social.module';
 
 @Module({
-  imports: [WsModule, TokenAnalysisModule, IntelTrackModule, PrismaModule, forwardRef(() => ExecutionModule)],
+  imports: [WsModule, TokenAnalysisModule, IntelTrackModule, PrismaModule, SocialModule, forwardRef(() => ExecutionModule)],
   providers: [HotTokensService, SignalPipelineService, TokenPoolService],
   controllers: [HotTokensController],
   exports: [HotTokensService, SignalPipelineService, TokenPoolService],

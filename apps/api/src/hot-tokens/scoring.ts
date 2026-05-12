@@ -34,6 +34,12 @@ export interface ScoringInput {
   isLive?: boolean;
   replyCount?: number;
   athMarketCapUsd?: number;
+  // Phase 3 Twitter mention signals — undefined unless TwitterMentionsService
+  // was called for this candidate (top-N gating in the scanner).
+  twitterAlignedMatches?: number;
+  twitterUniqueAuthors?: number;
+  twitterCallerFollowerLog?: number;
+  twitterProjectActive?: boolean;
 }
 
 export interface ScoringResult {
@@ -55,6 +61,8 @@ export function computeHotTokenScore(d: ScoringInput, profileKey: TradingProfile
     priceChange1h, priceChange5m, volume24hUsd, liquidityUsd,
     marketCapUsd, pairAgeHours, source, buys1h, sells1h, volume1hUsd,
     bondingCurvePct, graduated, isLive, replyCount, athMarketCapUsd,
+    twitterAlignedMatches, twitterUniqueAuthors, twitterCallerFollowerLog,
+    twitterProjectActive,
   } = d;
   const volLiq = liquidityUsd > 0 ? volume24hUsd / liquidityUsd : 0;
 
@@ -150,6 +158,35 @@ export function computeHotTokenScore(d: ScoringInput, profileKey: TradingProfile
   // Live stream — creator is actively present, which historically correlates
   // with short-term attention spikes on pump.fun.
   if (isLive) add(5, 'creator LIVE');
+
+  // ── Phase 3: Twitter / X mention pressure (relevance-filtered) ──────────
+  // Counts only "project-aligned" tweets (passes the relevance scorer in
+  // social/twitter-relevance.ts) — so price-action shill like "$PROG 50x ape"
+  // doesn't inflate the score for an unrelated token, and we don't reward
+  // wash-shill clusters that all share zero narrative vocabulary.
+  if (twitterAlignedMatches != null) {
+    if (twitterAlignedMatches >= 50)      add(10, `🐦 ${twitterAlignedMatches}+ posts`);
+    else if (twitterAlignedMatches >= 20) add(6, `🐦 ${twitterAlignedMatches} posts`);
+    else if (twitterAlignedMatches >= 8)  add(3);
+  }
+
+  // Caller quality — sum of log10(followers) across unique aligned authors.
+  // Damps bot-farms (many 0-follower accounts contribute ~0 each) while
+  // rewarding genuine reach (a 100k-follower KOL alone contributes +5).
+  if (twitterCallerFollowerLog != null) {
+    if (twitterCallerFollowerLog >= 25)      add(6, 'KOL backed');
+    else if (twitterCallerFollowerLog >= 12) add(3);
+  }
+
+  // Diverse author base = organic interest, not coordinated shill cluster.
+  // Each unique aligned author at >=8 already passed the per-account filter;
+  // diversity here is a bonus on top of raw count.
+  if (twitterUniqueAuthors != null && twitterUniqueAuthors >= 15) {
+    add(3, `${twitterUniqueAuthors} unique authors`);
+  }
+
+  // Project handle tweeted in last 24h — keeps the community lights on.
+  if (twitterProjectActive) add(3, 'team active');
 
   // ── Dampeners — multipliers on positive delta only ──────────────────────
   let dampener = 1;
