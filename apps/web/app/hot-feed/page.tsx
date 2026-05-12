@@ -256,12 +256,14 @@ export default function HotFeedPage() {
         subtitle="Raw on-chain hotness — ranked by volume, source priority, recency. Includes everything the scanner found, no score filter."
         tokens={liveScan?.chainTokens ?? []}
         emptyMsg="Waiting for first scan…"
+        updatedAt={liveScan?.scannedAt}
       />
       <HotScanSection
         title="🎯 Curated by QWAI"
         subtitle={`Heuristic score ≥ 60. Filtered by our 25-signal scorer (tape quality, pump.fun lifecycle, Twitter mentions, dampeners).`}
         tokens={liveScan?.tokens ?? []}
         emptyMsg="No tokens crossed the QWAI threshold this scan."
+        updatedAt={liveScan?.scannedAt}
       />
 
       <header className="section-header" style={{ marginTop: 24 }}>
@@ -301,6 +303,38 @@ export default function HotFeedPage() {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
           gap: 12px;
+        }
+      `}</style>
+
+      {/* Global so the classnames apply inside child <HotScanCard> too */}
+      <style jsx global>{`
+        @keyframes hf-flash-up {
+          0%   { background-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+          100% { background-color: transparent; }
+        }
+        @keyframes hf-flash-down {
+          0%   { background-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+          100% { background-color: transparent; }
+        }
+        .hf-flash-up   { animation: hf-flash-up   600ms ease-out; }
+        .hf-flash-down { animation: hf-flash-down 600ms ease-out; }
+
+        @keyframes hf-enter-anim {
+          0%   { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        .hf-enter { animation: hf-enter-anim 350ms ease-out both; }
+
+        @keyframes hf-live-pulse {
+          0%, 100% { opacity: 1;   transform: scale(1); }
+          50%      { opacity: 0.5; transform: scale(0.85); }
+        }
+        .hf-live-dot { animation: hf-live-pulse 1.5s ease-in-out infinite; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .hf-flash-up, .hf-flash-down, .hf-enter, .hf-live-dot {
+            animation: none !important;
+          }
         }
       `}</style>
     </div>
@@ -353,17 +387,49 @@ function FeedCard({ s, extra, pendingAnalysis }: { s: FeedItem; extra?: SignalEx
   );
 }
 
+/* ── Animations ─────────────────────────────────────────────────────────────
+ *
+ * Trading-app micro-interactions, kept to pure CSS so there's no JS-driven
+ * animation cost. Three patterns in play:
+ *
+ *   useFlash(value)  → returns 'up' | 'down' | null briefly after a numeric
+ *                      change. We pin the className onto the element and use
+ *                      a keyframe to flash the background.
+ *
+ *   .hf-enter        → applied to new card entries (first time they appear)
+ *                      to slide+fade them in subtly.
+ *
+ *   .hf-live-dot     → pulsing dot on the section header so users see the
+ *                      feed is live even when nothing's moving.
+ */
+function useFlash(value: number | undefined, durationMs = 600): 'up' | 'down' | null {
+  const prev = useRef<number | undefined>(value);
+  const [state, setState] = useState<'up' | 'down' | null>(null);
+  useEffect(() => {
+    if (prev.current === undefined || value === undefined) { prev.current = value; return; }
+    if (Math.abs((value ?? 0) - (prev.current ?? 0)) < 0.0001) { prev.current = value; return; }
+    const dir = (value ?? 0) > (prev.current ?? 0) ? 'up' : 'down';
+    prev.current = value;
+    setState(dir);
+    const id = setTimeout(() => setState(null), durationMs);
+    return () => clearTimeout(id);
+  }, [value, durationMs]);
+  return state;
+}
+
 /* ── HotScanSection: horizontal scroller showing live scan results ─────────── */
 function HotScanSection({
   title,
   subtitle,
   tokens,
   emptyMsg,
+  updatedAt,
 }: {
   title: string;
   subtitle: string;
   tokens: HotScanToken[];
   emptyMsg: string;
+  updatedAt?: string;
 }) {
   return (
     <section style={{ marginTop: 8 }}>
@@ -373,6 +439,7 @@ function HotScanSection({
           <span className="chip" style={{ fontSize: 10, color: 'var(--text-3)' }}>
             {tokens.length}
           </span>
+          <LivePulse updatedAt={updatedAt} />
         </h2>
         <p className="text-[12px]" style={{ color: 'var(--text-3)', marginTop: 2 }}>{subtitle}</p>
       </header>
@@ -395,6 +462,33 @@ function HotScanSection({
   );
 }
 
+/** Pulsing dot + "Updated Ns ago" string that re-renders every second so the
+ *  feed feels alive even when the underlying scan hasn't ticked yet. */
+function LivePulse({ updatedAt }: { updatedAt?: string }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const secs = updatedAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(updatedAt).getTime()) / 1000))
+    : null;
+  const fresh = secs != null && secs < 30;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5,
+      fontSize: 10, fontWeight: 600, marginLeft: 'auto',
+      color: fresh ? 'var(--ok)' : 'var(--text-3)',
+    }}>
+      <span className="hf-live-dot" style={{
+        width: 6, height: 6, borderRadius: '50%',
+        background: fresh ? 'var(--ok)' : 'var(--text-3)',
+      }} />
+      {secs == null ? 'connecting…' : secs < 3 ? 'live' : `${secs}s ago`}
+    </span>
+  );
+}
+
 /** Compact card used in the live-scan sections. Differs from the capture-feed
  *  TokenCard by being lighter (no historical peak data) and always showing
  *  the heuristic score prominently. */
@@ -405,28 +499,34 @@ function HotScanCard({ t }: { t: HotScanToken }) {
     t.verdict === 'CAUTIOUS'   ? '#f59e0b' :
     t.verdict === 'SKIP'       ? '#8a8fa3' :
     '#ef4444';
+  const scoreFlash = useFlash(t.score);
+  const priceFlash = useFlash(t.priceChange1h);
   return (
     <Link
       href={`/intel?address=${t.address}`}
-      className="panel"
+      className="panel hf-enter"
       style={{
         padding: '12px 14px',
         textDecoration: 'none',
         color: 'var(--text-1)',
         display: 'flex', flexDirection: 'column', gap: 8,
         border: `1px solid color-mix(in srgb, ${verdictColor} 30%, var(--border))`,
-        transition: 'border-color 0.15s',
+        transition: 'border-color 0.15s, background 0.6s ease-out',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{
-          width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-          border: `2px solid ${verdictColor}`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: `color-mix(in srgb, ${verdictColor} 12%, transparent)`,
-          fontFamily: 'var(--font-mono)', fontWeight: 900, fontSize: 13,
-          color: verdictColor,
-        }}>{t.score}</div>
+        <div
+          className={scoreFlash ? `hf-flash-${scoreFlash}` : ''}
+          style={{
+            width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
+            border: `2px solid ${verdictColor}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: `color-mix(in srgb, ${verdictColor} 12%, transparent)`,
+            fontFamily: 'var(--font-mono)', fontWeight: 900, fontSize: 13,
+            color: verdictColor,
+            transition: 'transform 0.5s ease-out, background 0.5s ease-out',
+          }}
+        >{t.score}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
             <span style={{ fontWeight: 700, fontSize: 14 }}>${t.symbol}</span>
@@ -437,9 +537,16 @@ function HotScanCard({ t }: { t: HotScanToken }) {
           </div>
         </div>
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 10, color: 'var(--text-2)' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 10, color: 'var(--text-2)', alignItems: 'center' }}>
         <span>MC ${fmtCompact(t.marketCapUsd)}</span>
-        <span style={{ color: t.priceChange1h >= 0 ? 'var(--ok)' : 'var(--bad)' }}>
+        <span
+          className={priceFlash ? `hf-flash-${priceFlash}` : ''}
+          style={{
+            color: t.priceChange1h >= 0 ? 'var(--ok)' : 'var(--bad)',
+            padding: '1px 5px', borderRadius: 3,
+            transition: 'background 0.6s ease-out',
+          }}
+        >
           {t.priceChange1h >= 0 ? '+' : ''}{t.priceChange1h?.toFixed?.(0) ?? 0}% 1h
         </span>
         <span>{t.pairAgeHours < 1 ? `${(t.pairAgeHours * 60).toFixed(0)}m` : `${t.pairAgeHours.toFixed(0)}h`} old</span>
