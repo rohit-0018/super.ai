@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import type { ReactNode } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
+import { useApi } from '../../lib/useApi';
 import { fmtPriceUsd } from '../../lib/format-price';
 import { BullBearIndicator } from '../../components/TokenCard';
 import { useRealtime } from '../../lib/useRealtime';
@@ -127,7 +128,7 @@ interface Report {
 
 interface HistoryEntry {
   address: string; symbol?: string; name?: string; chain: string; dex?: string;
-  priceUsd?: number; h24?: number; verdict: string; score: number; source: 'ai' | 'playbooks';
+  priceUsd?: number; h24?: number; verdict: string; score: number; source: 'ai' | 'heuristic' | 'playbooks' | 'unavailable';
   liquidityUsd?: number; marketCapUsd?: number; killed: boolean; timestamp: number;
   profile?: string;
 }
@@ -376,14 +377,39 @@ function computeHeuristicCategories(report: Report) {
   return { safety: Math.max(0, Math.min(35, saf)), distribution: dist, market: mkt, social: soc, macro };
 }
 
-function computeOverall(report: Report): {
-  score: number; verdict: string; source: 'ai' | 'playbooks';
+/** Heuristic snapshot pulled from /hot-tokens/score/:address — used as the
+ *  source-of-truth when the LLM is disabled. The 5-pillar "playbooks" fallback
+ *  underneath returns artificially low scores (~35) when provider data is
+ *  thin, so we prefer the real scorer's output whenever it's available. */
+export interface HeuristicSnapshot {
+  found: boolean;
+  score?: number;
+  verdict?: string;
+  summary?: string;
+  breakdown?: Array<{ category: string; label: string; delta: number; kind: string }>;
+}
+
+function computeOverall(
+  report: Report,
+  heuristicSnap?: HeuristicSnapshot | null,
+): {
+  score: number; verdict: string; source: 'ai' | 'heuristic' | 'playbooks' | 'unavailable';
   categoryScores?: { safety: number; distribution: number; market: number; social: number; macro: number };
 } {
   if (report.aiReasoning) return { score: report.aiReasoning.score, verdict: report.aiReasoning.verdict, source: 'ai' };
 
+  // Prefer the actual 25-signal scorer over the 5-pillar playbook fallback —
+  // playbooks return ~35 when provider data is thin which is misleading.
+  if (heuristicSnap?.found && heuristicSnap.score != null && heuristicSnap.verdict) {
+    return { score: heuristicSnap.score, verdict: heuristicSnap.verdict, source: 'heuristic' };
+  }
+
   const cats = computeHeuristicCategories(report);
-  const score = Math.max(0, Math.min(100, cats.safety + cats.distribution + cats.market + cats.social + cats.macro));
+  const total = cats.safety + cats.distribution + cats.market + cats.social + cats.macro;
+  // If categories all returned near-zero (no provider data), don't pretend we
+  // have a real score. Mark unavailable so the UI can say so honestly.
+  if (total < 15) return { score: 0, verdict: 'UNKNOWN', source: 'unavailable', categoryScores: cats };
+  const score = Math.max(0, Math.min(100, total));
   const verdict = score >= 80 ? 'STRONG_BUY' : score >= 65 ? 'BUY' : score >= 50 ? 'CAUTIOUS' : score >= 30 ? 'SKIP' : 'HIGH_RISK';
   return { score, verdict, source: 'playbooks', categoryScores: cats };
 }
@@ -641,8 +667,10 @@ function TokenHeader({ report, onReanalyze, busy, profile }: { report: Report; o
 }
 
 /* ─── Quick Analysis card (Tier 1 — always shown first) ─────────────────── */
-function QuickAnalysisCard({ report }: { report: Report }) {
-  const overall = computeOverall(report);
+function QuickAnalysisCard({ report, heuristicSnap }: { report: Report; heuristicSnap?: HeuristicSnapshot | null }) {
+  // heuristicSnap is fetched once by the parent ReportView and threaded into
+  // every card that computes overall score so they all agree.
+  const overall = computeOverall(report, heuristicSnap);
   const ai      = report.aiReasoning;
   const color   = vc(overall.verdict);
   const bullish = ai?.bullishSignals.slice(0, 3) ?? [];
@@ -683,6 +711,17 @@ function QuickAnalysisCard({ report }: { report: Report }) {
           {ai?.summary ? (
             <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)', margin: 0, lineHeight: 1.65, maxWidth: 560 }}>
               {ai.summary}
+            </p>
+          ) : overall.source === 'heuristic' && heuristicSnap?.summary ? (
+            <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)', margin: 0, lineHeight: 1.65, maxWidth: 560 }}>
+              {heuristicSnap.summary}
+              <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                · heuristic (AI off)
+              </span>
+            </p>
+          ) : overall.source === 'unavailable' ? (
+            <p style={{ fontSize: 12, color: 'var(--bad)', margin: 0, fontStyle: 'italic' }}>
+              Score unavailable — provider data is too thin for the heuristic, and AI is off. Try a token already in the hot feed, or enable an LLM key.
             </p>
           ) : (
             <p style={{ fontSize: 12, color: 'var(--text-3)', margin: 0, fontStyle: 'italic' }}>
@@ -731,8 +770,8 @@ function QuickAnalysisCard({ report }: { report: Report }) {
 }
 
 /* ─── Overall verdict card ───────────────────────────────────────────────── */
-function OverallVerdictCard({ report, profile }: { report: Report; profile: TradingProfile }) {
-  const overall = computeOverall(report);
+function OverallVerdictCard({ report, profile, heuristicSnap }: { report: Report; profile: TradingProfile; heuristicSnap?: HeuristicSnapshot | null }) {
+  const overall = computeOverall(report, heuristicSnap);
   const ai = report.aiReasoning;
   const color = vc(overall.verdict);
   const profileMeta = PROFILES[profile];
@@ -1422,12 +1461,21 @@ function ReportView({ report, onReanalyze, busy, profile, depth }: {
   const strategy = report.tradingStrategy;
   const isQuick  = depth === 'quick' || !report.aiReasoning;
 
+  // Single source of truth for the heuristic snapshot — fetched once here,
+  // passed to every card that computes overall score so they all agree
+  // (Quick Analysis + Overall Verdict were diverging when only one card
+  // had the snapshot).
+  const { data: heuristicSnap } = useApi<HeuristicSnapshot>(
+    `/hot-tokens/score/${report.meta.address}`,
+    { ttlMs: 60_000 },
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} className="fade-in">
       <TokenHeader report={report} onReanalyze={onReanalyze} busy={busy} profile={profile} />
 
       {/* ── Tier 1: Quick Analysis ─────────────────────────────────────── */}
-      <QuickAnalysisCard report={report} />
+      <QuickAnalysisCard report={report} heuristicSnap={heuristicSnap} />
       {strategy && <TradingStrategyCard strategy={strategy} profile={profile} />}
 
       {/* ── Tier 2 divider ─────────────────────────────────────────────── */}
@@ -1443,7 +1491,7 @@ function ReportView({ report, onReanalyze, busy, profile, depth }: {
       </div>
 
       {/* ── Tier 2: Full Breakdown ─────────────────────────────────────── */}
-      <OverallVerdictCard report={report} profile={profile} />
+      <OverallVerdictCard report={report} profile={profile} heuristicSnap={heuristicSnap} />
       {!isQuick && <AIBreakdownCard report={report} />}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <SafetyCard report={report} />

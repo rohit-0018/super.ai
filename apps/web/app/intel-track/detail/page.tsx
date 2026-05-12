@@ -255,6 +255,8 @@ function IntelTrackDetailInner() {
         );
       })()}
 
+      <ScoringBreakdownCard address={data.address} symbol={data.symbol ?? '?'} />
+
       {data.reappearedAt && (
         <section className="section" style={{ padding: '12px 16px', background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-1))' }}>
           ↺ Re-appeared {relTime(data.reappearedAt)} via <strong>{data.reappearedSource}</strong>
@@ -273,6 +275,138 @@ function IntelTrackDetailInner() {
         </a>
       </div>
     </div>
+  );
+}
+
+// ── Scoring breakdown card ────────────────────────────────────────────────
+
+interface ScoreSignal {
+  category: 'price' | 'volume' | 'liquidity' | 'age' | 'tape' | 'bonding' | 'community' | 'twitter' | 'dampener' | 'dead-bag';
+  label: string;
+  delta: number;
+  kind: 'add' | 'sub' | 'damp';
+}
+interface ScoreSnapshot {
+  found: boolean;
+  address?: string;
+  symbol?: string;
+  profileKey?: string;
+  source?: string;
+  scannedAt?: string;
+  score?: number;
+  verdict?: string;
+  summary?: string;
+  breakdown?: ScoreSignal[];
+}
+
+const CATEGORY_META: Record<ScoreSignal['category'], { label: string; color: string }> = {
+  price:     { label: 'Price action',     color: '#22c55e' },
+  volume:    { label: 'Volume',           color: '#06b6d4' },
+  liquidity: { label: 'Liquidity',        color: '#8b5cf6' },
+  age:       { label: 'Age / freshness',  color: '#f59e0b' },
+  tape:      { label: 'Tape quality',     color: '#0ea5e9' },
+  bonding:   { label: 'Pump.fun curve',   color: '#ec4899' },
+  community: { label: 'Community heat',   color: '#f97316' },
+  twitter:   { label: 'Twitter / X',      color: '#1d9bf0' },
+  dampener:  { label: 'Dampener',         color: '#ef4444' },
+  'dead-bag':{ label: 'Dead-bag',         color: '#ef4444' },
+};
+
+function ScoringBreakdownCard({ address, symbol }: { address: string; symbol: string }) {
+  const { data, loading } = useApi<ScoreSnapshot>(`/hot-tokens/score/${address}`, { ttlMs: 30_000 });
+
+  if (loading) return <Skeleton h={120} rounded="md" />;
+  if (!data?.found) return null;
+
+  const sig = data.breakdown ?? [];
+  // Group breakdown by category for display
+  const byCat = new Map<ScoreSignal['category'], ScoreSignal[]>();
+  for (const s of sig) {
+    const k = s.category;
+    const list = byCat.get(k) ?? [];
+    list.push(s);
+    byCat.set(k, list);
+  }
+
+  const vColor = data.verdict ? (VERDICT_COLOR[data.verdict] ?? 'var(--accent)') : 'var(--accent)';
+  const totalAdd = sig.filter((s) => s.kind === 'add').reduce((a, s) => a + s.delta, 0);
+  const totalSub = sig.filter((s) => s.kind === 'sub').reduce((a, s) => a + s.delta, 0);
+  const hasDamp = sig.some((s) => s.kind === 'damp');
+
+  return (
+    <section style={{
+      background: 'var(--surface)',
+      border: '1px solid var(--border)',
+      borderRadius: 12,
+      overflow: 'hidden',
+    }}>
+      <header style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: '12px 16px',
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--surface-2)',
+      }}>
+        <div style={{
+          width: 44, height: 44, borderRadius: '50%', flexShrink: 0,
+          border: `2px solid ${vColor}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: `color-mix(in srgb, ${vColor} 12%, transparent)`,
+          fontFamily: 'var(--font-mono)', fontWeight: 900, fontSize: 14,
+          color: vColor,
+        }}>{data.score ?? '?'}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-1)' }}>
+            Why ${symbol} scored {data.score} <span style={{ color: 'var(--text-3)', fontWeight: 500 }}>· heuristic ({data.profileKey})</span>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+            {data.summary} · scanned {data.scannedAt ? relTime(data.scannedAt) : '?'}
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-3)', textAlign: 'right' }}>
+          <div><span style={{ color: 'var(--ok)' }}>+{totalAdd}</span> / <span style={{ color: 'var(--bad)' }}>{totalSub}</span></div>
+          {hasDamp && <div style={{ color: 'var(--bad)' }}>× dampened</div>}
+        </div>
+      </header>
+      <div style={{ padding: '10px 16px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {[...byCat.entries()].map(([cat, items]) => {
+          const meta = CATEGORY_META[cat];
+          const catTotal = items.reduce((a, s) => a + s.delta, 0);
+          return (
+            <div key={cat} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12 }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: 0.5, color: meta.color, minWidth: 110,
+              }}>{meta.label}</span>
+              <span style={{
+                fontFamily: 'var(--font-mono)',
+                color: catTotal >= 0 ? 'var(--ok)' : 'var(--bad)',
+                fontWeight: 700, minWidth: 36,
+              }}>{catTotal >= 0 ? '+' : ''}{catTotal}</span>
+              <span style={{ color: 'var(--text-2)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {items.map((s, i) => (
+                  <span key={i} style={{
+                    padding: '1px 6px',
+                    borderRadius: 4,
+                    background: s.kind === 'damp'
+                      ? 'color-mix(in srgb, var(--bad) 18%, transparent)'
+                      : s.kind === 'sub'
+                      ? 'color-mix(in srgb, var(--bad) 10%, transparent)'
+                      : 'color-mix(in srgb, var(--ok) 10%, transparent)',
+                    fontSize: 11,
+                    border: `1px solid color-mix(in srgb, ${meta.color} 25%, transparent)`,
+                  }}>
+                    {s.label || '—'}{' '}
+                    <span style={{ fontFamily: 'var(--font-mono)', opacity: 0.75 }}>
+                      {s.kind === 'damp' ? '×' : (s.delta >= 0 ? `+${s.delta}` : s.delta)}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
