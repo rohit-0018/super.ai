@@ -8,6 +8,9 @@ import { SignalPipelineService } from './signal-pipeline.service';
 import { TokenPoolService } from './token-pool.service';
 import { getProfile } from '../token-analysis/profile.config';
 import { fmtPriceUsd } from '../common/format-price';
+import { PumpFunProvider, type PumpFunCoinData } from '../token-analysis/providers/pump-fun.provider';
+import { isPumpFunMint } from '../token-analysis/providers/pump-fun.util';
+import { computeHotTokenScore } from './scoring';
 import type { TradingProfile } from '../token-analysis/profile.config';
 import type {
   AllProfilesScan,
@@ -77,8 +80,10 @@ interface DexTokenData {
 interface Candidate {
   address: string;
   source: HotTokenSource;
-  pumpFunRaw?: Record<string, unknown>;
   geckoRaw?: DexTokenData;
+  /** Pump.fun frontend-api-v3 enrichment (bonding %, replyCount, isLive, etc.).
+   *  Populated only for mints with the "pump" suffix; null for everything else. */
+  pumpFunData?: PumpFunCoinData;
 }
 
 @Injectable()
@@ -101,6 +106,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly intelSnapshots: IntelSnapshotService,
     @Optional() private readonly signalPipeline: SignalPipelineService,
     @Optional() private readonly tokenPool: TokenPoolService,
+    @Optional() private readonly pumpFun: PumpFunProvider,
   ) {
     this.redis = new IORedis(
       process.env.REDIS_URL ?? 'redis://localhost:6379',
@@ -516,6 +522,15 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Array<Candidate & { dex: DexTokenData | null }>> {
     const entries = [...candidates.values()];
     const results: Array<Candidate & { dex: DexTokenData | null }> = [];
+
+    // Fan out pump.fun enrichment for all mints with the "pump" suffix in
+    // parallel with the DexScreener batch loop. Provider has a 60s cache so
+    // a token re-appearing in the next scan doesn't trigger another HTTP.
+    const pumpMints = entries.map((e) => e.address).filter(isPumpFunMint);
+    const pumpDataPromise = this.pumpFun && pumpMints.length
+      ? this.pumpFun.getCoinDataBatch(pumpMints, 5).catch(() => new Map<string, PumpFunCoinData>())
+      : Promise.resolve(new Map<string, PumpFunCoinData>());
+
     for (const chunk of this.chunk(entries, 10)) {
       const batch = await this.fetchDexBatch(chunk.map((e) => e.address));
       const byAddr = new Map(batch.map((d) => [d.address, d]));
@@ -525,6 +540,16 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         results.push({ ...entry, dex });
       }
       if (entries.length > 10) await new Promise((r) => setTimeout(r, 150));
+    }
+
+    // Merge pump.fun data after the dex loop completes — non-blocking on the
+    // hot path: if pump.fun is slow/down, we still return everything else.
+    const pumpMap = await pumpDataPromise;
+    if (pumpMap.size > 0) {
+      for (const r of results) {
+        const pf = pumpMap.get(r.address);
+        if (pf) r.pumpFunData = pf;
+      }
     }
     return results;
   }
@@ -587,7 +612,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     const profile = getProfile(profileKey);
     const tokens: HotToken[] = [];
 
-    for (const { address, source, dex, pumpFunRaw } of enriched) {
+    for (const { address, source, dex, pumpFunData } of enriched) {
       let symbol = '???', name = 'Unknown', priceUsd = 0;
       let priceChange5m = 0, priceChange1h = 0, priceChange24h = 0;
       let volume24hUsd = 0, marketCapUsd = 0, liquidityUsd = 0;
@@ -598,13 +623,22 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         ({ symbol, name, priceUsd, priceChange5m, priceChange1h, priceChange24h,
           volume24hUsd, marketCapUsd, liquidityUsd, pairAgeHours, dexUrl, launchPlatform } = dex);
         ({ buys1h, sells1h, volume1hUsd } = dex);
-      } else if (pumpFunRaw) {
-        symbol = String(pumpFunRaw.symbol ?? '???');
-        name = String(pumpFunRaw.name ?? 'Unknown');
-        marketCapUsd = Number(pumpFunRaw.usd_market_cap ?? 0);
+        // Pump.fun fallbacks for pre-graduation tokens that DexScreener under-reports.
+        if (pumpFunData) {
+          if (!marketCapUsd && pumpFunData.marketCapUsd) marketCapUsd = pumpFunData.marketCapUsd;
+          if (!symbol || symbol === '???') symbol = pumpFunData.symbol || symbol;
+          if (!name || name === 'Unknown') name = pumpFunData.name || name;
+          launchPlatform = launchPlatform ?? 'pump.fun';
+        }
+      } else if (pumpFunData) {
+        // No DexScreener pool yet (still bonding) — pump.fun is authoritative.
+        symbol = pumpFunData.symbol || '???';
+        name = pumpFunData.name || 'Unknown';
+        marketCapUsd = pumpFunData.marketCapUsd;
         priceUsd = marketCapUsd / 1e9;
-        const created = pumpFunRaw.created_timestamp as number | undefined;
-        pairAgeHours = created ? (Date.now() - created * 1_000) / 3_600_000 : 0;
+        pairAgeHours = pumpFunData.createdAt
+          ? (Date.now() - pumpFunData.createdAt) / 3_600_000
+          : 0;
         launchPlatform = 'pump.fun';
       } else {
         continue;
@@ -617,11 +651,16 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       const maxAge = profile.killOverrides.maxAgeHours;
       if (maxAge != null && pairAgeHours > maxAge) continue;
 
-      const { score, verdict, summary } = this.computeScore(
+      const { score, verdict, summary } = computeHotTokenScore(
         {
           priceChange1h, priceChange5m, priceChange24h,
           volume24hUsd, liquidityUsd, marketCapUsd, pairAgeHours, source,
           buys1h, sells1h, volume1hUsd,
+          bondingCurvePct:   pumpFunData?.bondingCurvePct,
+          graduated:         pumpFunData?.graduated,
+          isLive:            pumpFunData?.isLive,
+          replyCount:        pumpFunData?.replyCount,
+          athMarketCapUsd:   pumpFunData?.athMarketCapUsd,
         },
         profileKey,
       );
@@ -637,146 +676,6 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     }
 
     return tokens.sort((a, b) => b.score - a.score).slice(0, MAX_PER_PROFILE);
-  }
-
-  private computeScore(
-    d: {
-      priceChange1h: number; priceChange5m: number; priceChange24h: number;
-      volume24hUsd: number; liquidityUsd: number; marketCapUsd: number;
-      pairAgeHours: number; source: HotTokenSource;
-      buys1h?: number; sells1h?: number; volume1hUsd?: number;
-    },
-    profileKey: TradingProfile,
-  ): { score: number; verdict: HotTokenVerdict; summary: string } {
-    const BASE = 35;
-    let posDelta = 0;
-    let negDelta = 0;
-    const pos: string[] = [];
-    const neg: string[] = [];
-    const add = (n: number, tag?: string) => { posDelta += n; if (tag) pos.push(tag); };
-    const sub = (n: number, tag?: string) => { negDelta -= n; if (tag) neg.push(tag); };
-
-    const {
-      priceChange1h, priceChange5m, volume24hUsd, liquidityUsd,
-      marketCapUsd, pairAgeHours, source, buys1h, sells1h, volume1hUsd,
-    } = d;
-    const volLiq = liquidityUsd > 0 ? volume24hUsd / liquidityUsd : 0;
-
-    if (priceChange1h > 100) add(22, `+${priceChange1h.toFixed(0)}% 1h`);
-    else if (priceChange1h > 50) add(15, `+${priceChange1h.toFixed(0)}% 1h`);
-    else if (priceChange1h > 20) add(9, `+${priceChange1h.toFixed(0)}% 1h`);
-    else if (priceChange1h > 5) add(3);
-    else if (priceChange1h < -30) sub(12, `${priceChange1h.toFixed(0)}% 1h`);
-    else if (priceChange1h < -15) sub(6);
-
-    if (priceChange5m > 15) add(10, `+${priceChange5m.toFixed(0)}% 5m`);
-    else if (priceChange5m > 5) add(5);
-    else if (priceChange5m < -10) sub(5);
-
-    if (volLiq > 20) add(14, `${volLiq.toFixed(0)}x vol/liq`);
-    else if (volLiq > 8) add(8, `${volLiq.toFixed(0)}x vol/liq`);
-    else if (volLiq > 3) add(4);
-    else if (volLiq < 0.5 && liquidityUsd > 0) sub(5);
-
-    if (liquidityUsd >= 200_000) add(7);
-    else if (liquidityUsd >= 50_000) add(3);
-    else if (0 < liquidityUsd && liquidityUsd < 5_000) sub(8, 'thin liq');
-
-    if (profileKey === 'meme_hunter' || profileKey === 'degen_sniper') {
-      if (pairAgeHours < 1) add(14, `${(pairAgeHours * 60).toFixed(0)}m old`);
-      else if (pairAgeHours < 4) add(9, `${pairAgeHours.toFixed(1)}h old`);
-      else if (pairAgeHours < 12) add(4, `${pairAgeHours.toFixed(0)}h old`);
-      else if (pairAgeHours > 72) sub(8);
-      if (source === 'pumpfun') add(5);
-    } else if (profileKey === 'swing_trader') {
-      if (pairAgeHours >= 6 && pairAgeHours <= 168) add(5);
-      else if (pairAgeHours < 6) sub(5, 'too new');
-    } else if (profileKey === 'gem_hunt') {
-      if (pairAgeHours >= 72) add(10);
-      else sub(12, 'too new');
-    }
-
-    // ── Phase 1 gem-hunter tape signals (DexScreener buys/sells/vol) ───────
-    const txCount = (buys1h ?? 0) + (sells1h ?? 0);
-    const hasTape = buys1h != null && sells1h != null && txCount > 0;
-    const avgTradeUsd = hasTape && volume1hUsd ? volume1hUsd / txCount : 0;
-    const buyRatio = hasTape ? (buys1h as number) / txCount : 0;
-
-    // Buy/sell ratio — directional pressure
-    if (hasTape) {
-      if (buyRatio > 0.65) add(7, `${(buyRatio * 100).toFixed(0)}% buys`);
-      else if (buyRatio > 0.55) add(3);
-      else if (buyRatio < 0.40) sub(8, `${(buyRatio * 100).toFixed(0)}% buys`);
-      else if (buyRatio < 0.45) sub(3);
-    }
-
-    // Trade-size quality — only meaningful once MC is non-trivial.
-    // Dust-only flow on a big-MC token is the user's "high MC, small buys"
-    // failure mode and earns a sharp penalty.
-    if (hasTape && marketCapUsd >= 200_000 && avgTradeUsd > 0) {
-      if (avgTradeUsd > 500) add(6, `$${avgTradeUsd.toFixed(0)} avg`);
-      else if (avgTradeUsd > 150) add(3);
-      else if (avgTradeUsd < 15) sub(10, 'pure dust');
-      else if (avgTradeUsd < 40) sub(5, 'dust trades');
-    }
-
-    // Activity level — too few prints on an aged pair = dead tape.
-    if (hasTape) {
-      if (txCount > 200) add(4, 'active');
-      else if (txCount > 80) add(2);
-      else if (pairAgeHours > 1 && txCount < 8) sub(10, 'dead tape');
-    }
-
-    // Vol/MC sweet-spot (1h) — stacked, not laddered. Healthy discovery
-    // starts at ~5% MC turned over in 1h. Penalize only at FOMO extremes
-    // (>300%) so we don't punish memes mid-pump (1–2× MC turnover is normal).
-    if (volume1hUsd != null && marketCapUsd > 0) {
-      const volMc1h = volume1hUsd / marketCapUsd;
-      if (volMc1h > 0.05) add(3);
-      if (volMc1h > 0.20) add(2, 'hot tape');
-      if (volMc1h > 3.0)  sub(4, 'fomo peak');
-      if (marketCapUsd > 500_000 && volMc1h < 0.002) sub(6, 'illiquid for size');
-    }
-
-    // ── Dampeners — multipliers on positive delta only ────────────────────
-    // Thin-tape: the user's exact failure mode (big MC, dust prints, few txs).
-    let dampener = 1;
-    if (
-      hasTape && volume1hUsd != null && marketCapUsd >= 1_000_000 &&
-      avgTradeUsd > 0 && avgTradeUsd < 50 && txCount < 30
-    ) {
-      dampener = Math.min(dampener, 0.3);
-      neg.push('paper tape');
-    } else if (
-      hasTape && volume1hUsd != null && marketCapUsd >= 500_000 &&
-      avgTradeUsd > 0 && avgTradeUsd < 80 && txCount < 50
-    ) {
-      dampener = Math.min(dampener, 0.5);
-      neg.push('thin tape');
-    }
-
-    // Wash-trade: huge 24h volume relative to MC but almost no live tx.
-    if (
-      hasTape && marketCapUsd > 0 &&
-      volume24hUsd / marketCapUsd > 1.0 && txCount < 20
-    ) {
-      dampener = Math.min(dampener, 0.7);
-      neg.push('maybe wash');
-    }
-
-    const adjustedPos = posDelta * dampener;
-    const raw = BASE + adjustedPos + negDelta;
-    const final = Math.max(0, Math.min(100, raw));
-
-    let verdict: HotTokenVerdict;
-    if (final >= 78) verdict = 'STRONG_BUY';
-    else if (final >= 62) verdict = 'BUY';
-    else if (final >= 46) verdict = 'CAUTIOUS';
-    else if (final >= 28) verdict = 'SKIP';
-    else verdict = 'HIGH_RISK';
-
-    const summary = [...pos.slice(0, 2), ...neg.slice(0, 1)].join(' · ') || 'on watch';
-    return { score: final, verdict, summary };
   }
 
   // ── Pump streak tracking ──────────────────────────────────────────────────
