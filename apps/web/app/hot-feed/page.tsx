@@ -361,29 +361,35 @@ function FeedCard({ s, extra, pendingAnalysis }: { s: FeedItem; extra?: SignalEx
   const isFresh = s._isFresh;
 
   return (
-    <TokenCard
-      href={`/intel-track/detail?id=${s.id}`}
-      address={s.address}
-      symbol={s.symbol}
-      name={s.name}
-      chain="SOLANA"
-      status={s.status}
-      source={s.source}
-      capturedAt={s.capturedAt}
-      profileKey={s.profileKey}
-      marketCapAtCapture={s.marketCapUsdAtCapture}
-      pumpedHigh={s.pumpedHigh}
-      currentMcap={currentMcap}
-      peakDelta={s.peakDeltaPct}
-      currentDelta={currentDelta}
-      sparkline={s.sparkline}
-      aiScore={s.aiScore}
-      aiVerdict={s.aiVerdict}
-      aiSummary={extra?.aiSummary}
-      t1Pct={extra?.t1Pct}
-      riskReward={extra?.riskReward}
-      isFresh={isFresh}
-    />
+    <div style={{ position: 'relative' }}>
+      <TokenCard
+        href={`/intel-track/detail?id=${s.id}`}
+        address={s.address}
+        symbol={s.symbol}
+        name={s.name}
+        chain="SOLANA"
+        status={s.status}
+        source={s.source}
+        capturedAt={s.capturedAt}
+        profileKey={s.profileKey}
+        marketCapAtCapture={s.marketCapUsdAtCapture}
+        pumpedHigh={s.pumpedHigh}
+        currentMcap={currentMcap}
+        peakDelta={s.peakDeltaPct}
+        currentDelta={currentDelta}
+        sparkline={s.sparkline}
+        aiScore={s.aiScore}
+        aiVerdict={s.aiVerdict}
+        aiSummary={extra?.aiSummary}
+        t1Pct={extra?.t1Pct}
+        riskReward={extra?.riskReward}
+        isFresh={isFresh}
+      />
+      {/* Floating DexScreener shortcut — never interferes with the card click. */}
+      <div style={{ position: 'absolute', top: 6, right: 6, zIndex: 2 }}>
+        <DexChartLink address={s.address} chain="SOLANA" />
+      </div>
+    </div>
   );
 }
 
@@ -448,14 +454,25 @@ function HotScanSection({
           <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{emptyMsg}</span>
         </div>
       ) : (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-          gap: 12,
+        // Desktop: fixed-height scrollable multi-col grid (~3 cards visible
+        // before scroll). Mobile: shorter container, same scrolling behavior.
+        // Compact cards (240px min) so 4-5 fit across a wide monitor.
+        <div className="hf-scan-grid" style={{
+          maxHeight: 440,
+          overflowY: 'auto',
+          padding: '4px 2px',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          background: 'var(--surface-1)',
         }}>
-          {tokens.slice(0, 12).map((t) => (
-            <HotScanCard key={t.address} t={t} />
-          ))}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+            gap: 8,
+            padding: 6,
+          }}>
+            {tokens.map((t) => <HotScanCard key={t.address} t={t} />)}
+          </div>
         </div>
       )}
     </section>
@@ -502,59 +519,61 @@ function HotScanCard({ t }: { t: HotScanToken }) {
   const scoreFlash = useFlash(t.score);
   const priceFlash = useFlash(t.priceChange1h);
   return (
-    <Link
-      href={`/intel?address=${t.address}`}
+    <div
       className="panel hf-enter"
       style={{
-        padding: '12px 14px',
-        textDecoration: 'none',
+        padding: '8px 10px',
         color: 'var(--text-1)',
-        display: 'flex', flexDirection: 'column', gap: 8,
-        border: `1px solid color-mix(in srgb, ${verdictColor} 30%, var(--border))`,
+        display: 'flex', flexDirection: 'column', gap: 5,
+        border: `1px solid color-mix(in srgb, ${verdictColor} 28%, var(--border))`,
+        borderRadius: 8,
         transition: 'border-color 0.15s, background 0.6s ease-out',
+        position: 'relative',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <Link
+        href={`/intel?address=${t.address}`}
+        style={{ textDecoration: 'none', color: 'inherit', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+      >
         <div
           className={scoreFlash ? `hf-flash-${scoreFlash}` : ''}
           style={{
-            width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
+            width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
             border: `2px solid ${verdictColor}`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: `color-mix(in srgb, ${verdictColor} 12%, transparent)`,
-            fontFamily: 'var(--font-mono)', fontWeight: 900, fontSize: 13,
+            fontFamily: 'var(--font-mono)', fontWeight: 900, fontSize: 11,
             color: verdictColor,
-            transition: 'transform 0.5s ease-out, background 0.5s ease-out',
           }}
         >{t.score}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <span style={{ fontWeight: 700, fontSize: 14 }}>${t.symbol}</span>
-            <span style={{ fontSize: 10, color: verdictColor, fontWeight: 700 }}>{t.verdict}</span>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+            <span style={{ fontWeight: 700, fontSize: 13 }}>${t.symbol}</span>
+            <span style={{ fontSize: 9, color: verdictColor, fontWeight: 700 }}>{t.verdict}</span>
           </div>
-          <div style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <div style={{ fontSize: 9, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {t.name}
           </div>
         </div>
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 10, color: 'var(--text-2)', alignItems: 'center' }}>
+      </Link>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 9.5, color: 'var(--text-2)', alignItems: 'center' }}>
         <span>MC ${fmtCompact(t.marketCapUsd)}</span>
         <span
           className={priceFlash ? `hf-flash-${priceFlash}` : ''}
           style={{
             color: t.priceChange1h >= 0 ? 'var(--ok)' : 'var(--bad)',
-            padding: '1px 5px', borderRadius: 3,
-            transition: 'background 0.6s ease-out',
+            padding: '0 4px', borderRadius: 3,
           }}
         >
           {t.priceChange1h >= 0 ? '+' : ''}{t.priceChange1h?.toFixed?.(0) ?? 0}% 1h
         </span>
-        <span>{t.pairAgeHours < 1 ? `${(t.pairAgeHours * 60).toFixed(0)}m` : `${t.pairAgeHours.toFixed(0)}h`} old</span>
+        <span>{t.pairAgeHours < 1 ? `${(t.pairAgeHours * 60).toFixed(0)}m` : `${t.pairAgeHours.toFixed(0)}h`}</span>
+        <DexChartLink address={t.address} chain={t.chain} />
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-2)', fontStyle: 'italic' }}>
+      <div style={{ fontSize: 10, color: 'var(--text-2)', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {t.summary || 'on watch'}
       </div>
-    </Link>
+    </div>
   );
 }
 
@@ -562,4 +581,29 @@ function fmtCompact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
   return `${n.toFixed(0)}`;
+}
+
+/** Small DexScreener "chart" link used on every card. Stops propagation so it
+ *  doesn't fire the parent card's navigate-to-analyze link. */
+function DexChartLink({ address, chain }: { address: string; chain: string }) {
+  const slug = (chain ?? '').toLowerCase() === 'solana' ? 'solana' : 'ethereum';
+  return (
+    <a
+      href={`https://dexscreener.com/${slug}/${address}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title="Open DexScreener chart"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        padding: '0 5px', height: 16, borderRadius: 3,
+        background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+        border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))',
+        color: 'var(--accent)', fontSize: 9, fontWeight: 700, textDecoration: 'none',
+        lineHeight: 1,
+      }}
+    >
+      📈 Dex
+    </a>
+  );
 }

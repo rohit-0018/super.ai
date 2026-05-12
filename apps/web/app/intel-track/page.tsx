@@ -76,17 +76,27 @@ interface SignalOverview {
   bestCall:       { symbol: string | null; peakDelta: number } | null;
 }
 
+const PAGE_SIZE = 60;
+
 export default function IntelTrackPage() {
+  // Defaults reflect "show me everything the bot has seen". Users opt INTO
+  // narrowing via filters — they no longer have to fight the page to find
+  // their captures.
   const [statusFilter, setStatusFilter] = useState<'all' | Status>('all');
   const [sourceFilter, setSourceFilter] = useState<'all' | Source>('all');
-  const [showFresh, setShowFresh] = useState(false);
+  const [showFresh, setShowFresh] = useState(true);
+  const [page, setPage] = useState(1);
   const [refreshing, setRefreshing] = useState(false);
   const [exitNotes, setExitNotes] = useState<ExitNotification[]>([]);
 
-  const queryStatus = statusFilter === 'all' ? 'active,graduated' : statusFilter;
+  // "all" = every status (active + graduated + retired + rugged). The
+  // old default 'active,graduated' was hiding ~half the captures.
+  const queryStatus = statusFilter === 'all' ? 'active,graduated,retired,rugged' : statusFilter;
   const querySource = sourceFilter === 'all' ? '' : `&source=${sourceFilter}`;
+  // Default off — no minDelta filter. Show ALL captures including warming-up ones.
   const minDelta = showFresh ? '' : '&minDelta=5';
-  const path = `/intel-track?status=${queryStatus}${querySource}${minDelta}&take=120&sort=recent`;
+  const take = page * PAGE_SIZE;
+  const path = `/intel-track?status=${queryStatus}${querySource}${minDelta}&take=${take}&sort=recent`;
 
   const { data: rows, loading } = useApi<Snapshot[]>(path);
   const { data: stats } = useApi<Stats>('/intel-track/stats');
@@ -277,9 +287,28 @@ export default function IntelTrackPage() {
           </p>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-          {items.map((s) => <Card key={s.id} s={s} extra={signalExtras[s.address]} pendingAnalysis={analysisTriggered} />)}
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            {items.map((s) => <Card key={s.id} s={s} extra={signalExtras[s.address]} pendingAnalysis={analysisTriggered} />)}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16, gap: 12, alignItems: 'center' }}>
+            {/* If we got back fewer than the requested page size, there's nothing more to load. */}
+            {items.length >= take ? (
+              <button
+                onClick={() => setPage((n) => n + 1)}
+                disabled={loading}
+                className="btn btn-ghost"
+                style={{ fontSize: 12, padding: '6px 16px' }}
+              >
+                {loading ? 'Loading…' : `Load more (${items.length} shown)`}
+              </button>
+            ) : (
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                Showing all {items.length} captures · auto-cleanup at 3 days
+              </span>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -423,30 +452,50 @@ function Card({ s, extra, pendingAnalysis }: { s: Snapshot; extra?: SignalExtra;
   const isFresh = pendingAnalysis && !s.aiVerdict ? false : undefined;
 
   return (
-    <TokenCard
-      href={`/intel-track/detail?id=${s.id}`}
-      address={s.address}
-      symbol={s.symbol}
-      name={s.name}
-      chain="SOLANA"
-      status={s.status}
-      source={s.source}
-      capturedAt={s.capturedAt}
-      profileKey={s.profileKey}
-      marketCapAtCapture={s.marketCapUsdAtCapture}
-      pumpedHigh={s.pumpedHigh}
-      currentMcap={currentMcap}
-      peakDelta={s.peakDeltaPct}
-      currentDelta={currentDelta}
-      sparkline={s.sparkline ?? []}
-      aiScore={s.aiScore}
-      aiVerdict={s.aiVerdict}
-      aiSummary={s.aiSummary ?? extra?.aiSummary}
-      t1Pct={extra?.t1Pct}
-      riskReward={extra?.riskReward}
-      isFresh={isFresh}
-      reappearedAt={s.reappearedAt}
-      reappearedSource={s.reappearedSource}
-    />
+    <div style={{ position: 'relative' }}>
+      <TokenCard
+        href={`/intel-track/detail?id=${s.id}`}
+        address={s.address}
+        symbol={s.symbol}
+        name={s.name}
+        chain="SOLANA"
+        status={s.status}
+        source={s.source}
+        capturedAt={s.capturedAt}
+        profileKey={s.profileKey}
+        marketCapAtCapture={s.marketCapUsdAtCapture}
+        pumpedHigh={s.pumpedHigh}
+        currentMcap={currentMcap}
+        peakDelta={s.peakDeltaPct}
+        currentDelta={currentDelta}
+        sparkline={s.sparkline ?? []}
+        aiScore={s.aiScore}
+        aiVerdict={s.aiVerdict}
+        aiSummary={s.aiSummary ?? extra?.aiSummary}
+        t1Pct={extra?.t1Pct}
+        riskReward={extra?.riskReward}
+        isFresh={isFresh}
+        reappearedAt={s.reappearedAt}
+        reappearedSource={s.reappearedSource}
+      />
+      {/* Floating DexScreener shortcut. stopPropagation so it doesn't navigate the card. */}
+      <a
+        href={`https://dexscreener.com/${(s.chain ?? 'SOLANA').toLowerCase() === 'solana' ? 'solana' : 'ethereum'}/${s.address}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        title="Open DexScreener chart"
+        style={{
+          position: 'absolute', top: 8, right: 8, zIndex: 2,
+          display: 'inline-flex', alignItems: 'center', gap: 3,
+          padding: '2px 7px', borderRadius: 4,
+          background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))',
+          color: 'var(--accent)', fontSize: 10, fontWeight: 700, textDecoration: 'none',
+        }}
+      >
+        📈 Dex
+      </a>
+    </div>
   );
 }
