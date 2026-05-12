@@ -31,6 +31,20 @@ const TWITTER_MENTIONS_TOP_N = parseInt(process.env.TWITTER_MENTIONS_TOP_N ?? '5
 const TWITTER_MENTIONS_MIN_AGE_MIN = parseFloat(process.env.TWITTER_MENTIONS_MIN_AGE_MIN ?? '15');
 const TWITTER_MENTIONS_MIN_MCAP_USD = parseFloat(process.env.TWITTER_MENTIONS_MIN_MCAP_USD ?? '5000');
 
+/** Score floor for the QWAI-curated "Hot per QWAI" view. Below this, tokens
+ *  only appear in the raw "Hot on Solana" chain view. Default 60 = BUY-class. */
+const QWAI_HOT_SCORE_MIN = parseInt(process.env.QWAI_HOT_SCORE_MIN ?? '60', 10);
+
+/** Source-priority weight used by the chain-hot ranking. Newer / launchpad
+ *  sources rank higher than generic trending lists. */
+const SOURCE_WEIGHT: Record<HotTokenSource, number> = {
+  pumpfun:                 1.8,
+  geckoterminal_new:       1.5,
+  dexscreener_boost:       1.3,
+  dexscreener_profile:     1.1,
+  geckoterminal_trending:  1.0,
+};
+
 /** Pluck the project's Twitter handle from a DexScreener pair.info.socials list. */
 function extractTwitterHandle(socials: any): string | undefined {
   if (!Array.isArray(socials)) return undefined;
@@ -182,14 +196,32 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
   getAllLatest(): AllProfilesScan | null {
     if (this.scanCache.size === 0) return null;
     const byProfile: Record<string, HotToken[]> = {};
+    const chainByProfile: Record<string, HotToken[]> = {};
     let scannedAt = '';
     let nextScanAt = '';
     for (const [k, { scan }] of this.scanCache) {
       byProfile[k] = scan.tokens;
+      if (scan.chainTokens) chainByProfile[k] = scan.chainTokens;
       scannedAt = scan.scannedAt;
       nextScanAt = scan.nextScanAt;
     }
-    return { byProfile, scannedAt, nextScanAt, scanIntervalMs: SCAN_INTERVAL_MS };
+    return { byProfile, chainByProfile, scannedAt, nextScanAt, scanIntervalMs: SCAN_INTERVAL_MS };
+  }
+
+  /**
+   * Return the latest scored snapshot of a single token across all profiles,
+   * picking the highest-scoring profile (so meme_hunter wins over gem_hunt
+   * for a freshly-launched pump). Used by the detail-page breakdown card.
+   */
+  getScoreSnapshot(address: string): HotToken | null {
+    let best: HotToken | null = null;
+    for (const { scan } of this.scanCache.values()) {
+      for (const t of scan.tokens) {
+        if (t.address !== address) continue;
+        if (!best || t.score > best.score) best = t;
+      }
+    }
+    return best;
   }
 
   getHotTokensForAgent(profileKey: string): string {
@@ -225,24 +257,27 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       const scannedAt = now.toISOString();
       const nextScanAt = new Date(now.getTime() + SCAN_INTERVAL_MS).toISOString();
       const byProfile: Record<string, HotToken[]> = {};
+      const chainByProfile: Record<string, HotToken[]> = {};
 
       for (const profileKey of ALL_PROFILES) {
-        const tokens = this.scoreForProfile(enriched, profileKey, scannedAt);
+        const { qwai, chain } = this.scoreForProfile(enriched, profileKey, scannedAt);
         const scan: HotTokensScan = {
-          tokens,
+          tokens: qwai,
+          chainTokens: chain,
           profileKey,
           scannedAt,
           nextScanAt,
           scanIntervalMs: SCAN_INTERVAL_MS,
           fastScanEnabled: this.fastScan,
         };
-        byProfile[profileKey] = tokens;
+        byProfile[profileKey] = qwai;
+        chainByProfile[profileKey] = chain;
 
         // Update in-memory cache
         this.scanCache.set(profileKey, { scan, ts: Date.now() });
-        for (const t of tokens) {
+        // Track price refresh for the union of both lists (deduped via Map).
+        for (const t of [...qwai, ...chain]) {
           this.priceRefreshCache.set(t.address, t);
-          // Register into the central token pool so all UI cards share one data source
           this.tokenPool?.register(t.address, { symbol: t.symbol, source: t.source, capturedAt: t.scannedAt });
         }
 
@@ -334,9 +369,10 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       }));
     }
 
-    const tokens = this.scoreForProfile(candidates, 'meme_hunter', scannedAt);
+    const { qwai, chain } = this.scoreForProfile(candidates, 'meme_hunter', scannedAt);
     const scan: HotTokensScan = {
-      tokens,
+      tokens: qwai,
+      chainTokens: chain,
       profileKey: 'meme_hunter',
       scannedAt,
       nextScanAt: new Date(Date.now() + SCAN_INTERVAL_MS).toISOString(),
@@ -344,7 +380,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       fastScanEnabled: this.fastScan,
     };
     this.scanCache.set('meme_hunter', { scan, ts: Date.now() });
-    this.logger.log(`fetchTopDirect: ${tokens.length} tokens refreshed via ${geckoTokens.length > 0 ? 'GeckoTerminal' : 'DexScreener'} fast-lane`);
+    this.logger.log(`fetchTopDirect: qwai=${qwai.length} chain=${chain.length} via ${geckoTokens.length > 0 ? 'GeckoTerminal' : 'DexScreener'} fast-lane`);
     return scan;
   }
 
@@ -702,7 +738,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
     enriched: Array<Candidate & { dex: DexTokenData | null }>,
     profileKey: TradingProfile,
     scannedAt: string,
-  ): HotToken[] {
+  ): { qwai: HotToken[]; chain: HotToken[] } {
     const profile = getProfile(profileKey);
     const tokens: HotToken[] = [];
 
@@ -745,7 +781,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
       const maxAge = profile.killOverrides.maxAgeHours;
       if (maxAge != null && pairAgeHours > maxAge) continue;
 
-      const { score, verdict, summary } = computeHotTokenScore(
+      const { score, verdict, summary, breakdown } = computeHotTokenScore(
         {
           priceChange1h, priceChange5m, priceChange24h,
           volume24hUsd, liquidityUsd, marketCapUsd, pairAgeHours, source,
@@ -761,6 +797,7 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
           twitterProjectActive:     mentionStats?.projectActive,
         },
         profileKey,
+        { withBreakdown: true },
       );
 
       tokens.push({
@@ -770,10 +807,32 @@ export class HotTokensService implements OnModuleInit, OnModuleDestroy {
         source, launchPlatform, score, verdict, summary, dexUrl,
         profileKey, scannedAt,
         buys1h, sells1h, volume1hUsd,
+        scoreBreakdown: breakdown,
       });
     }
 
-    return tokens.sort((a, b) => b.score - a.score).slice(0, MAX_PER_PROFILE);
+    // QWAI-curated: filter by score floor + sort by score, capped.
+    const qwai = tokens
+      .filter((t) => t.score >= QWAI_HOT_SCORE_MIN)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_PER_PROFILE);
+
+    // Chain-hot: same tokens, but ranked by raw on-chain hotness. No score
+    // floor. The user sees what's pumping on Solana right now — independent
+    // of whether QWAI thinks it's worth their attention.
+    const chainHotness = (t: HotToken): number => {
+      const weight = SOURCE_WEIGHT[t.source] ?? 1.0;
+      // log10(vol) keeps the ladder readable; +1 prevents -Infinity on $0 vol.
+      const volLog = Math.log10(Math.max(t.volume24hUsd, 0) + 1);
+      // Recency bonus: pairs <1h get a 1.4× multiplier on hotness.
+      const recencyBoost = t.pairAgeHours < 1 ? 1.4 : t.pairAgeHours < 6 ? 1.15 : 1.0;
+      return volLog * weight * recencyBoost;
+    };
+    const chain = [...tokens]
+      .sort((a, b) => chainHotness(b) - chainHotness(a))
+      .slice(0, MAX_PER_PROFILE);
+
+    return { qwai, chain };
   }
 
   // ── Pump streak tracking ──────────────────────────────────────────────────

@@ -18,12 +18,11 @@ const baseline = (overrides: Partial<ScoringInput> = {}): ScoringInput => ({
 describe('computeHotTokenScore', () => {
   // ── Backwards-compat: legacy callers (no tape, no pump fields) ──────────
   it('produces a deterministic baseline with zero signals', () => {
-    // swing_trader at 24h: profile-age branch matches (>=6 && <=168) but
-    // doesn't push a summary tag — handy for testing the "no tags" path.
     const r = computeHotTokenScore(baseline({ pairAgeHours: 24 }), 'swing_trader');
     expect(r.score).toBeGreaterThanOrEqual(0);
     expect(r.score).toBeLessThanOrEqual(100);
-    expect(r.summary).toBe('on watch');
+    // Score should be near base + age bonus (35 + 5 = 40), nothing dramatic.
+    expect(r.score).toBeLessThan(50);
   });
 
   it('returns identical score whether pump fields are undefined or absent', () => {
@@ -61,7 +60,21 @@ describe('computeHotTokenScore', () => {
       'meme_hunter',
     );
     expect(r.verdict).toBe('HIGH_RISK');
-    expect(r.summary).toMatch(/paper tape|thin tape|dust/i);
+    // Breakdown should expose at least one dampener entry — the score-crushing
+    // mechanism the user cares about. Summary slot is too narrow to assert.
+    const r2 = computeHotTokenScore(
+      // re-run with breakdown for the assertion
+      {
+        priceChange1h: 200, priceChange5m: 25,
+        priceChange24h: 0, volume24hUsd: 5_000,
+        marketCapUsd: 2_000_000, liquidityUsd: 100_000, pairAgeHours: 2,
+        source: 'dexscreener_boost',
+        buys1h: 8, sells1h: 12, volume1hUsd: 200,
+      },
+      'meme_hunter',
+      { withBreakdown: true },
+    );
+    expect(r2.breakdown?.some((s) => s.kind === 'damp')).toBe(true);
   });
 
   it('does NOT trigger thin-tape on small-MC tokens (expected behavior)', () => {
@@ -182,7 +195,19 @@ describe('computeHotTokenScore', () => {
     );
     // +10 (>=50 posts) + 6 (KOL log >=25) + 3 (>=15 authors) = +19 minimum
     expect(buzzing.score - quiet.score).toBeGreaterThanOrEqual(19);
-    expect(buzzing.summary).toMatch(/posts|KOL|authors/);
+    // Breakdown is the canonical source of "why this scored higher" — the
+    // narrow summary slot favors price tags so we assert on the breakdown.
+    const withBreakdown = computeHotTokenScore(
+      {
+        priceChange1h: 20, priceChange5m: 0, priceChange24h: 0,
+        volume24hUsd: 0, liquidityUsd: 0, marketCapUsd: 100_000,
+        pairAgeHours: 2, source: 'dexscreener_boost',
+        twitterAlignedMatches: 60, twitterUniqueAuthors: 25, twitterCallerFollowerLog: 30,
+      },
+      'meme_hunter',
+      { withBreakdown: true },
+    );
+    expect(withBreakdown.breakdown?.some((s) => s.category === 'twitter')).toBe(true);
   });
 
   it('does NOT boost a token with zero aligned tweets even if total search count is high', () => {
@@ -209,6 +234,35 @@ describe('computeHotTokenScore', () => {
       'meme_hunter',
     );
     expect(active.score - inactive.score).toBeGreaterThanOrEqual(3);
+  });
+
+  // ── Breakdown shape ─────────────────────────────────────────────────────
+  it('emits a structured breakdown when withBreakdown is true', () => {
+    const r = computeHotTokenScore(
+      baseline({
+        priceChange1h: 50,
+        marketCapUsd: 100_000, liquidityUsd: 60_000, volume24hUsd: 100_000,
+        buys1h: 100, sells1h: 50, volume1hUsd: 30_000,
+        bondingCurvePct: 60,
+      }),
+      'meme_hunter',
+      { withBreakdown: true },
+    );
+    expect(r.breakdown).toBeDefined();
+    expect(Array.isArray(r.breakdown)).toBe(true);
+    expect(r.breakdown!.length).toBeGreaterThan(2);
+    // Every breakdown entry should be well-formed
+    for (const s of r.breakdown!) {
+      expect(['price','volume','liquidity','age','tape','bonding','community','twitter','dampener','dead-bag']).toContain(s.category);
+      expect(['add','sub','damp']).toContain(s.kind);
+      expect(typeof s.label).toBe('string');
+      expect(typeof s.delta).toBe('number');
+    }
+  });
+
+  it('omits breakdown by default to keep the response cheap', () => {
+    const r = computeHotTokenScore(baseline({ priceChange1h: 50 }), 'meme_hunter');
+    expect(r.breakdown).toBeUndefined();
   });
 
   it('backwards-compat: undefined Twitter fields produce identical score to old callers', () => {

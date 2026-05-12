@@ -57,13 +57,64 @@ export class HotTokensController {
     return this.svc.getAllLatest() ?? { byProfile: {}, scannedAt: null, nextScanAt: null, scanIntervalMs: 60_000 };
   }
 
-  /** Latest signal-pipeline results — hydrates clients on page load */
+  /**
+   * Latest signal results — hydrates clients on page load.
+   *
+   * When the SignalPipeline (LLM verdicts) is enabled, returns its results.
+   * When disabled, synthesizes a SignalResult-shape list from the latest
+   * heuristic hot scan so UI overlays (hot-feed, intel-track) keep
+   * displaying scores instead of going blank.
+   */
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('signals')
   getSignals(@Query('minScore') minScore?: string) {
-    const all = this.pipeline?.getAll() ?? [];
+    const pipelineResults = this.pipeline?.getAll() ?? [];
     const threshold = minScore ? parseInt(minScore, 10) : 0;
-    return threshold > 0 ? all.filter((r) => r.score >= threshold) : all;
+
+    let results = pipelineResults;
+    if (!results.length) {
+      // Fallback: synthesize from the latest hot-tokens scan.
+      const all = this.svc.getAllLatest();
+      if (all) {
+        // Highest-scoring profile snapshot per address.
+        const best = new Map<string, ReturnType<typeof this.synth>>();
+        for (const [profileKey, tokens] of Object.entries(all.byProfile)) {
+          for (const t of tokens) {
+            const cur = best.get(t.address);
+            if (!cur || t.score > cur.score) best.set(t.address, this.synth(t, profileKey));
+          }
+        }
+        results = [...best.values()];
+      }
+    }
+
+    return threshold > 0 ? results.filter((r: any) => r.score >= threshold) : results;
+  }
+
+  /**
+   * Project a HotToken into the SignalResult shape the frontend already
+   * consumes. AI-specific fields (T1/T2/SL, bullishSignals, riskFactors,
+   * aiSummary) are null because we're heuristic-only.
+   */
+  private synth(t: any, profileKey: string) {
+    return {
+      address:        t.address,
+      symbol:         t.symbol,
+      name:           t.name,
+      chain:          t.chain,
+      priceUsd:       t.priceUsd,
+      marketCapUsd:   t.marketCapUsd,
+      score:          t.score,
+      verdict:        t.verdict,
+      profileKey:     t.profileKey ?? profileKey,
+      entryPriceUsd:  t.priceUsd,
+      bullishSignals: [],
+      riskFactors:    [],
+      aiSummary:      t.summary,
+      analyzedAt:     t.scannedAt,
+      dexUrl:         t.dexUrl,
+      synthetic:      true, // marker so the UI can render as "heuristic-only" if it wants
+    };
   }
 
   /**
@@ -84,6 +135,32 @@ export class HotTokensController {
   async triggerScan() {
     void this.svc.scan();
     return { triggered: true, ts: new Date().toISOString() };
+  }
+
+  /**
+   * Latest heuristic score + per-signal breakdown for a single token.
+   * Looks across all profile scans and returns the highest-scoring snapshot.
+   * Returns 404-equivalent { found: false } when the token isn't in the
+   * latest scan window.
+   */
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Get('score/:address')
+  getScore(@Param('address') address: string) {
+    const snap = this.svc.getScoreSnapshot(address);
+    if (!snap) return { found: false };
+    return {
+      found: true,
+      address: snap.address,
+      symbol: snap.symbol,
+      name: snap.name,
+      profileKey: snap.profileKey,
+      source: snap.source,
+      scannedAt: snap.scannedAt,
+      score: snap.score,
+      verdict: snap.verdict,
+      summary: snap.summary,
+      breakdown: snap.scoreBreakdown ?? [],
+    };
   }
 
   /** GET /api/hot-tokens/pool — single source of truth for all tracked token live prices */
