@@ -179,9 +179,10 @@ const RAIL_GROUPS: RailGroup[] = [
   {
     category: 'Trade',
     items: [
-      { href: '/trade',     label: 'Trade',     icon: IconTrade     },
-      { href: '/snipe',     label: 'Sniper',    icon: IconSnipe     },
-      { href: '/portfolio', label: 'Portfolio', icon: IconPortfolio },
+      { href: '/trade',        label: 'Trade',     icon: IconTrade     },
+      { href: '/snipe',        label: 'Sniper',    icon: IconSnipe     },
+      { href: '/auto-trade',   label: 'Auto Trade', icon: IconLab      },
+      { href: '/portfolio',    label: 'Portfolio', icon: IconPortfolio },
     ],
   },
   {
@@ -606,6 +607,15 @@ function IconSnipe({ size }: { size?: number }) {
   return (
     <Svg size={size}>
       <path d="M13 2 3.4 13.5a.5.5 0 0 0 .4.8H11l-1 7.4a.5.5 0 0 0 .9.3l9.7-11.5a.5.5 0 0 0-.4-.8H14l1-7.4a.5.5 0 0 0-.9-.3z" />
+    </Svg>
+  );
+}
+function IconLab({ size }: { size?: number }) {
+  // Erlenmeyer flask — practice / lab vibe
+  return (
+    <Svg size={size}>
+      <path d="M9 2h6v2h-1v4l4.4 8.8A2 2 0 0 1 16.6 20H7.4a2 2 0 0 1-1.8-3.2L10 8V4H9V2z" />
+      <path d="M8.3 13h7.4" />
     </Svg>
   );
 }

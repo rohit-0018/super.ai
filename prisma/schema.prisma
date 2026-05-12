@@ -195,6 +195,9 @@ model User {
   snipeGroupOverrides SnipeGroupOverride[]
   tgUserSession       TgUserSession?
   intelSnapshots      IntelSnapshot[]
+  autoPortfolio       AutoPortfolio?
+  autoPositions       AutoPosition[]
+  autoTrades          AutoTrade[]
 }
 
 model Wallet {
@@ -910,4 +913,116 @@ model ProviderConfig {
   updatedAt     DateTime @updatedAt
 
   @@index([dataGroup, priority])
+}
+
+// ── Auto-Trade Engine ───────────────────────────────────────────────────────
+// One engine for both PAPER (fake $, default) and LIVE (real $, gated) auto-
+// trading. Mode is User.paperMode; live wiring deferred behind env gate.
+// See memory: project_auto_trade_engine.md
+//
+// Models renamed Paper* → Auto* but DB tables stay as Paper* via @@map so we
+// skip the migration. Cleanup in a future deliberate pass.
+model AutoPortfolio {
+  userId               String   @id
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startingBalanceUsd   Float    @default(100000)
+  currentBalanceUsd    Float    @default(100000)
+  realizedPnlUsd       Float    @default(0)
+  totalTrades          Int      @default(0)
+  winCount             Int      @default(0)
+  lossCount            Int      @default(0)
+  // Auto-mode settings — picker reads these every tick.
+  autoEnabled          Boolean  @default(false)
+  autoProfile          String   @default("meme_hunter")
+  autoMinScore         Int      @default(70)
+  positionSizeUsd      Float    @default(200)
+  maxConcurrent        Int      @default(10)
+  cooldownMinutes      Int      @default(15)
+  // Per-position exit overrides (null = use profile defaults).
+  takeProfit1Pct       Float?
+  takeProfit2Pct       Float?
+  stopLossPct          Float?
+  maxHoldMinutes       Int?
+  resetAt              DateTime @default(now())
+  lastTradeAt          DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("PaperPortfolio")
+}
+
+// Open virtual position. Deleted when closed; an AutoTrade row is created
+// in the same transaction. Unique on (userId, tokenAddress) so concurrent
+// picker ticks can't open duplicates.
+model AutoPosition {
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenAddress         String
+  symbol               String?
+  name                 String?
+  chain                Chain    @default(SOLANA)
+  profileKey           String   @default("meme_hunter")
+  source               String   @default("auto_picker") // auto_picker | manual
+  openedAt             DateTime @default(now())
+  entryPriceUsd        Float
+  sizeUsd              Float
+  tokenAmount          Float
+  takeProfit1PriceUsd  Float
+  takeProfit2PriceUsd  Float
+  stopLossPriceUsd     Float
+  maxHoldMs            Int      @default(14400000) // 4h default
+  currentPriceUsd      Float
+  unrealizedPnlUsd     Float    @default(0)
+  unrealizedPnlPct     Float    @default(0)
+  scoreAtEntry         Int
+  verdictAtEntry       String
+  scoreBreakdownJson   Json?
+  updatedAt            DateTime @updatedAt
+
+  @@unique([userId, tokenAddress])
+  @@index([userId, openedAt])
+  @@map("PaperPosition")
+}
+
+// Closed-trade history. Append-only — every exit lands here so users can
+// audit "what would the bot have done last week".
+enum AutoExitReason {
+  TP1
+  TP2
+  STOP_LOSS
+  MAX_HOLD
+  MANUAL
+  RUG
+
+  @@map("PaperExitReason")
+}
+
+model AutoTrade {
+  id                   String          @id @default(cuid())
+  userId               String
+  user                 User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenAddress         String
+  symbol               String?
+  name                 String?
+  chain                Chain           @default(SOLANA)
+  profileKey           String
+  source               String
+  openedAt             DateTime
+  closedAt             DateTime        @default(now())
+  holdMs               Int
+  entryPriceUsd        Float
+  exitPriceUsd         Float
+  sizeUsd              Float
+  tokenAmount          Float
+  pnlUsd               Float
+  pnlPct               Float
+  exitReason           AutoExitReason
+  scoreAtEntry         Int
+  verdictAtEntry       String
+  scoreBreakdownJson   Json?
+
+  @@index([userId, closedAt])
+  @@index([userId, exitReason])
+  @@map("PaperTrade")
 }

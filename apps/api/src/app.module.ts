@@ -34,6 +34,7 @@ import { SnipeModule } from './snipe/snipe.module';
 import { HotTokensModule } from './hot-tokens/hot-tokens.module';
 import { IntelTrackModule } from './intel-track/intel-track.module';
 import { ExitEngineModule } from './exit-engine/exit-engine.module';
+import { AutoTradeModule } from './auto-trade/auto-trade.module';
 import { HealthController } from './health.controller';
 import { TraceMiddleware } from './common/trace.middleware';
 
@@ -77,6 +78,7 @@ import { TraceMiddleware } from './common/trace.middleware';
     EpisodesModule,
     SnipeModule,
     HotTokensModule,
+    AutoTradeModule,
     IntelTrackModule,
     ExitEngineModule,
   ],
