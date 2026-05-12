@@ -55,6 +55,36 @@ interface SignalExtra {
 const FEED_MAX      = 100;
 const FRESH_FLASH_MS = 6_000;
 
+/** Live hot-scan shape from /api/hot-tokens — used to render the two top
+ *  sections (chain-hot + qwai-curated) above the capture history feed. */
+interface HotScanLive {
+  tokens: HotScanToken[];
+  chainTokens?: HotScanToken[];
+  profileKey: string;
+  scannedAt: string;
+}
+interface HotScanToken {
+  address: string;
+  symbol: string;
+  name: string;
+  chain: string;
+  priceUsd: number;
+  priceChange1h: number;
+  priceChange5m: number;
+  marketCapUsd: number;
+  liquidityUsd: number;
+  volume24hUsd: number;
+  pairAgeHours: number;
+  score: number;
+  verdict: string;
+  summary: string;
+  source: string;
+  dexUrl?: string;
+  buys1h?: number;
+  sells1h?: number;
+  volume1hUsd?: number;
+}
+
 /* ── Page ───────────────────────────────────────────────────────────────────── */
 export default function HotFeedPage() {
   const { data: initial, loading } = useApi<FeedItem[]>(
@@ -62,6 +92,9 @@ export default function HotFeedPage() {
     { ttlMs: 30_000 },
   );
   const { data: cachedSignals } = useApi<SignalResult[]>('/hot-tokens/signals', { ttlMs: 60_000 });
+  // Live scan data — two distinct rankings of the same enriched candidates.
+  // Refreshed every 25s so the top sections feel "live" without hammering API.
+  const { data: liveScan } = useApi<HotScanLive>('/hot-tokens?profileKey=meme_hunter', { pollMs: 25_000 });
 
   const [items, setItems]             = useState<FeedItem[]>([]);
   const [signalExtras, setSignalExtras] = useState<Record<string, SignalExtra>>({});
@@ -218,6 +251,31 @@ export default function HotFeedPage() {
         </div>
       </header>
 
+      <HotScanSection
+        title="🔥 Hot on Solana"
+        subtitle="Raw on-chain hotness — ranked by volume, source priority, recency. Includes everything the scanner found, no score filter."
+        tokens={liveScan?.chainTokens ?? []}
+        emptyMsg="Waiting for first scan…"
+      />
+      <HotScanSection
+        title="🎯 Curated by QWAI"
+        subtitle={`Heuristic score ≥ 60. Filtered by our 25-signal scorer (tape quality, pump.fun lifecycle, Twitter mentions, dampeners).`}
+        tokens={liveScan?.tokens ?? []}
+        emptyMsg="No tokens crossed the QWAI threshold this scan."
+      />
+
+      <header className="section-header" style={{ marginTop: 24 }}>
+        <div>
+          <div className="section-eyebrow">History</div>
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            📜 Captured stream
+          </h2>
+          <p className="text-[12px]" style={{ color: 'var(--text-3)', marginTop: 2 }}>
+            Every token captured by the bot so you can review what triggered + how it played out.
+          </p>
+        </div>
+      </header>
+
       {loading && items.length === 0 ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {[...Array(8)].map((_, i) => <Skeleton key={i} h={180} rounded="md" />)}
@@ -293,4 +351,108 @@ function FeedCard({ s, extra, pendingAnalysis }: { s: FeedItem; extra?: SignalEx
       isFresh={isFresh}
     />
   );
+}
+
+/* ── HotScanSection: horizontal scroller showing live scan results ─────────── */
+function HotScanSection({
+  title,
+  subtitle,
+  tokens,
+  emptyMsg,
+}: {
+  title: string;
+  subtitle: string;
+  tokens: HotScanToken[];
+  emptyMsg: string;
+}) {
+  return (
+    <section style={{ marginTop: 8 }}>
+      <header style={{ marginBottom: 10 }}>
+        <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16 }}>
+          {title}
+          <span className="chip" style={{ fontSize: 10, color: 'var(--text-3)' }}>
+            {tokens.length}
+          </span>
+        </h2>
+        <p className="text-[12px]" style={{ color: 'var(--text-3)', marginTop: 2 }}>{subtitle}</p>
+      </header>
+      {!tokens.length ? (
+        <div className="panel" style={{ padding: '14px 16px', textAlign: 'center' }}>
+          <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{emptyMsg}</span>
+        </div>
+      ) : (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+          gap: 12,
+        }}>
+          {tokens.slice(0, 12).map((t) => (
+            <HotScanCard key={t.address} t={t} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Compact card used in the live-scan sections. Differs from the capture-feed
+ *  TokenCard by being lighter (no historical peak data) and always showing
+ *  the heuristic score prominently. */
+function HotScanCard({ t }: { t: HotScanToken }) {
+  const verdictColor =
+    t.verdict === 'STRONG_BUY' ? '#22c55e' :
+    t.verdict === 'BUY'        ? '#4ade80' :
+    t.verdict === 'CAUTIOUS'   ? '#f59e0b' :
+    t.verdict === 'SKIP'       ? '#8a8fa3' :
+    '#ef4444';
+  return (
+    <Link
+      href={`/intel?address=${t.address}`}
+      className="panel"
+      style={{
+        padding: '12px 14px',
+        textDecoration: 'none',
+        color: 'var(--text-1)',
+        display: 'flex', flexDirection: 'column', gap: 8,
+        border: `1px solid color-mix(in srgb, ${verdictColor} 30%, var(--border))`,
+        transition: 'border-color 0.15s',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{
+          width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
+          border: `2px solid ${verdictColor}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: `color-mix(in srgb, ${verdictColor} 12%, transparent)`,
+          fontFamily: 'var(--font-mono)', fontWeight: 900, fontSize: 13,
+          color: verdictColor,
+        }}>{t.score}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>${t.symbol}</span>
+            <span style={{ fontSize: 10, color: verdictColor, fontWeight: 700 }}>{t.verdict}</span>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {t.name}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 10, color: 'var(--text-2)' }}>
+        <span>MC ${fmtCompact(t.marketCapUsd)}</span>
+        <span style={{ color: t.priceChange1h >= 0 ? 'var(--ok)' : 'var(--bad)' }}>
+          {t.priceChange1h >= 0 ? '+' : ''}{t.priceChange1h?.toFixed?.(0) ?? 0}% 1h
+        </span>
+        <span>{t.pairAgeHours < 1 ? `${(t.pairAgeHours * 60).toFixed(0)}m` : `${t.pairAgeHours.toFixed(0)}h`} old</span>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-2)', fontStyle: 'italic' }}>
+        {t.summary || 'on watch'}
+      </div>
+    </Link>
+  );
+}
+
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
+  return `${n.toFixed(0)}`;
 }
