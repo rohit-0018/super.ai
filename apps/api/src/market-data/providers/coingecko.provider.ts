@@ -23,9 +23,15 @@ const TTL_MS = 60_000; // 60 s — well within CoinGecko free-tier limits
 @Injectable()
 export class CoinGeckoProvider {
   private readonly logger = new Logger(CoinGeckoProvider.name);
-  private readonly base = 'https://api.coingecko.com/api/v3';
+  // Demo keys hit the public endpoint with `x-cg-demo-api-key`; Pro keys
+  // hit pro-api.coingecko.com with `x-cg-pro-api-key`. Sending the Pro header
+  // against the public endpoint returns 400. Detect by key prefix (`CG-` = demo).
+  private readonly isPro = !!process.env.COINGECKO_API_KEY && !process.env.COINGECKO_API_KEY.startsWith('CG-');
+  private readonly base = this.isPro
+    ? 'https://pro-api.coingecko.com/api/v3'
+    : 'https://api.coingecko.com/api/v3';
   private readonly headers: Record<string, string> = process.env.COINGECKO_API_KEY
-    ? { 'x-cg-pro-api-key': process.env.COINGECKO_API_KEY }
+    ? { [this.isPro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key']: process.env.COINGECKO_API_KEY }
     : {};
 
   private readonly cache = new Map<string, CacheEntry<unknown>>();
