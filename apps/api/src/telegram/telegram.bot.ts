@@ -13,6 +13,8 @@ import { SignalPipelineService } from '../hot-tokens/signal-pipeline.service';
 import { detectChain } from '../token-analysis/chain-detector';
 import { fmtPriceUsd } from '../common/format-price';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
+import { PumpFunProvider, PumpFunCoinData } from '../token-analysis/providers/pump-fun.provider';
+import { isPumpFunMint } from '../token-analysis/providers/pump-fun.util';
 import {
   formatScanReport,
   formatKillReport,
@@ -57,6 +59,14 @@ export class TelegramBot {
   private getTokenAnalysis(): TokenAnalysisService | null {
     try {
       return this.moduleRef.get(TokenAnalysisService, { strict: false });
+    } catch {
+      return null;
+    }
+  }
+
+  private getPumpFun(): PumpFunProvider | null {
+    try {
+      return this.moduleRef.get(PumpFunProvider, { strict: false });
     } catch {
       return null;
     }
@@ -1278,17 +1288,26 @@ export class TelegramBot {
       const msg = await ctx.reply('📖 <i>Gathering intel…</i>', { parse_mode: 'HTML' });
       try {
         const isAddr = !!detectChain(input);
-        const pairData = isAddr ? await this.fetchDexPair(input).catch(() => null) : null;
-        const sym  = pairData?.baseToken?.symbol ?? input.toUpperCase();
-        const name = pairData?.baseToken?.name   ?? sym;
-        const tokenCreatedAt: number | null = pairData?.pairCreatedAt ?? null;
+        // pump.fun is the authoritative source for utility tokens like $PROG —
+        // it has the actual project description that explains what the token
+        // DOES. Fetch in parallel with DexScreener for pump-suffix mints.
+        const isPumpMint = isAddr && isPumpFunMint(input);
+        const [pairData, pumpFunData] = await Promise.all([
+          isAddr ? this.fetchDexPair(input).catch(() => null) : Promise.resolve(null),
+          isPumpMint
+            ? (this.getPumpFun()?.getCoinData(input) ?? Promise.resolve(null)).catch(() => null)
+            : Promise.resolve(null),
+        ]) as [any, PumpFunCoinData | null];
+        const sym  = pairData?.baseToken?.symbol ?? pumpFunData?.symbol ?? input.toUpperCase();
+        const name = pairData?.baseToken?.name   ?? pumpFunData?.name   ?? sym;
+        const tokenCreatedAt: number | null = pairData?.pairCreatedAt ?? pumpFunData?.createdAt ?? null;
 
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-          `📖 <i>Hunting $${esc(sym)} catalyst on X…</i>`, { parse_mode: 'HTML' }).catch(() => {});
+          `📖 <i>Researching $${esc(sym)}…</i>`, { parse_mode: 'HTML' }).catch(() => {});
 
         const parts: string[] = [];
 
-        // 1 — on-chain basics from DexScreener
+        // 1 — on-chain basics from DexScreener (or pump.fun fallback for pre-graduation)
         if (pairData) {
           const age = tokenCreatedAt
             ? `Created ${Math.round((Date.now() - tokenCreatedAt) / 86_400_000)}d ago`
@@ -1300,11 +1319,34 @@ export class TelegramBot {
             age,
           ].filter(Boolean);
           parts.push(...basics);
+        } else if (pumpFunData) {
+          const age = pumpFunData.createdAt
+            ? `Created ${Math.round((Date.now() - pumpFunData.createdAt) / 86_400_000)}d ago`
+            : '';
+          parts.push(
+            `TOKEN: $${sym} (${name})`,
+            `MCap: ${fmtUsd(pumpFunData.marketCapUsd)}  ATH: ${fmtUsd(pumpFunData.athMarketCapUsd)}`,
+            pumpFunData.graduated ? 'Status: graduated from pump.fun' : `Bonding curve: ${pumpFunData.bondingCurvePct.toFixed(0)}%`,
+            age,
+          );
         } else {
           parts.push(`TOKEN: ${input}`);
         }
 
+        // 1b — pump.fun project description (the authoritative "what is this token" source).
+        // For utility tokens this is the most important piece — it's what Rickbot-style
+        // lore is built on. Place it BEFORE Twitter context so the LLM weighs it heavily.
+        const pumpDescription = pumpFunData?.description ?? null;
+        if (pumpFunData) {
+          const pfBits: string[] = [];
+          if (pumpDescription) pfBits.push(`Description: ${pumpDescription.slice(0, 500)}`);
+          if (pumpFunData.isLive) pfBits.push('🔴 Creator is currently livestreaming on pump.fun');
+          if (pumpFunData.replyCount > 0) pfBits.push(`pump.fun replies: ${pumpFunData.replyCount}`);
+          if (pfBits.length) parts.push('\nPUMP.FUN CONTEXT (authoritative project info):\n' + pfBits.join('\n'));
+        }
+
         // 2 — CoinGecko description (established tokens)
+        let coingeckoDesc: string | null = null;
         const cgNetwork = pairData?.chainId === 'solana' ? 'solana' : 'ethereum';
         const cgAddr = isAddr ? input : null;
         if (cgAddr) {
@@ -1313,20 +1355,30 @@ export class TelegramBot {
             { signal: AbortSignal.timeout(5_000) },
           ).then(r => r.ok ? r.json() : null).catch(() => null) as any;
           const desc = (cg?.description?.en ?? '').replace(/<[^>]+>/g, '').slice(0, 600).trim();
-          if (desc) parts.push(`\nCOINGECKO DESCRIPTION:\n${desc}`);
+          if (desc) {
+            coingeckoDesc = desc;
+            parts.push(`\nCOINGECKO DESCRIPTION:\n${desc}`);
+          }
         }
 
         // 3 — Token website text
-        const websiteUrl = pairData?.info?.websites?.[0]?.url;
+        let websiteText: string | null = null;
+        const websiteUrl = pairData?.info?.websites?.[0]?.url ?? pumpFunData?.website ?? null;
         if (websiteUrl) {
           const text = await this.fetchUrlText(websiteUrl);
-          if (text) parts.push(`\nWEBSITE CONTENT:\n${text.slice(0, 800)}`);
+          if (text) {
+            websiteText = text;
+            parts.push(`\nWEBSITE CONTENT:\n${text.slice(0, 800)}`);
+          }
         }
 
-        // 4 — Twitter/X: engagement-ranked origin + amplifiers (catalyst hunt)
+        // 4 — Twitter/X: engagement-ranked origin + amplifiers (catalyst hunt).
+        // Prefer DexScreener's twitter URL (often a /status/<id> pinned tweet);
+        // fall back to pump.fun's twitter field for pre-graduation tokens.
         const twitterSocial = pairData?.info?.socials?.find((s: any) => s.type === 'twitter');
-        const { handle, tweetId: seedTweetId } = twitterSocial?.url
-          ? parseTwitterUrl(twitterSocial.url)
+        const twitterUrl: string | null = twitterSocial?.url ?? pumpFunData?.twitter ?? null;
+        const { handle, tweetId: seedTweetId } = twitterUrl
+          ? parseTwitterUrl(twitterUrl)
           : { handle: null, tweetId: null };
         const { context: twitterCtx, sources, highlights } = await this.gatherLoreFromTwitter({
           sym,
@@ -1336,6 +1388,10 @@ export class TelegramBot {
           seedTweetId,
           tokenCreatedAt,
           budget,
+          // Anchor the Twitter relevance scoring to what the project ACTUALLY
+          // is. Without this anchor, "$PROG 50x ape" tweets compete with real
+          // project narrative for the LLM's attention.
+          descriptionSources: [pumpDescription, coingeckoDesc, websiteText],
         });
         if (twitterCtx) parts.push('\n' + twitterCtx);
 
@@ -1343,20 +1399,34 @@ export class TelegramBot {
           `📖 <i>Writing $${esc(sym)} lore…</i>`, { parse_mode: 'HTML' }).catch(() => {});
 
         const context = parts.join('\n');
+        // Token type is implied by the data: utility tokens have PUMP.FUN
+        // CONTEXT / WEBSITE CONTENT / COINGECKO DESCRIPTION describing what the
+        // project does. Meme-reference tokens have a distinctive name + no
+        // project description. Celebrity-catalyst tokens have an ORIGIN TWEET.
+        // The prompt instructs the LLM to pick the right framing per case.
+        const hasOriginTweet = !!highlights.origin;
         const lore = await this.llm.chat([
           {
             role: 'system',
             content:
               'You are a sharp crypto cultural analyst writing the NARRATIVE BODY of a token lore card. ' +
-              'A separate header above your text will already display: the origin tweet author, follower count, engagement stats, the quoted tweet, and an amplifier list. ' +
-              'DO NOT restate those numbers, follower counts, or repeat the origin tweet verbatim — the header already shows them. Reference them by @handle only. ' +
-              'Your job: explain the CULTURAL meaning and trajectory. Why does this resonate? What\'s the meme/reference? What\'s the community vibe? ' +
-              'Hard facts (@handles, tweet content, numbers): use ONLY what\'s in the data — never invent. ' +
-              'Cultural context (well-known memes, viral phrases, characters the name evokes): you MAY draw on general knowledge to ground the lore in real history. ' +
-              'If the data shows an ORIGIN TWEET marked [DELETED — reconstructed from reply chain], explicitly say "@<handle>\'s now-deleted tweet" and explain why that catalyst mattered. ' +
-              'If there is NO origin and the name references a well-known meme, tell that meme\'s real backstory (when it emerged, where it spread) and clearly note this is a community meme revival, not celebrity-driven. ' +
-              'If no catalyst and no meme reference: call it pure speculation, no fluff. ' +
-              '3-5 sentences. Use Telegram HTML <b> for key @handles ONLY (sparingly). No markdown. No bullet lists. No re-stating the catalyst quote. Max 500 chars.',
+              'A separate header above your text will already display origin tweet author, follower count, engagement stats, the quoted tweet, and an amplifier list. ' +
+              'DO NOT restate those numbers/follower counts/repeat the origin tweet — the header shows them. Reference by @handle only. ' +
+              '\n\nDECIDE THE FRAMING based on what\'s in the data:\n' +
+              '(1) UTILITY/PROJECT token — if the data has PUMP.FUN CONTEXT, WEBSITE CONTENT, or COINGECKO DESCRIPTION explaining what the project actually DOES (mechanics, fees, automation, agents, infrastructure, DeFi primitive, etc.), lead with WHAT IT DOES in concrete terms. Example: "$PROG automates pump.fun creator fees through programmable strategies — buybacks, LP, burns, payouts. It layers on pump.fun\'s Tokenized Agents to enable custom splits and conditional rules." NO Twitter catalyst framing — describe the actual utility, then briefly note community traction.\n' +
+              '(2) CELEBRITY CATALYST token — if there\'s a clear ORIGIN TWEET (especially one marked [DELETED — reconstructed from reply chain]), lead with "@<handle>\'s tweet sparked this" and explain why the catalyst mattered.\n' +
+              '(3) MEME REVIVAL token — if the name references a well-known meme/character (Pepe, EpicFace, Doge) and there\'s no project description and no celebrity catalyst, tell the meme\'s real backstory and note "community meme revival, no celebrity tweet".\n' +
+              '(4) PURE SPECULATION — if none of the above: call it organic shilling, no fluff.\n' +
+              `\nFor this token, an origin tweet ${hasOriginTweet ? 'IS' : 'IS NOT'} surfaced in the data. ` +
+              (hasOriginTweet
+                ? 'Use case (2) framing — but only if the origin is clearly relevant to the token (the project description / website should confirm the connection). If the origin tweet feels unrelated to what the project actually does, fall back to framing (1) and IGNORE the origin tweet in your prose.'
+                : 'Use case (1) framing if there\'s a project description; else (3) if name is a known meme; else (4).') +
+              '\n\nTWEET TAGS — each amplifier/community tweet is tagged [project-aligned] or [sentiment-only]:\n' +
+              '  • [project-aligned] tweets share substantive vocabulary with the project description — they are evidence for WHAT the project does/means. Quote handles from these when explaining mechanics or theme.\n' +
+              '  • [sentiment-only] tweets pass our relevance filter (CA or cashtag mention) but DON\'T actually discuss what the project does — they\'re just price-action shill. Use them ONLY for community vibe ("traders are bullish", "X% up", "active chatter") — NEVER cite them as evidence of the project\'s purpose, narrative, or cultural meaning.\n' +
+              '\nHard facts (@handles, tweet content, numbers): use ONLY what\'s in the data — never invent. ' +
+              'Cultural context (well-known memes, viral phrases): you MAY draw on general knowledge. ' +
+              '3-5 sentences. Use Telegram HTML <b> sparingly for the most important @handle or term. No markdown. No bullet lists. Max 500 chars.',
           },
           { role: 'user', content: context },
         ], 500);
@@ -1385,7 +1455,10 @@ export class TelegramBot {
           }
         }
 
-        blocks.push(`\n${lore}`);
+        // The LLM is instructed to use only <b>/<i> sparingly, but occasionally
+        // hallucinates <article>/<arena>/etc. — Telegram's HTML parser rejects
+        // the whole message in that case. Strip non-whitelisted tags defensively.
+        blocks.push(`\n${sanitizeTelegramHtml(lore)}`);
 
         if (highlights.amplifiers.length) {
           const amps = highlights.amplifiers.map(a =>
@@ -1399,16 +1472,41 @@ export class TelegramBot {
           blocks.push(`\n🐦 <b>Project account</b>: <b>@${esc(p.handle)}</b> · ${fmtNum(p.followers)} followers`);
         }
 
+        // pump.fun status row — bonding curve %, ATH MC, livestream flag.
+        if (pumpFunData) {
+          const pfLine: string[] = [];
+          if (pumpFunData.graduated) pfLine.push('🎓 <b>graduated</b>');
+          else pfLine.push(`📈 bonding <b>${pumpFunData.bondingCurvePct.toFixed(0)}%</b>`);
+          if (pumpFunData.athMarketCapUsd > 0) pfLine.push(`ATH <b>${fmtUsd(pumpFunData.athMarketCapUsd)}</b>`);
+          if (pumpFunData.isLive) pfLine.push('🔴 <b>LIVE</b>');
+          if (pumpFunData.replyCount > 0) pfLine.push(`💬 ${pumpFunData.replyCount}`);
+          blocks.push(`\n🚀 <b>pump.fun</b>: ${pfLine.join(' · ')}`);
+        }
+
         if (sources.length) {
           const links = sources.map(s => `<a href="${s.url}">${esc(s.label)}</a>`).join(' · ');
           blocks.push(`\n🔗 ${links}`);
         }
 
         const output = blocks.join('\n');
-        await ctx.api.editMessageText(ctx.chat.id, msg.message_id, output, {
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true },
-        });
+        try {
+          await ctx.api.editMessageText(ctx.chat.id, msg.message_id, output, {
+            parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
+          });
+        } catch (htmlErr: any) {
+          // Surprise tag slipped past the sanitizer (rare). Fall back to a
+          // tag-stripped plain-text render so the user still gets the lore.
+          if (/can't parse entities|Unsupported start tag/i.test(htmlErr?.description ?? htmlErr?.message ?? '')) {
+            this.logger.warn(`/lore HTML render failed, falling back to plain text: ${htmlErr.message}`);
+            const plain = output.replace(/<[^>]+>/g, '');
+            await ctx.api.editMessageText(ctx.chat.id, msg.message_id, plain, {
+              link_preview_options: { is_disabled: true },
+            }).catch(() => {});
+          } else {
+            throw htmlErr;
+          }
+        }
       } catch (e: any) {
         this.logger.error(`/lore failed: ${e.message}`);
         await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message?.slice(0, 100)}`).catch(() => {});
@@ -2699,9 +2797,25 @@ export class TelegramBot {
   private async reconstructOriginFromReplies(
     searchTweets: TweetRich[],
     seedTweetId: string | null,
+    relevanceCtx: {
+      sym: string;
+      fullName: string;
+      addr: string | null;
+      projectHandle: string | null;
+      narrativeKeywords?: Set<string>;
+    },
   ): Promise<TweetRich | null> {
+    // Only cluster on RELEVANT replies — without this, common-word tickers
+    // (PROG, MOON, AI) would synthesize fake origins from noise tweets that
+    // happen to share an unrelated parent (e.g. 5 prog-rock fans replying
+    // to some random music tweet).
+    const RELEVANCE_FLOOR = 25;
+    const relevantTweets = searchTweets.filter(
+      t => computeTweetRelevance(t, relevanceCtx) >= RELEVANCE_FLOOR,
+    );
+
     const clusters = new Map<string, { username: string | null; replies: TweetRich[] }>();
-    for (const t of searchTweets) {
+    for (const t of relevantTweets) {
       if (!t.inReplyToId) continue;
       if (t.inReplyToId === seedTweetId) continue;
       const c = clusters.get(t.inReplyToId) ?? { username: t.inReplyToUsername, replies: [] };
@@ -2771,6 +2885,10 @@ export class TelegramBot {
     seedTweetId: string | null;
     tokenCreatedAt: number | null;
     budget: LoreBudget;
+    /** Authoritative project descriptions (pump.fun, website, CoinGecko) used
+     *  to extract the "narrative keyword bag" — boosts tweets that talk about
+     *  what the project actually does over price-action shill tweets. */
+    descriptionSources?: Array<string | null | undefined>;
   }): Promise<{
     context: string;
     sources: Array<{ label: string; url: string }>;
@@ -2780,7 +2898,10 @@ export class TelegramBot {
       projectProfile: { handle: string; followers: number; bio: string } | null;
     };
   }> {
-    const { sym, name, addr, handle, seedTweetId, tokenCreatedAt, budget } = args;
+    const { sym, name, addr, handle, seedTweetId, tokenCreatedAt, budget, descriptionSources } = args;
+    const narrativeKeywords = descriptionSources?.length
+      ? extractProjectKeywords(...descriptionSources)
+      : undefined;
     // Celebrity / influencer tweets (Elon, Trump, etc.) rarely use the $ prefix —
     // searching the bare ticker is the only way to catch a catalyst tweet that
     // simply mentions the meme by name. We run BOTH $SYM and SYM at every tier.
@@ -2820,6 +2941,7 @@ export class TelegramBot {
     const reconstructedOrigin = await this.reconstructOriginFromReplies(
       flatSearchTweets,
       seedTweetId,
+      { sym, fullName: name, addr, projectHandle: handle, narrativeKeywords },
     );
 
     const allTweets: TweetRich[] = [
@@ -2827,7 +2949,11 @@ export class TelegramBot {
       ...(seedTweet ? [seedTweet] : []),
       ...flatSearchTweets,
     ];
-    const { origin, amplifiers, community } = rankTweetsForLore(allTweets, tokenCreatedAt);
+    const { origin, amplifiers, community } = rankTweetsForLore(
+      allTweets,
+      tokenCreatedAt,
+      { sym, fullName: name, addr, projectHandle: handle, narrativeKeywords },
+    );
 
     const lines: string[] = [];
     if (handle && profile) {
@@ -2849,15 +2975,31 @@ export class TelegramBot {
         `"${origin.text.slice(0, 320)}"`,
       );
     }
+    // Tag each tweet as "project-aligned" (substantial narrative overlap with
+    // the project description) or "sentiment" (passes relevance via cashtag/CA
+    // but no narrative match). The LLM uses this distinction: project-aligned
+    // tweets are evidence for WHAT the project does/means; sentiment tweets
+    // are only evidence for COMMUNITY VIBE — never load-bearing on facts.
+    const aligned = (t: TweetRich): boolean => {
+      if (!narrativeKeywords || narrativeKeywords.size === 0) return false;
+      const txt = t.text.toLowerCase();
+      let hits = 0;
+      for (const k of narrativeKeywords) {
+        if (txt.includes(k)) { hits++; if (hits >= 2) return true; }
+      }
+      return false;
+    };
+    const tag = (t: TweetRich) => aligned(t) ? ' [project-aligned]' : ' [sentiment-only]';
+
     if (amplifiers.length) {
       lines.push('\nTOP AMPLIFIERS (engagement-ranked, deduped by author):');
       amplifiers.forEach((t, i) =>
-        lines.push(`${i + 1}. @${t.authorHandle} (${fmtNum(t.authorFollowers)} followers, ${fmtNum(t.likes)} likes): "${t.text.slice(0, 200)}"`),
+        lines.push(`${i + 1}. @${t.authorHandle}${tag(t)} (${fmtNum(t.authorFollowers)} followers, ${fmtNum(t.likes)} likes): "${t.text.slice(0, 200)}"`),
       );
     }
     if (community.length && budget !== 'light') {
       lines.push('\nCOMMUNITY VIBE:');
-      community.forEach((t, i) => lines.push(`${i + 1}. @${t.authorHandle}: "${t.text.slice(0, 150)}"`));
+      community.forEach((t, i) => lines.push(`${i + 1}. @${t.authorHandle}${tag(t)}: "${t.text.slice(0, 150)}"`));
     }
     if (!origin && !amplifiers.length) {
       lines.push(`\nNO HIGH-ENGAGEMENT TWITTER CATALYST FOUND for $${sym}. Likely organic speculation or too new to have surfaced.`);
@@ -2954,12 +3096,168 @@ function normalizeTweet(t: any): TweetRich | null {
  * Picks the origin tweet (oldest with real signal, ideally ≤7d after token launch),
  * top engagement-ranked amplifiers (deduped by author), and remaining community vibe.
  */
+/**
+ * Score how likely a tweet is actually about THIS token vs. coincidental
+ * keyword noise. The fundamental problem: 4-letter tickers like PROG / MOON /
+ * BABY / AI collide with common English ("prog rock", "to the moon"), so a bare
+ * cashtag/keyword search returns a lot of false positives that LOOK like high
+ * engagement but aren't relevant. Without this filter the ranker happily picks
+ * a viral prog-rock tweet as the catalyst for $PROG.
+ *
+ * Strong signals (definitive): CA in tweet text, project-handle authorship,
+ * full multi-word project name match.
+ * Medium signals: cashtag + crypto context word, reply to project handle.
+ * Weak signals: bare ticker alone — explicitly NOT enough to qualify.
+ */
+const CRYPTO_CONTEXT_RE = /\b(token|coin|pump\.?fun|solana|sol\b|raydium|jupiter|cashtag|ca:|contract|degen|memecoin|liquidity|mcap|market\s*cap|airdrop|launch|chart|dyor|ath)\b/i;
+
+/**
+ * Stopwords + crypto-generic terms we strip when building the project's
+ * "narrative keyword bag". We don't want "token"/"coin"/"crypto" to count as
+ * project-specific themes — they appear in every shill tweet.
+ */
+const NARRATIVE_STOPWORDS = new Set([
+  // English stopwords
+  'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+  'this', 'that', 'these', 'those', 'with', 'from', 'into', 'onto', 'upon', 'about', 'as',
+  'at', 'by', 'for', 'in', 'of', 'on', 'to', 'via', 'than', 'then', 'them', 'they', 'their',
+  'your', 'you', 'our', 'we', 'us', 'it', 'its', 'his', 'her', 'him', 'she', 'he',
+  'not', 'no', 'yes', 'all', 'any', 'each', 'every', 'some', 'such', 'one', 'two',
+  // Crypto-generic noise — appears in every memecoin shill
+  'token', 'tokens', 'coin', 'coins', 'crypto', 'solana', 'ethereum', 'sol', 'eth',
+  'pump', 'pumpfun', 'fun', 'dex', 'cex', 'memecoin', 'meme', 'degen',
+  'buy', 'sell', 'hold', 'launch', 'launched', 'launching',
+  'chart', 'price', 'market', 'mcap',
+]);
+
+/**
+ * Extract a bag of "project-specific" keywords from the authoritative project
+ * description sources (pump.fun description, CoinGecko description, website
+ * text). These keywords let us distinguish tweets that talk about WHAT THE
+ * PROJECT DOES from tweets that just shill the ticker for price action.
+ *
+ * For $PROG, the keyword set will include: autonomous, agent, claims, creator,
+ * fees, routes, programmable, strategies, buybacks, burns, payouts, jito —
+ * none of which appear in "PROG to the moon 50x bro" sentiment tweets.
+ */
+function extractProjectKeywords(...sources: (string | null | undefined)[]): Set<string> {
+  const bag = new Set<string>();
+  for (const src of sources) {
+    if (!src) continue;
+    const words = src
+      .toLowerCase()
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/https?:\/\/\S+/g, ' ')
+      .split(/[^a-z0-9]+/)
+      .filter(w => w.length >= 4 && !NARRATIVE_STOPWORDS.has(w));
+    for (const w of words) bag.add(w);
+  }
+  return bag;
+}
+
+function computeTweetRelevance(t: TweetRich, ctx: {
+  sym: string;
+  fullName: string;
+  addr: string | null;
+  projectHandle: string | null;
+  /** Bag of distinctive keywords from the project's own description sources.
+   *  When set, tweets that share substantial vocabulary get boosted — this
+   *  distinguishes "$PROG automates creator fees" content from "$PROG 50x ape"
+   *  content even though both pass the cashtag check. */
+  narrativeKeywords?: Set<string>;
+}): number {
+  const text = t.text.toLowerCase();
+  const sym = ctx.sym.toLowerCase();
+  const handle = ctx.projectHandle?.toLowerCase() ?? null;
+  let r = 0;
+
+  // (A) CA in tweet body — definitive proof it's about this token.
+  if (ctx.addr && text.includes(ctx.addr.toLowerCase())) r += 100;
+
+  // (B) $TICKER cashtag.
+  const cashtag = new RegExp(`\\$${sym}\\b`, 'i').test(t.text);
+  if (cashtag) r += 30;
+  // …extra weight when cashtag appears alongside a crypto context word
+  // (filters "$prog album drops tonight" type noise from real shill posts).
+  if (cashtag && CRYPTO_CONTEXT_RE.test(t.text)) r += 25;
+
+  // (C) Project handle is the author, or the tweet is a reply/quote to them.
+  if (handle) {
+    if (t.authorHandle.toLowerCase() === handle) r += 50;
+    if (text.includes(`@${handle}`)) r += 20;
+    if (t.inReplyToUsername?.toLowerCase() === handle) r += 25;
+  }
+
+  // (D) Distinctive project name match — requires the words to appear as a
+  // CONTIGUOUS phrase (after stripping punctuation/spaces), not just present
+  // somewhere in the tweet. Otherwise a generic DeFi term like "Programmable
+  // Liquidity" would match unrelated tweets that mention both words apart
+  // (e.g. an Arbitrum announcement about "liquidity" and "programmable").
+  // Normalization handles the "Bitches, Money, No Taxes, Party" / "Bitches
+  // Money No Taxes Party" mismatch from comma-separated reply styles.
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const normText = norm(t.text);
+  const normName = norm(ctx.fullName ?? '');
+  const nameWords = (ctx.fullName ?? '').split(/\s+/).filter(w => w.length >= 4);
+  if (nameWords.length >= 2 && normName.length >= 8 && normText.includes(normName)) {
+    r += 40;
+  } else if (nameWords.length === 1 && normName.length >= 8 && /[A-Z]/.test(ctx.fullName)) {
+    // Long single-word distinctive name (e.g. "EpicSmiley", "BMNTP").
+    if (normText.includes(normName)) r += 25;
+  }
+
+  // (E) Narrative overlap — how many project-specific keywords does this tweet
+  // share with the authoritative project description? This is what separates
+  // "$PROG automates creator fees" content (high overlap) from "$PROG 50x ape
+  // now 🚀" sentiment content (zero overlap). Sentiment tweets still pass via
+  // cashtag scoring but won't rank as the origin/lead amplifier.
+  if (ctx.narrativeKeywords && ctx.narrativeKeywords.size > 0) {
+    const tweetWords = new Set(
+      text
+        .replace(/https?:\/\/\S+/g, ' ')
+        .split(/[^a-z0-9]+/)
+        .filter(w => w.length >= 4 && !NARRATIVE_STOPWORDS.has(w)),
+    );
+    let overlap = 0;
+    for (const k of ctx.narrativeKeywords) {
+      if (tweetWords.has(k)) overlap++;
+      if (overlap >= 5) break; // diminishing returns past 5 matches
+    }
+    if (overlap >= 5) r += 50;
+    else if (overlap >= 3) r += 30;
+    else if (overlap >= 2) r += 15;
+  }
+
+  return r;
+}
+
 function rankTweetsForLore(
   tweets: TweetRich[],
   tokenCreatedAt: number | null,
+  relevanceCtx: {
+    sym: string;
+    fullName: string;
+    addr: string | null;
+    projectHandle: string | null;
+    narrativeKeywords?: Set<string>;
+  },
 ): { origin: TweetRich | null; amplifiers: TweetRich[]; community: TweetRich[] } {
   const seen = new Set<string>();
   const unique = tweets.filter(t => (seen.has(t.id) ? false : (seen.add(t.id), true)));
+
+  // Score relevance once; reconstructed origins (reply-chain) bypass the filter
+  // since their relevance is implicit (we already verified replies cluster).
+  const withRelevance = unique.map(t => ({
+    t,
+    relevance: t.isReconstructed ? 100 : computeTweetRelevance(t, relevanceCtx),
+  }));
+
+  // Tweets below the noise floor are excluded — they look engaging but aren't
+  // actually about this token. (E.g. viral "prog rock" tweets for $PROG.)
+  const ORIGIN_THRESHOLD     = 30;  // must be clearly about this token
+  const AMPLIFIER_THRESHOLD  = 25;  // strong signal needed to claim amplification
+  const COMMUNITY_THRESHOLD  = 15;  // looser bar for "vibe" mentions
 
   const score = (t: TweetRich) =>
     t.likes + 2 * t.retweets + 3 * t.replies + Math.log10(Math.max(t.authorFollowers, 1)) * 100;
@@ -2975,8 +3273,10 @@ function rankTweetsForLore(
     !tokenCreatedAt ||
     (t.createdAt >= tokenCreatedAt - PRELAUNCH_MS && t.createdAt <= tokenCreatedAt + POSTLAUNCH_MS);
 
-  const highSignal = unique
-    .filter(t => t.likes >= HIGH_ENGAGEMENT || t.authorFollowers >= BIG_AUTHOR)
+  const highSignal = withRelevance
+    .filter(({ t, relevance }) => relevance >= ORIGIN_THRESHOLD)
+    .map(({ t }) => t)
+    .filter(t => t.likes >= HIGH_ENGAGEMENT || t.authorFollowers >= BIG_AUTHOR || t.isReconstructed)
     .filter(inWindow);
 
   // Prefer pre-launch catalyst (Elon-tweets-first, coin-follows pattern); fall back to post-launch.
@@ -2989,14 +3289,21 @@ function rankTweetsForLore(
   const origin = preLaunch[0] ?? postLaunchOrAll[0] ?? null;
 
   const dedupAuthor = new Map<string, TweetRich>();
-  for (const t of [...unique].sort((a, b) => score(b) - score(a))) {
+  const amplifierPool = withRelevance
+    .filter(({ relevance }) => relevance >= AMPLIFIER_THRESHOLD)
+    .map(({ t }) => t)
+    .sort((a, b) => score(b) - score(a));
+  for (const t of amplifierPool) {
     if (origin && t.id === origin.id) continue;
     if (!dedupAuthor.has(t.authorHandle)) dedupAuthor.set(t.authorHandle, t);
   }
   const amplifiers = [...dedupAuthor.values()].slice(0, 5);
 
   const used = new Set<string>([origin?.id, ...amplifiers.map(t => t.id)].filter(Boolean) as string[]);
-  const community = unique.filter(t => !used.has(t.id)).slice(0, 5);
+  const community = withRelevance
+    .filter(({ t, relevance }) => relevance >= COMMUNITY_THRESHOLD && !used.has(t.id))
+    .map(({ t }) => t)
+    .slice(0, 5);
 
   return { origin, amplifiers, community };
 }
@@ -3009,6 +3316,39 @@ function extractAddress(text: string): string | null {
     if (c.length >= 32 && c.length <= 44 && detectChain(c)) return c;
   }
   return null;
+}
+
+/**
+ * Sanitize LLM-emitted HTML so an unexpected tag (e.g. <article>, <area>,
+ * <arena>, malformed <a> without href) doesn't crash Telegram's strict HTML
+ * parser ("Unsupported start tag ..."). Keeps only the tags Telegram accepts;
+ * other angle brackets are HTML-entity-escaped.
+ *
+ * Reference: https://core.telegram.org/bots/api#html-style
+ */
+const TG_ALLOWED_TAGS = new Set([
+  'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del',
+  'code', 'pre', 'blockquote', 'br', 'tg-spoiler',
+]);
+function sanitizeTelegramHtml(s: string): string {
+  return s.replace(/<([^>]*)>/g, (full, inner: string) => {
+    const trimmed = inner.trim();
+    // Closing tag — keep if whitelisted, otherwise escape.
+    if (trimmed.startsWith('/')) {
+      const name = trimmed.slice(1).split(/[\s>]/)[0]?.toLowerCase();
+      if (name && (TG_ALLOWED_TAGS.has(name) || name === 'a' || name === 'span')) return full;
+      return full.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    const nameMatch = trimmed.match(/^([a-zA-Z][a-zA-Z0-9-]*)/);
+    if (!nameMatch) return full.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const name = nameMatch[1].toLowerCase();
+    if (TG_ALLOWED_TAGS.has(name)) return full;
+    // Anchor tag is allowed only with an href attribute.
+    if (name === 'a' && /\bhref\s*=\s*("[^"]+"|'[^']+')/i.test(trimmed)) return full;
+    // Spoiler span variant is allowed.
+    if (name === 'span' && /class\s*=\s*("|')tg-spoiler\1/i.test(trimmed)) return full;
+    return full.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  });
 }
 
 function esc(s: string): string {
