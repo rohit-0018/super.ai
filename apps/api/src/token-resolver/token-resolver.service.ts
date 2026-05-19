@@ -175,8 +175,10 @@ export class TokenResolverService {
 
     // DexScreener for DEX pairs; CoinGecko for rank, market data, and
     // canonical platform contracts (the REAL BTC/ETH on each chain).
+    // skipPoolCheck: this service's 90s BoundedCache is the rate-limit guard;
+    // scanner-induced pool cooldowns must not kill ticker resolution.
     const [pairs, cgCoins] = await Promise.all([
-      this.dex.search(symbol),
+      this.dex.search(symbol, { skipPoolCheck: true }),
       this.cg.searchBySymbol(symbol).catch(() => []),
     ]);
 

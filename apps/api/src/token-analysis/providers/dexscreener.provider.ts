@@ -126,10 +126,15 @@ export class DexScreenerProvider {
    * Returns [] (never throws) on rate-limit / network / non-200 so a ticker
    * lookup degrades gracefully into "no matches".
    */
-  async search(query: string): Promise<DexSearchPair[]> {
+  /**
+   * @param skipPoolCheck - Pass true from the token resolver (which has its own
+   * 90s BoundedCache). Without this, a scanner-induced DexScreener cooldown
+   * kills ALL ticker resolution for 30s even at 1 req/90s frequency.
+   */
+  async search(query: string, opts?: { skipPoolCheck?: boolean }): Promise<DexSearchPair[]> {
     const q = query.trim();
     if (!q) return [];
-    if (!(await this.pool.isAvailable(this.providerKey))) return [];
+    if (!opts?.skipPoolCheck && !(await this.pool.isAvailable(this.providerKey))) return [];
     try {
       const res = await fetch(`${this.base}/search?q=${encodeURIComponent(q)}`, {
         headers: { 'User-Agent': 'qwai/1.0' },
