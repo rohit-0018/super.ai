@@ -40,6 +40,7 @@ import { ConvictionLearnerService } from '../ai-agent/conviction-learner.service
 import { startConvictionLearnerWorker } from './conviction-learner.worker';
 import { startHotTokensScanWorker, startHotTokensRefreshWorker } from '../hot-tokens/hot-tokens.worker';
 import { HotTokensService } from '../hot-tokens/hot-tokens.service';
+import { startRulesFastWorker } from './rules-fast.worker';
 import { Bot } from 'grammy';
 
 export interface WorkerDeps {
@@ -186,6 +187,9 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
         this.workers.push(startHotTokensRefreshWorker(this.hotTokens));
       }
     }
+
+    // Phase 4: Trade+ fast-path worker (concurrency 8, stalled 3s)
+    this.workers.push(startRulesFastWorker({ ...deps, guardrails: this.guardrails } as any));
 
     // Telegram outbound sender — reuse the same Grammy Bot instance owned by
     // TelegramService when available; fall back to a bare instance if we

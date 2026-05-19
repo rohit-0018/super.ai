@@ -198,6 +198,12 @@ model User {
   autoPortfolio       AutoPortfolio?
   autoPositions       AutoPosition[]
   autoTrades          AutoTrade[]
+  // Trade+ Phase 4
+  signalSources       SignalSource[]
+  signals             Signal[]
+  ruleSets            RuleSet[]
+  ruleBindings        RuleBinding[]
+  ruleFirings         RuleFiring[]
 }
 
 model Wallet {
@@ -1034,4 +1040,220 @@ model AutoTrade {
   @@index([userId, closedAt])
   @@index([userId, exitReason])
   @@map("PaperTrade")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4 — Trade+ Fast Path Data Model
+// 11 tables for signal ingestion, rule evaluation, sizing/entry/exit policies,
+// risk policies, rule bindings, and full audit trail.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum SignalSourceKind {
+  TELEGRAM_CHANNEL
+  TELEGRAM_BOT
+  WEBHOOK
+  MANUAL
+}
+
+enum SignalTrust {
+  UNTRUSTED
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum RuleSetStatus {
+  DRAFT
+  CANARY
+  ACTIVE
+  ARCHIVED
+}
+
+enum RuleOutcomeStatus {
+  OPEN
+  WIN
+  LOSS
+  SKIPPED
+  ERROR
+}
+
+// Signal sources the user has configured (Telegram channels, webhooks, etc.)
+model SignalSource {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId        String?         // which wallet buys from this source
+  kind            SignalSourceKind
+  name            String
+  externalRef     String?         // channel username, webhook URL, etc.
+  trust           SignalTrust     @default(MEDIUM)
+  fastPathEnabled Boolean         @default(false)
+  enabled         Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  signals         Signal[]
+  @@index([userId, enabled])
+}
+
+// Every inbound event normalised and persisted with a traceId
+model Signal {
+  id           String       @id @default(cuid())
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId     String
+  source       SignalSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  traceId      String       @unique
+  rawText      String?      @db.Text
+  tokenAddress String?
+  ticker       String?
+  chain        Chain?
+  metadata     Json?        // parsed signal fields (mcap, price, etc.)
+  fastPath     Boolean      @default(false)
+  processedAt  DateTime?
+  createdAt    DateTime     @default(now())
+  firings      RuleFiring[]
+  @@index([userId, createdAt])
+  @@index([tokenAddress])
+}
+
+// User-defined rule sets (a named collection of rules)
+model RuleSet {
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  status      RuleSetStatus @default(DRAFT)
+  canaryCount Int           @default(0)  // trades executed in canary mode
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  rules       Rule[]
+  bindings    RuleBinding[]
+  sizingPolicy   SizingPolicy?
+  entryPolicy    EntryPolicy?
+  exitPolicy     ExitPolicy?
+  riskPolicy     RiskPolicy?
+  firings        RuleFiring[]
+  @@index([userId, status])
+}
+
+// Individual rule within a rule set
+model Rule {
+  id         String    @id @default(cuid())
+  ruleSetId  String
+  ruleSet    RuleSet   @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  name       String?
+  priority   Int       @default(0)
+  conditions Condition[]
+  @@index([ruleSetId])
+}
+
+// A single condition in a rule (field op value)
+model Condition {
+  id        String  @id @default(cuid())
+  ruleId    String
+  rule      Rule    @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  field     String  // e.g. "signal.mcap", "token.age_h", "risk.score"
+  operator  String  // EQ, NEQ, GT, GTE, LT, LTE, IN, CONTAINS, REGEX, BETWEEN
+  value     Json    // the comparison value (scalar, array, or range)
+  @@index([ruleId])
+}
+
+// Binds a RuleSet to a scope (global / channel / token / wallet)
+model RuleBinding {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ruleSetId String
+  ruleSet   RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  scope     String  // "global" | "channel:<id>" | "token:<addr>" | "wallet:<id>"
+  scopeRef  String?
+  @@index([userId, scope, scopeRef])
+}
+
+// Position sizing policy attached to a RuleSet
+model SizingPolicy {
+  id          String  @id @default(cuid())
+  ruleSetId   String  @unique
+  ruleSet     RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  mode        String  // "fixed_usd" | "pct_portfolio" | "kelly" | "conviction"
+  fixedUsd    Float?
+  pctPortfolio Float?
+  kellyFraction Float? @default(0.25)
+  maxUsd      Float?
+}
+
+// Entry policy: how to enter the trade
+model EntryPolicy {
+  id           String  @id @default(cuid())
+  ruleSetId    String  @unique
+  ruleSet      RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  orderType    String  @default("market")  // market | limit | twap | iceberg
+  slippageBps  Int     @default(300)
+  router       String  @default("jupiter") // jupiter | raydium | oneinch | paraswap
+  limitOffsetBps Int?  // for limit orders: bps below current price
+}
+
+// Exit policy: stops, TPs, trailing, time stop
+model ExitPolicy {
+  id                String  @id @default(cuid())
+  ruleSetId         String  @unique
+  ruleSet           RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  stopLossPct       Float?  @default(-25)   // hard stop %
+  stopLossSize      Float?  @default(1.0)   // fraction of position
+  tp1Pct            Float?  @default(50)    // TP1 target %
+  tp1Size           Float?  @default(0.5)
+  tp2Pct            Float?  @default(150)
+  tp2Size           Float?  @default(0.3)
+  trailingPct       Float?                  // trailing stop distance %
+  trailingSize      Float?  @default(0.2)   // runner size
+  breakEvenAt       Float?  @default(30)    // move stop to entry at +N%
+  timeStopHours     Float?  @default(4)     // tighten stop after N hours
+  timeStopPct       Float?  @default(-10)   // tightened stop %
+}
+
+// Risk policy per rule set
+model RiskPolicy {
+  id              String  @id @default(cuid())
+  ruleSetId       String  @unique
+  ruleSet         RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  maxPerTradeUsd  Float?
+  maxDailyUsd     Float?
+  cooldownSeconds Int?    @default(0)
+  maxTiltStreak   Int?    @default(3)  // consecutive losses before pausing
+  minRiskScore    Int?    @default(0)  // minimum cached AI score to proceed
+}
+
+// Each time a rule set fires on a signal
+model RuleFiring {
+  id          String            @id @default(cuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signalId    String
+  signal      Signal            @relation(fields: [signalId], references: [id], onDelete: Cascade)
+  ruleSetId   String
+  ruleSet     RuleSet           @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  traceId     String?
+  firedAt     DateTime          @default(now())
+  latencyMs   Int?
+  outcome     RuleOutcome?
+  @@index([userId, firedAt])
+  @@index([ruleSetId])
+}
+
+// What happened after a rule firing (OPEN until trade exits)
+model RuleOutcome {
+  id           String            @id @default(cuid())
+  firingId     String            @unique
+  firing       RuleFiring        @relation(fields: [firingId], references: [id], onDelete: Cascade)
+  status       RuleOutcomeStatus @default(OPEN)
+  tradeId      String?
+  entryUsd     Float?
+  exitUsd      Float?
+  pnlUsd       Float?
+  pnlPct       Float?
+  holdMinutes  Int?
+  exitReason   String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  @@index([status])
 }
