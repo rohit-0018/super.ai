@@ -138,7 +138,7 @@ export class DexScreenerProvider {
     try {
       const res = await fetch(`${this.base}/search?q=${encodeURIComponent(q)}`, {
         headers: { 'User-Agent': 'qwai/1.0' },
-        signal: AbortSignal.timeout(3_000),
+        signal: AbortSignal.timeout(6_000),
       });
       if (res.status === 429) {
         await this.pool.markRateLimited(this.providerKey);

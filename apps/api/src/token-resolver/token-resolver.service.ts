@@ -304,7 +304,10 @@ export class TokenResolverService {
       ambiguous: candidates.length > 1,
       confidence: computeConfidence(candidates),
     };
-    this.cache.set(cacheKey, result);
+    // Only cache successful lookups. An empty result usually means DexScreener
+    // was briefly rate-limited by the hot-feed scanner — caching it for 90s
+    // would make Telegram show "No token found" long after the limit lifted.
+    if (candidates.length > 0) this.cache.set(cacheKey, result);
     this.logger.debug(
       `resolve "$${symbol}" → ${candidates.length} candidate(s)` +
         (result.best ? `, top=${result.best.symbol}/${result.best.chain} ` +
