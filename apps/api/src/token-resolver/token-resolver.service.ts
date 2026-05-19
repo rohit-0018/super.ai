@@ -142,6 +142,7 @@ export class TokenResolverService {
       logoURI: null,
       url: meta?.url ?? null,
       verified: false,
+      cgRank: null,
       score: 0,
       matchTier: 'address',
     };
@@ -155,7 +156,7 @@ export class TokenResolverService {
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
-    // DexScreener is the source of truth; CoinGecko only flags "verified".
+    // DexScreener is the source of truth; CoinGecko enriches with rank + verified flag.
     const [pairs, cgCoins] = await Promise.all([
       this.dex.search(symbol),
       this.cg.searchBySymbol(symbol).catch(() => []),
@@ -165,19 +166,45 @@ export class TokenResolverService {
       cgCoins.map((c) => (c.symbol ?? '').toLowerCase()).filter(Boolean),
     );
 
+    // Find the canonical CoinGecko entry — exact symbol match, best market-cap rank.
+    // Used to pin BTC/ETH/SOL at the top and enrich with real market cap data.
+    const canonicalCg = cgCoins
+      .filter((c) => c.symbol.toLowerCase() === q && c.market_cap_rank != null)
+      .sort((a, b) => (a.market_cap_rank ?? 9999) - (b.market_cap_rank ?? 9999))[0] ?? null;
+
+    // Fetch real market data for canonical top-100 coins (BTC=1, ETH=2, …).
+    // This replaces DEX pool TVL with the coin's actual market cap.
+    const cgMarket = canonicalCg && (canonicalCg.market_cap_rank ?? 9999) <= 100
+      ? await this.cg.markets([canonicalCg.id]).then((m) => m[0] ?? null).catch(() => null)
+      : null;
+
     const collapsed = this.collapsePairs(pairs, q, opts);
     let candidates: ResolvedToken[] = collapsed.map((t) => {
       const verified = verifiedSymbols.has(t.symbol.toLowerCase());
+      const cgRank = verified && t.symbol.toLowerCase() === q && canonicalCg
+        ? (canonicalCg.market_cap_rank ?? null)
+        : null;
+      // For the canonical top-100 coin, replace DEX TVL with real CG market cap.
+      const marketCapUsd = cgRank != null && cgMarket
+        ? (cgMarket.market_cap ?? t.marketCapUsd)
+        : t.marketCapUsd;
+      const priceUsd = cgRank != null && cgMarket
+        ? (cgMarket.current_price ?? t.priceUsd)
+        : t.priceUsd;
       return {
         ...t,
+        priceUsd,
+        marketCapUsd,
         verified,
+        cgRank,
         score: scoreToken({
           liquidityUsd: t.liquidityUsd,
           volume24hUsd: t.volume24hUsd,
-          marketCapUsd: t.marketCapUsd,
+          marketCapUsd,
           txns24h: t.txns24h,
           pairAgeHours: t.pairAgeHours,
           verified,
+          cgRank,
         }),
       };
     });
@@ -209,7 +236,7 @@ export class TokenResolverService {
     pairs: DexSearchPair[],
     q: string,
     opts: ResolveOptions,
-  ): Omit<ResolvedToken, 'verified' | 'score'>[] {
+  ): Omit<ResolvedToken, 'verified' | 'score' | 'cgRank'>[] {
     const byToken = new Map<string, DexSearchPair[]>();
 
     for (const p of pairs) {
@@ -235,7 +262,7 @@ export class TokenResolverService {
       else byToken.set(key, [p]);
     }
 
-    const out: Omit<ResolvedToken, 'verified' | 'score'>[] = [];
+    const out: Omit<ResolvedToken, 'verified' | 'score' | 'cgRank'>[] = [];
     for (const [, group] of byToken) {
       const chain = chainIdToChain(group[0].chainId)!;
       // Representative pool = deepest liquidity (best price/url/logo source).
@@ -270,7 +297,7 @@ export class TokenResolverService {
         .filter((t): t is Exclude<MatchTier, 'address'> => !!t)
         .sort((a, b) => MATCH_TIER_RANK[b] - MATCH_TIER_RANK[a])[0];
 
-      const cand: Omit<ResolvedToken, 'verified' | 'score'> = {
+      const cand: Omit<ResolvedToken, 'verified' | 'score' | 'cgRank'> = {
         chain,
         chainId: rep.chainId,
         address: rep.baseToken.address,

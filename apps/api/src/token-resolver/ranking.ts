@@ -13,6 +13,7 @@ export interface ScoreInput {
   txns24h: number | null;
   pairAgeHours: number | null;
   verified: boolean;
+  cgRank?: number | null; // CoinGecko market-cap rank; 1 = BTC
 }
 
 // log10 compresses orders of magnitude so a 100x bigger token doesn't 100x
@@ -25,18 +26,24 @@ const W_MC = 0.4;
 const W_TX = 0.3;
 const W_AGE = 0.3;
 const W_VERIFIED = 1.0;
+const W_CG_RANK = 3.0; // top-ranked CG coin pinned to #1 (rank 1→+3, rank 100→+1.5)
 
 const AGE_CAP_HOURS = 720; // ~30d — older than this gives no extra credit
 
 export function scoreToken(i: ScoreInput): number {
   const ageBoost = Math.min(Math.max(0, i.pairAgeHours ?? 0) / AGE_CAP_HOURS, 1);
+  // Compress CG rank so rank-1 = full W_CG_RANK, rank-1000 = 0
+  const cgBoost = i.cgRank != null
+    ? W_CG_RANK * Math.max(0, 1 - Math.log10(i.cgRank + 1) / Math.log10(1001))
+    : 0;
   return (
     log(i.liquidityUsd) * W_LIQ +
     log(i.volume24hUsd) * W_VOL +
     log(i.marketCapUsd) * W_MC +
     log(i.txns24h) * W_TX +
     ageBoost * W_AGE +
-    (i.verified ? W_VERIFIED : 0)
+    (i.verified ? W_VERIFIED : 0) +
+    cgBoost
   );
 }
 

@@ -39,7 +39,7 @@ const mk = (p: Partial<ResolvedToken>): ResolvedToken => ({
   chain: 'SOLANA', chainId: 'solana', address: 'x', symbol: 'X', name: 'X',
   priceUsd: null, liquidityUsd: null, volume24hUsd: null, marketCapUsd: null,
   fdvUsd: null, pairAgeHours: null, txns24h: null, logoURI: null, url: null,
-  verified: false, score: 0, matchTier: 'fuzzy', ...p,
+  verified: false, cgRank: null, score: 0, matchTier: 'fuzzy', ...p,
 });
 
 describe('sortCandidates', () => {

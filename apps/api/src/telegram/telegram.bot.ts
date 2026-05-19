@@ -3227,7 +3227,8 @@ function fmtUsd(v: number): string {
 function fmtTokenCard(t: ResolvedToken, rank: number, total: number): string {
   const lines: string[] = [];
   const rankPfx = total > 1 ? `<b>${rank}.</b> ` : '';
-  lines.push(`${rankPfx}<b>${esc(t.symbol)}</b> · ${esc(t.name ?? t.symbol)} · ${chainLabel(t.chain)}${t.verified ? ' ✅' : ''}`);
+  const cgBadge = t.cgRank != null ? ` 🏆#${t.cgRank}` : '';
+  lines.push(`${rankPfx}<b>${esc(t.symbol)}</b> · ${esc(t.name ?? t.symbol)} · ${chainLabel(t.chain)}${t.verified ? ' ✅' : ''}${cgBadge}`);
   lines.push(`💵 ${fmtPriceUsd(t.priceUsd ?? 0)}   MCap ${fmtUsd(t.marketCapUsd ?? 0)}`);
   lines.push(`💧 Liq ${fmtUsd(t.liquidityUsd ?? 0)}  📈 Vol ${fmtUsd(t.volume24hUsd ?? 0)}/24h`);
   const txnsStr = t.txns24h ? `  ⚡ ${t.txns24h.toLocaleString()} txns` : '';

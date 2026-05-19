@@ -29,6 +29,7 @@ export interface ResolvedToken {
   logoURI: string | null;
   url: string | null; // dexscreener pair url
   verified: boolean; // listed on CoinGecko (canonical-ish)
+  cgRank: number | null; // CoinGecko market-cap rank (1 = BTC, null = unknown)
   score: number;
   matchTier: MatchTier;
 }
