@@ -1784,12 +1784,14 @@ export class TelegramBot {
 
     /* ── 🛠 /v — Value calculator ───────────────────────────────────────────── */
     bot.command('v', async (ctx) => {
-      const parts = (ctx.match?.trim() ?? '').split(/\s+/);
+      const parts  = (ctx.match?.trim() ?? '').split(/\s+/);
       const amount = parseFloat(parts[0]);
-      const token  = parts.slice(1).join(' ');
+      const rawTok = parts.slice(1).join(' ');
+      // Strip leading $ so /v 1000 $BTC and /v 1000 BTC both work
+      const token  = rawTok.startsWith('$') ? rawTok.slice(1) : rawTok;
       if (!token || isNaN(amount)) {
         return ctx.reply(
-          '💰 <b>Value Calc:</b>\n<code>/v &lt;amount&gt; &lt;token_address_or_symbol&gt;</code>\n\nExamples:\n<code>/v 1000 HfMb...F5p</code>\n<code>/v 0.5 SOL</code>',
+          '💰 <b>Value Calc:</b>\n<code>/v &lt;amount&gt; &lt;address | $TICKER&gt;</code>\n\nExamples:\n<code>/v 1000 $BTC</code>\n<code>/v 0.5 SOL</code>',
           { parse_mode: 'HTML' },
         );
       }
