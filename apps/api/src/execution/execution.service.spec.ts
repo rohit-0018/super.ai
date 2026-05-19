@@ -75,7 +75,10 @@ function makeService(overrides: {
     quote: jest.fn().mockResolvedValue({ srcToken: 'i', destToken: 'o', srcAmount: '100', destAmount: '95', priceRoute: {} }),
     buildTx: jest.fn().mockResolvedValue({ to: '0x', data: '0x', value: '0', gas: '0', gasPrice: '0' }),
   };
-  const svc = new ExecutionService(prisma, guardrails, jup, jito, oneinch, raydium, paraswap, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit, liveGuard);
+  const approvals: any = {
+    requestAndWait: jest.fn().mockResolvedValue(true),
+  };
+  const svc = new ExecutionService(prisma, guardrails, jup, jito, oneinch, raydium, paraswap, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit, liveGuard, approvals);
   return { svc, prisma, guardrails, jup, oneinch, wallets, dna, trades, audits, paperBalances };
 }
 

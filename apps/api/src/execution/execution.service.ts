@@ -19,6 +19,8 @@ import { SecurityComplianceService } from '../security/security-compliance.servi
 import { RiskEngineService } from '../security/risk-engine.service';
 import { SecurityAuditService } from '../security/security-audit.service';
 import { LiveTradeGuardService } from '../common/live-trade-guard.service';
+import { ApprovalsService } from '../approvals/approvals.service';
+import { ApprovalChannel } from '@prisma/client';
 import { makeQueue, makeJobData, QUEUES } from '../agents/queues';
 import {
   AgentActionType,
@@ -87,6 +89,8 @@ export class ExecutionService {
     private riskEngine: RiskEngineService,
     private securityAudit: SecurityAuditService,
     private liveGuard: LiveTradeGuardService,
+    @Inject(forwardRef(() => ApprovalsService))
+    private approvals: ApprovalsService,
   ) {}
 
   async swap(input: SwapInput): Promise<SwapResult> {
@@ -192,6 +196,31 @@ export class ExecutionService {
       riskFlags: input.riskFlags,
     });
     if (!decision.ok) throw new ForbiddenException({ guardrail: decision.reason, traceId: trace });
+
+    // Spending policy: large trades require explicit Telegram confirmation before executing.
+    if (decision.requiresConfirmation) {
+      const approved = await this.approvals.requestAndWait({
+        userId: input.userId,
+        intent: {
+          chain: input.chain,
+          tokenIn: input.tokenIn,
+          tokenOut: input.tokenOut,
+          amountIn: input.amountIn,
+          notionalUsd: input.notionalUsd,
+          slippageBps: input.slippageBps,
+          side: 'buy',
+          walletId: input.walletId,
+          reason: `Trade above confirmation threshold ($${input.notionalUsd.toFixed(2)})`,
+        },
+        timeoutMinutes: 1,
+        channels: [ApprovalChannel.TELEGRAM],
+        traceId: trace,
+      }, 60_000);
+
+      if (!approved) {
+        throw new ForbiddenException({ guardrail: 'CONFIRMATION_DENIED_OR_EXPIRED', traceId: trace });
+      }
+    }
 
     const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
     if (!user) throw new ForbiddenException({ message: 'User not found', traceId: trace });

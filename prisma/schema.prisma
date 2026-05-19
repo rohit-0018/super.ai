@@ -206,13 +206,18 @@ model Wallet {
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain         Chain
   address       String
-  encryptedKey  String    // KMS envelope ciphertext (base64)
-  encryptedDek  String    // wrapped data key (base64)
-  label         String?
-  isPrimary     Boolean   @default(false)
-  isImported    Boolean   @default(false)  // true = user-supplied key, not qwai-generated
-  backedUpAt    DateTime?                  // null = user has never confirmed a key backup
-  createdAt     DateTime  @default(now())
+  encryptedKey        String    // KMS envelope ciphertext (base64)
+  encryptedDek        String    // wrapped data key (base64)
+  label               String?
+  isPrimary           Boolean   @default(false)
+  isImported          Boolean   @default(false)  // true = user-supplied key, not qwai-generated
+  backedUpAt          DateTime?                  // null = user has never confirmed a key backup
+  // Multisig fields — set when this wallet is backed by a Squads vault (Solana) or Safe (EVM)
+  multisigAddress     String?   // Squads vault PDA or Safe contract address
+  multisigThreshold   Int?      // M of N required signatures
+  multisigMembers     String[]  // co-signer public keys
+  keyStorageKind      String    @default("KMS")  // KMS | HARDWARE | SQUADS | SAFE
+  createdAt           DateTime  @default(now())
 
   @@unique([userId, address])
   @@index([userId])
@@ -462,15 +467,17 @@ model AuditLog {
 }
 
 model GuardrailConfig {
-  userId         String  @id
-  user           User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  perTradeUsd    Float   @default(500)
-  dailyUsd       Float   @default(2000)
-  maxSlippageBps Int     @default(150)
-  whitelist      String[]
-  blacklist      String[]
-  killSwitch     Boolean @default(false)
-  updatedAt      DateTime @updatedAt
+  userId                   String  @id
+  user                     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  perTradeUsd              Float   @default(500)
+  dailyUsd                 Float   @default(2000)
+  maxSlippageBps           Int     @default(150)
+  whitelist                String[]
+  blacklist                String[]
+  killSwitch               Boolean @default(false)
+  // Spending policy — trades above this threshold require explicit confirmation (30s Telegram DM) or multisig approval
+  confirmationThresholdUsd Float?  // null = disabled; e.g. 500 requires confirm above $500
+  updatedAt                DateTime @updatedAt
 }
 
 model CexConnection {

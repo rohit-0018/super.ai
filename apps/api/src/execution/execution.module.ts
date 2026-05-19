@@ -16,6 +16,7 @@ import { AgentsModule } from '../agents/agents.module';
 import { SecurityModule } from '../security/security.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TokenResolverModule } from '../token-resolver/token-resolver.module';
+import { ApprovalsModule } from '../approvals/approvals.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { TokenResolverModule } from '../token-resolver/token-resolver.module';
     forwardRef(() => AgentsModule),
     SecurityModule,
     TokenResolverModule,
+    forwardRef(() => ApprovalsModule),
   ],
   providers: [ExecutionService, JupiterClient, JitoClient, OneInchClient, RaydiumClient, ParaswapClient, OrderManagerService, DcaService, GasSchedulerService],
   controllers: [ExecutionController],

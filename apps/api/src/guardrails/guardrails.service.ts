@@ -13,6 +13,8 @@ export interface TradeIntent {
 export interface GuardrailDecision {
   ok: boolean;
   reason?: string;
+  /** When true, the trade is allowed but requires explicit user confirmation (Telegram DM) before execution. */
+  requiresConfirmation?: boolean;
 }
 
 @Injectable()
@@ -60,6 +62,13 @@ export class GuardrailsService {
     });
     const dayTotal = (used._sum.priceUsd ?? 0) + intent.notionalUsd;
     if (dayTotal > cfg.dailyUsd) return { ok: false, reason: `DAILY_CAP_$${cfg.dailyUsd}` };
+
+    // Spending policy: trades above the confirmation threshold require explicit user approval.
+    const threshold = (cfg as any).confirmationThresholdUsd as number | null | undefined;
+    if (threshold != null && intent.notionalUsd >= threshold) {
+      return { ok: true, requiresConfirmation: true, reason: `CONFIRM_REQUIRED_$${threshold}` };
+    }
+
     return { ok: true };
   }
 

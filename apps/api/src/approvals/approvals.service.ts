@@ -137,6 +137,32 @@ export class ApprovalsService {
     });
   }
 
+  /**
+   * Create an approval request and poll DB for a response, up to `timeoutMs`.
+   * Used by the spending policy to block a high-value trade until the user taps
+   * Approve/Reject in Telegram. Returns true if approved, false if rejected/expired.
+   */
+  async requestAndWait(
+    input: CreateApprovalInput,
+    timeoutMs = 30_000,
+  ): Promise<boolean> {
+    const req = await this.create(input);
+    const deadline = Date.now() + timeoutMs;
+    const pollMs = 2_000;
+
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      const current = await this.prisma.approvalRequest.findUnique({ where: { id: req.id } });
+      if (!current) break;
+      if (current.status === ApprovalStatus.APPROVED) return true;
+      if (current.status === ApprovalStatus.REJECTED || current.status === ApprovalStatus.EXPIRED) return false;
+    }
+
+    // Timed out — expire the request and deny
+    await this.expire(req.id);
+    return false;
+  }
+
   private async pushTelegram(requestId: string, userId: string, intent: TradeIntent, expiresAt: Date) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
