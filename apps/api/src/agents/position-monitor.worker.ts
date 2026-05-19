@@ -1,9 +1,12 @@
 import { Logger } from '@nestjs/common';
 import { OrderStatus, OrderType } from '@prisma/client';
+import { Connection } from '@solana/web3.js';
+import { ethers } from 'ethers';
 import { Worker } from 'bullmq';
 import { makeWorker, QUEUES } from './queues';
 import type { WorkerDeps } from './worker.bootstrap';
 import { newTraceId, withTrace } from '../common/trace-context';
+import { getSolanaRpcUrl, getEvmRpcUrl } from '../common/network-config';
 
 interface TriggerParams {
   stopPrice?: number;
@@ -134,10 +137,109 @@ export function startPositionMonitorWorker(deps: WorkerDeps): Worker {
         }
       }
 
+      // Phase 2.2: Confirm or expire orders with a broadcast-but-unconfirmed tx.
+      // These are orders where the process died between broadcast and the DB write.
+      await confirmPendingOrders(deps, logger);
+
       logger.debug(`[trc=${tickTrace ?? 'tick'}] monitor tick: ${triggered} triggered / ${orders.length} scanned`);
       return { ok: true, triggered, scanned: orders.length };
     }, { traceId: tickTrace });
   });
+}
+
+/** Max age before a pending tx is declared dropped and the order marked FAILED. */
+const PENDING_TX_EXPIRY_MS = 3 * 60 * 1_000; // 3 minutes
+
+async function confirmPendingOrders(deps: WorkerDeps, logger: Logger): Promise<void> {
+  const pending = await (deps.prisma as any).order.findMany({
+    where: { status: OrderStatus.PENDING, pendingTxHash: { not: null } },
+    take: 50,
+  });
+  if (pending.length === 0) return;
+
+  const solConn = new Connection(getSolanaRpcUrl(), 'confirmed');
+
+  for (const order of pending) {
+    const sig: string = order.pendingTxHash;
+    const ageMs = Date.now() - new Date(order.updatedAt).getTime();
+
+    try {
+      if (order.chain === 'SOLANA') {
+        const statuses = await solConn.getSignatureStatuses([sig]);
+        const status = statuses?.value?.[0];
+
+        if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+          await (deps.prisma as any).order.update({
+            where: { id: order.id },
+            data: { status: OrderStatus.FILLED, txHash: sig, pendingTxHash: null },
+          });
+          await deps.notifications.emit({
+            userId: order.userId,
+            kind: 'TRADE_CONFIRMED',
+            severity: 'INFO',
+            payload: { orderId: order.id, txHash: sig, message: 'Transaction confirmed on-chain' },
+          });
+          logger.log(`[pending-confirm] order=${order.id} sig=${sig} confirmed`);
+          continue;
+        }
+
+        if (status?.err) {
+          await (deps.prisma as any).order.update({
+            where: { id: order.id },
+            data: { status: OrderStatus.FAILED, pendingTxHash: null },
+          });
+          await deps.notifications.emit({
+            userId: order.userId,
+            kind: 'TRADE_FAILED',
+            severity: 'WARN',
+            payload: { orderId: order.id, txHash: sig, message: `Transaction failed on-chain: ${JSON.stringify(status.err)}` },
+          });
+          logger.warn(`[pending-confirm] order=${order.id} sig=${sig} on-chain error`);
+          continue;
+        }
+      } else {
+        // EVM: use provider.getTransactionReceipt
+        const rpcUrl = getEvmRpcUrl(order.chain);
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const receipt = await provider.getTransactionReceipt(sig);
+        if (receipt) {
+          const ok = receipt.status === 1;
+          await (deps.prisma as any).order.update({
+            where: { id: order.id },
+            data: {
+              status: ok ? OrderStatus.FILLED : OrderStatus.FAILED,
+              txHash: ok ? sig : undefined,
+              pendingTxHash: null,
+            },
+          });
+          await deps.notifications.emit({
+            userId: order.userId,
+            kind: ok ? 'TRADE_CONFIRMED' : 'TRADE_FAILED',
+            severity: ok ? 'INFO' : 'WARN',
+            payload: { orderId: order.id, txHash: sig, message: ok ? 'Transaction confirmed' : 'Transaction reverted' },
+          });
+          continue;
+        }
+      }
+    } catch (e: any) {
+      logger.warn(`[pending-confirm] order=${order.id} sig=${sig} poll error: ${e.message}`);
+    }
+
+    // If tx is older than PENDING_TX_EXPIRY_MS and still unconfirmed, declare it dropped.
+    if (ageMs > PENDING_TX_EXPIRY_MS) {
+      await (deps.prisma as any).order.update({
+        where: { id: order.id },
+        data: { status: OrderStatus.FAILED, pendingTxHash: null },
+      });
+      await deps.notifications.emit({
+        userId: order.userId,
+        kind: 'TRADE_FAILED',
+        severity: 'WARN',
+        payload: { orderId: order.id, txHash: sig, message: 'Transaction dropped — not confirmed within 3 minutes. Please retry.' },
+      });
+      logger.warn(`[pending-confirm] order=${order.id} sig=${sig} expired after ${Math.round(ageMs / 1000)}s`);
+    }
+  }
 }
 
 function shouldTrigger(

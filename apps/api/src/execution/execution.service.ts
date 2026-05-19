@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { Chain, OrderStatus, Prisma, TradeMode } from '@prisma/client';
 import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { ethers } from 'ethers';
 import { getSolanaRpcUrl, getEvmRpcUrl, getEvmChainId, isTestnet, getNetworkMode } from '../common/network-config';
 import { currentTraceId } from '../common/trace-context';
@@ -294,6 +295,7 @@ export class ExecutionService {
         data: {
           status: OrderStatus.FILLED,
           txHash: txHash ?? undefined,
+          pendingTxHash: null, // confirmed — clear the crash-recovery sentinel
           ...(trace ? { traceId: trace } : {}),
         } as unknown as Prisma.OrderUpdateInput,
       });
@@ -459,6 +461,16 @@ export class ExecutionService {
           const tx = VersionedTransaction.deserialize(raw);
           tx.sign([kp]);
 
+          // The signature is deterministic post-sign — record it before broadcast
+          // so the position monitor can recover the order if the process crashes mid-flight.
+          const pendingSig = tx.signatures.length > 0 ? bs58.encode(tx.signatures[0]) : null;
+          if (pendingSig && input.orderId) {
+            this.prisma.order.update({
+              where: { id: input.orderId },
+              data: { pendingTxHash: pendingSig } as any,
+            }).catch(() => {}); // fire-and-forget — must not block the trade path
+          }
+
           const serialized = Buffer.from(tx.serialize()).toString('base64');
 
           // Try Jito block engine first for MEV protection.
@@ -467,10 +479,7 @@ export class ExecutionService {
             // Wait for bundle confirmation (up to 20s). On timeout, check via normal RPC.
             const landed = await this.jito.waitForBundle(jitoResult.bundleId, 20_000, trace);
             if (landed) {
-              // Extract the signature from the signed transaction.
-              const sig = tx.signatures.length > 0
-                ? Buffer.from(tx.signatures[0]).toString('hex')
-                : jitoResult.bundleId;
+              const sig = pendingSig ?? jitoResult.bundleId;
               this.logger.log(`[trc=${trace}] Jito bundle confirmed: ${jitoResult.bundleId} sig=${sig}`);
               return sig;
             }

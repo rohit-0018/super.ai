@@ -297,13 +297,15 @@ model Order {
   tokenOut  String
   amountIn  String      // bigint as string
   params    Json
-  txHash    String?
-  traceId   String?
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
-  trades    Trade[]
+  txHash         String?
+  pendingTxHash  String?  // set after broadcast, cleared on confirmation — used for crash-recovery polling
+  traceId        String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  trades         Trade[]
   @@index([userId, status])
   @@index([traceId])
+  @@index([status, pendingTxHash])
 }
 
 model Trade {
