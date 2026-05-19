@@ -908,8 +908,12 @@ export class TelegramBot {
 
     /* ── 🔍 /soc — Find socials ─────────────────────────────────────────────── */
     bot.command('soc', async (ctx) => {
-      const addr = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr) return ctx.reply('Usage: /soc <contract_address>');
+      const rawArg = ctx.match?.trim().split(/\s+/)[0];
+      if (!rawArg) return ctx.reply('Usage: /soc <address | $TICKER>');
+      const outcome = await this.resolveToken(ctx, rawArg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      const addr = outcome.address;
       const msg = await ctx.reply('🔍 <i>Finding socials…</i>', { parse_mode: 'HTML' });
       try {
         const result = await this.gatherSocials(addr);
@@ -961,12 +965,15 @@ export class TelegramBot {
 
     /* ── 📊 /c — Candlestick chart + info ──────────────────────────────────── */
     bot.command('c', async (ctx) => {
-      const parts = (ctx.match?.trim() ?? '').split(/\s+/);
-      const addr  = parts[0];
-      const tf    = parts[1] ?? '15m';
-      if (!addr) return ctx.reply('Usage: /c <token_address> [5m|15m|1h|4h|1d]\nExample: /c HfMb...F5p 1h');
-      const chain = detectChain(addr);
-      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const parts  = (ctx.match?.trim() ?? '').split(/\s+/);
+      const rawArg = parts[0];
+      const tf     = parts[1] ?? '15m';
+      if (!rawArg) return ctx.reply('Usage: /c <address | $TICKER> [5m|15m|1h|4h|1d]\nExample: /c $BTC 1h');
+      const outcome = await this.resolveToken(ctx, rawArg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      const addr  = outcome.address;
+      const chain = detectChain(addr)!;
       const msg = await ctx.reply('📊 <i>Generating chart…</i>', { parse_mode: 'HTML' });
       try {
         // Suppress fetchDexPair throws here so the search + GeckoTerminal
@@ -1051,10 +1058,13 @@ export class TelegramBot {
 
     /* ── 📊 /cc — Chart only ────────────────────────────────────────────────── */
     bot.command('cc', async (ctx) => {
-      const addr  = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr)  return ctx.reply('Usage: /cc <token_address>');
-      const chain = detectChain(addr);
-      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const rawArg = ctx.match?.trim().split(/\s+/)[0];
+      if (!rawArg) return ctx.reply('Usage: /cc <address | $TICKER>');
+      const outcome = await this.resolveToken(ctx, rawArg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      const addr  = outcome.address;
+      const chain = detectChain(addr)!;
       const url   = `https://dexscreener.com/${chain === 'SOLANA' ? 'solana' : 'ethereum'}/${addr}`;
       return ctx.reply(
         `📊 <code>${addr.slice(0, 8)}…${addr.slice(-6)}</code>`,
@@ -1064,10 +1074,13 @@ export class TelegramBot {
 
     /* ── 📊 /cx — Chart minimal ─────────────────────────────────────────────── */
     bot.command('cx', async (ctx) => {
-      const addr  = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr)  return ctx.reply('Usage: /cx <token_address>');
-      const chain = detectChain(addr);
-      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const rawArg = ctx.match?.trim().split(/\s+/)[0];
+      if (!rawArg) return ctx.reply('Usage: /cx <address | $TICKER>');
+      const outcome = await this.resolveToken(ctx, rawArg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      const addr  = outcome.address;
+      const chain = detectChain(addr)!;
       const url   = `https://dexscreener.com/${chain === 'SOLANA' ? 'solana' : 'ethereum'}/${addr}`;
       return ctx.reply(`<a href="${url}">📊</a> <code>${addr.slice(0, 8)}…${addr.slice(-6)}</code>`, {
         parse_mode: 'HTML',
@@ -1089,10 +1102,13 @@ export class TelegramBot {
 
     /* ── 📊 /bm — Bubblemap ─────────────────────────────────────────────────── */
     bot.command('bm', async (ctx) => {
-      const addr  = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr)  return ctx.reply('Usage: /bm <token_address>');
-      const chain = detectChain(addr);
-      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const rawArg = ctx.match?.trim().split(/\s+/)[0];
+      if (!rawArg) return ctx.reply('Usage: /bm <address | $TICKER>');
+      const outcome = await this.resolveToken(ctx, rawArg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      const addr  = outcome.address;
+      const chain = detectChain(addr)!;
       const slug  = chain === 'SOLANA' ? 'sol' : 'eth';
       const url   = `https://app.bubblemaps.io/${slug}/token/${addr}`;
       return ctx.reply(
@@ -1251,10 +1267,13 @@ export class TelegramBot {
 
     /* ── 👥 /h — Top holders ────────────────────────────────────────────────── */
     bot.command('h', async (ctx) => {
-      const addr  = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr)  return ctx.reply('Usage: /h <token_address>');
-      const chain = detectChain(addr);
-      if (!chain) return ctx.reply('❌ Invalid address format.');
+      const rawArg = ctx.match?.trim().split(/\s+/)[0];
+      if (!rawArg) return ctx.reply('Usage: /h <address | $TICKER>');
+      const outcome = await this.resolveToken(ctx, rawArg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      const addr  = outcome.address;
+      const chain = detectChain(addr)!;
       if (chain !== 'SOLANA') {
         return ctx.reply('👥 <b>Top Holders</b>\n\nEVM holder data on Etherscan:', {
           parse_mode: 'HTML',
@@ -1583,11 +1602,12 @@ export class TelegramBot {
 
     /* ── 🤖 /aica — AI contract audit ───────────────────────────────────────── */
     bot.command('aica', async (ctx) => {
-      const addr  = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr)  return ctx.reply('Usage: /aica <contract_address>');
-      const chain = detectChain(addr);
-      if (!chain) return ctx.reply('❌ Invalid contract address format.');
-      return this.runScan(ctx, addr);
+      const rawArg = ctx.match?.trim().split(/\s+/)[0];
+      if (!rawArg) return ctx.reply('Usage: /aica <address | $TICKER>');
+      const outcome = await this.resolveToken(ctx, rawArg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      return this.runScan(ctx, outcome.address);
     });
 
     /* ── 🏆 /rank — User rank & XP ─────────────────────────────────────────── */
