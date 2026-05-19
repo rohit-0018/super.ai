@@ -52,18 +52,30 @@ export class JupiterClient {
     }
   }
 
-  async swapTx(quote: JupQuote, userPublicKey: string, useJito = true) {
+  async swapTx(
+    quote: JupQuote,
+    userPublicKey: string,
+    opts: { jitoTipLamports?: number; useJito?: boolean } = {},
+  ) {
     if (this.base === 'MOCK') {
       this.logger.debug(`[testnet] Mock Jupiter swap — returning devnet SOL transfer`);
       return { swapTransaction: null, testnetMock: true };
     }
-    return http.post(`${this.base}/swap`, {
-      quoteResponse: quote,
-      userPublicKey,
-      wrapAndUnwrapSol: true,
-      prioritizationFeeLamports: 'auto',
-      asLegacyTransaction: false,
-      computeUnitPriceMicroLamports: useJito ? undefined : 'auto',
-    });
+    const { jitoTipLamports, useJito = true } = opts;
+    return http.post<{ swapTransaction: string; testnetMock?: boolean }>(
+      `${this.base}/swap`,
+      {
+        quoteResponse: quote,
+        userPublicKey,
+        wrapAndUnwrapSol: true,
+        asLegacyTransaction: false,
+        // When jitoTipLamports is provided, Jupiter embeds the Jito tip instruction
+        // directly into the transaction. We then submit the signed tx to Jito's
+        // block engine instead of the normal Solana RPC for MEV protection.
+        ...(useJito && jitoTipLamports != null
+          ? { prioritizationFeeLamports: { jitoTipLamports } }
+          : { prioritizationFeeLamports: 'auto' }),
+      },
+    );
   }
 }

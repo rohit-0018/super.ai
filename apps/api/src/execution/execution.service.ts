@@ -7,6 +7,7 @@ import { currentTraceId } from '../common/trace-context';
 import { PrismaService } from '../prisma/prisma.service';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { JupiterClient } from './jupiter.client';
+import { JitoClient, type JitoTipMode } from './jito.client';
 import { OneInchClient } from './oneinch.client';
 import { WalletsService } from '../wallets/wallets.service';
 import { TradingDnaService } from '../ai-agent/trading-dna.service';
@@ -71,6 +72,7 @@ export class ExecutionService {
     private prisma: PrismaService,
     private guardrails: GuardrailsService,
     private jup: JupiterClient,
+    private jito: JitoClient,
     private oneinch: OneInchClient,
     private wallets: WalletsService,
     private dna: TradingDnaService,
@@ -396,7 +398,8 @@ export class ExecutionService {
     if (!wallet) throw new ForbiddenException({ message: 'wallet not found', traceId: trace });
 
     const quote = await this.jup.quote(input.tokenIn, input.tokenOut, input.amountIn, input.slippageBps);
-    const swap = await this.jup.swapTx(quote, wallet.address, true);
+    const initialTip = this.jito.tipLamports((input as any).jitoTipMode ?? 'auto');
+    const swap = await this.jup.swapTx(quote, wallet.address, { jitoTipLamports: initialTip });
 
     const rpcUrl = getSolanaRpcUrl();
     const connection = new Connection(rpcUrl, 'confirmed');
@@ -419,8 +422,12 @@ export class ExecutionService {
 
     // Mainnet: real Jupiter swap — retry with fresh re-quotes on slippage failure.
     // Slippage escalation: base → 2× → 4× (capped at 10 000 bps).
+    // MEV protection: sign the tx then submit via Jito block engine; fall back to
+    // normal RPC if Jito is unavailable (network error, rate limit, etc.).
     const MAX_SWAP_ATTEMPTS = 3;
     const SWAP_SLIPPAGE_CEILING = 10_000;
+    const jitoTipMode: JitoTipMode = (input as any).jitoTipMode ?? 'auto';
+    const baseTip = this.jito.tipLamports(jitoTipMode);
 
     let lastErr: Error | null = null;
     let lastOutAmount = quote.outAmount;
@@ -434,9 +441,12 @@ export class ExecutionService {
       const attemptQuote = attempt === 0
         ? quote
         : await this.jup.quote(input.tokenIn, input.tokenOut, input.amountIn, attemptSlippage);
+
+      // For retries on Jito: bump tip 2× so the new bundle wins validator priority.
+      const attemptTip = attempt === 0 ? baseTip : Math.round(baseTip * Math.pow(2, attempt));
       const attemptSwap = attempt === 0
         ? swap
-        : await this.jup.swapTx(attemptQuote, wallet.address, true);
+        : await this.jup.swapTx(attemptQuote, wallet.address, { jitoTipLamports: attemptTip });
 
       if (!attemptSwap?.swapTransaction) break; // testnet mock path — shouldn't reach here on mainnet
 
@@ -449,6 +459,26 @@ export class ExecutionService {
           const tx = VersionedTransaction.deserialize(raw);
           tx.sign([kp]);
 
+          const serialized = Buffer.from(tx.serialize()).toString('base64');
+
+          // Try Jito block engine first for MEV protection.
+          const jitoResult = await this.jito.submitBundle(serialized, trace);
+          if (jitoResult.accepted) {
+            // Wait for bundle confirmation (up to 20s). On timeout, check via normal RPC.
+            const landed = await this.jito.waitForBundle(jitoResult.bundleId, 20_000, trace);
+            if (landed) {
+              // Extract the signature from the signed transaction.
+              const sig = tx.signatures.length > 0
+                ? Buffer.from(tx.signatures[0]).toString('hex')
+                : jitoResult.bundleId;
+              this.logger.log(`[trc=${trace}] Jito bundle confirmed: ${jitoResult.bundleId} sig=${sig}`);
+              return sig;
+            }
+            // Bundle didn't land — fall through to normal RPC as safety net.
+            this.logger.warn(`[trc=${trace}] Jito bundle not confirmed — falling back to normal RPC`);
+          }
+
+          // Fallback: send via normal Solana RPC.
           const { lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
           const blockhash = tx.message.recentBlockhash;
 

@@ -62,7 +62,12 @@ function makeService(overrides: {
     checkLiveWithdraw: jest.fn().mockResolvedValue(undefined),
     invalidate: jest.fn(),
   };
-  const svc = new ExecutionService(prisma, guardrails, jup, oneinch, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit, liveGuard);
+  const jito: any = {
+    tipLamports: jest.fn().mockReturnValue(100_000),
+    submitBundle: jest.fn().mockResolvedValue({ bundleId: '', accepted: false }),
+    waitForBundle: jest.fn().mockResolvedValue(false),
+  };
+  const svc = new ExecutionService(prisma, guardrails, jup, jito, oneinch, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit, liveGuard);
   return { svc, prisma, guardrails, jup, oneinch, wallets, dna, trades, audits, paperBalances };
 }
 

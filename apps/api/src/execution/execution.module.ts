@@ -2,6 +2,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { ExecutionService } from './execution.service';
 import { ExecutionController } from './execution.controller';
 import { JupiterClient } from './jupiter.client';
+import { JitoClient } from './jito.client';
 import { OneInchClient } from './oneinch.client';
 import { OrderManagerService } from './order-manager.service';
 import { DcaService } from './dca.service';
@@ -24,7 +25,7 @@ import { TokenResolverModule } from '../token-resolver/token-resolver.module';
     SecurityModule,
     TokenResolverModule,
   ],
-  providers: [ExecutionService, JupiterClient, OneInchClient, OrderManagerService, DcaService, GasSchedulerService],
+  providers: [ExecutionService, JupiterClient, JitoClient, OneInchClient, OrderManagerService, DcaService, GasSchedulerService],
   controllers: [ExecutionController],
   exports: [ExecutionService, OrderManagerService, DcaService, GasSchedulerService],
 })

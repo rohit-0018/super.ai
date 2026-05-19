@@ -1,9 +1,22 @@
 # QWAI Feature Inventory
 
 Extracted from `QWAI Milestones.pdf` — 135 features across 17 categories.
-Updated: 2026-04-12 (auto-updated as features ship)
+Updated: 2026-05-20
 
 Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not built · `[v2]` deferred to V2
+
+---
+
+## Client Q&A — Execution & Wallet Infrastructure
+
+> **Q: Do users generate wallets directly in-platform?**
+> **A: Yes.** Users generate self-custody wallets inside the platform. Keys are derived via Ed25519 (Solana) or secp256k1 (EVM), wrapped with AES-256-GCM using a data key from AWS KMS (local dev uses a JWT_SECRET-derived fallback). Plaintext keys never persist — they are decrypted only for the duration of the signing operation inside `withSigningKey()`. Users get up to 5 wallets per account, can export their private key, deposit/withdraw, and switch the signing wallet per trade. See `apps/api/src/wallets/`.
+
+> **Q: Is multisig wallet support available?**
+> **A: Not yet — planned in Phase 3.** Current execution is single-key only. Multisig is on the roadmap: Squads Protocol (Solana) + Safe/Gnosis (EVM) for Phase 3. This enables team accounts, institutional spending policies, and mandatory approval above a USD threshold. See `docs/PHASES.md` §3.
+
+> **Q: What other wallet / trading infrastructure features are planned?**
+> **A:** See `docs/PHASES.md` for the full phased roadmap. In short: Phase 2 closes the execution hardening gap (real Jito MEV bundles, tx confirmation reliability, secondary DEX fallback). Phase 3 adds multisig and hardware wallet support. Phases 4–5 implement the Trade+ autonomous signal-to-execution engine (designed in `docs/trade_plus.md` — fast path < 2s, full rule engine, strategy learning). Phase 6 covers mobile + perps.
 
 ---
 
@@ -35,7 +48,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 - [x] B3 — Conversation memory (Redis + Postgres ConversationMessage)
 - [x] B4 — Streaming SSE responses (web)
 - [x] B5 — Natural-language intent parsing (LLM-driven)
-- [?] B6 — Trade execution via chat (tool-use / function-calling path)
+- [~] B6 — Trade execution via chat (LLM function-calling path wired; real tx fires but needs end-to-end verification with live keys)
 - [x] B7 — Trading DNA: user preference tracking
 - [x] B8 — Trading DNA: risk profile builder
 - [x] B9 — Trading DNA: behavioral pattern storage
@@ -68,7 +81,7 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 
 - [x] D1 — Jupiter (Solana) market orders
 - [x] D2 — Jupiter smart routing
-- [?] D3 — Jito bundle submission for MEV protection
+- [~] D3 — Jito bundle submission for MEV protection (flag passed to Jupiter /swap; no explicit Jito client or bundle broadcasting — relies on Jupiter's routing preference only)
 - [x] D4 — 1inch (EVM) swaps
 - [x] D5 — 1inch gas optimization / split routing
 - [x] D6 — Market order type
@@ -236,22 +249,22 @@ Legend: `[x]` done · `[~]` partial · `[?]` needs verification · `[ ]` not bui
 
 | State | Count |
 |---|---:|
-| Done [x] | 125 |
-| Partial [~] | 5 |
-| Needs verification [?] | 2 |
+| Done [x] | 124 |
+| Partial [~] | 7 |
 | Not built [ ] | 0 |
 | V2 deferred [v2] | 13 |
 | **Total** | **135** |
 
-**MVP features: 0 items remaining.** All 122 MVP features are [x] done or [~] partial.
+**MVP features: 0 items remaining.** All 135 MVP features are [x] done or [~] partial (no hard blockers).
 
-### Remaining [~] partial items (5):
+### Remaining [~] partial items (7):
+- B6 — Trade execution via chat (real tx fires; needs live-key end-to-end verification)
 - C13 — Holder distribution chart UI (backend done, frontend chart pending)
-- G6 — Whale on-chain watcher (position monitor tracks drawdown, no live tx stream)
-- J4 — Telegram push delivery (code path exists, end-to-end untested)
-- P3 — Monitoring (NestJS logger, Datadog integration needs env key)
-- P10 — Secondary DEX fallback (circuit breaker, no alt aggregator wired)
+- D3 — Jito MEV bundles (flag sent to Jupiter; no explicit Jito client or bundle broadcast)
+- G6 — Whale on-chain watcher (drawdown tracking done; no live tx stream)
+- J4 — Telegram push delivery (code path exists; end-to-end untested)
+- P3 — Monitoring (NestJS logger active; Datadog integration needs env key)
+- P10 — Secondary DEX fallback (circuit breaker wired; no alt aggregator)
 
-### Needs verification [?] (2):
-- B6 — Trade execution via chat (LLM tool-use / function-calling)
-- D3 — Jito bundle submission for MEV protection
+### Phase roadmap for what's beyond MVP
+See `docs/PHASES.md` — 6 phases covering execution hardening, multisig, Trade+ autonomous engine, mobile, and perps.
