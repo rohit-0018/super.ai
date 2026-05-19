@@ -2445,7 +2445,15 @@ export class TelegramBot {
       }
 
       // Show raw ranked data immediately — no LLM required for this layer.
-      if (result.candidates.length === 1) {
+      // Auto-pick when there's only one candidate, OR when every top candidate
+      // shares the same cgRank (they're all bridged versions of the same
+      // canonical coin — BTC, ETH, etc. — just pick the deepest-liquidity one).
+      const top4 = result.candidates.slice(0, 4);
+      const allSameCgRank =
+        top4[0]?.cgRank != null &&
+        top4.every((c) => c.cgRank === top4[0].cgRank);
+
+      if (result.candidates.length === 1 || allSameCgRank) {
         const t = result.candidates[0];
         await ctx.reply(
           `🔎 <b>${tag}</b> — best match:\n\n${fmtTokenCard(t, 1, 1)}\n\n<i>Running deep scan…</i>`,
@@ -2454,8 +2462,8 @@ export class TelegramBot {
         return { kind: 'address', address: t.address };
       }
 
-      // Multiple → show ranked raw data for each, then scan buttons.
-      const top = result.candidates.slice(0, 4);
+      // Multiple distinct tokens → show ranked raw data for each, then scan buttons.
+      const top = top4;
       const id = shortId();
       this.resolveChoices.set(id, { tokens: top });
       const kb = new InlineKeyboard();
