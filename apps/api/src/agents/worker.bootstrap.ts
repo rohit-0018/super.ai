@@ -41,6 +41,8 @@ import { startConvictionLearnerWorker } from './conviction-learner.worker';
 import { startHotTokensScanWorker, startHotTokensRefreshWorker } from '../hot-tokens/hot-tokens.worker';
 import { HotTokensService } from '../hot-tokens/hot-tokens.service';
 import { startRulesFastWorker } from './rules-fast.worker';
+import { startRulesSlowWorker } from './rules-slow.worker';
+import { startCanaryGraduatorWorker } from './canary-graduator.worker';
 import { Bot } from 'grammy';
 
 export interface WorkerDeps {
@@ -190,6 +192,10 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
 
     // Phase 4: Trade+ fast-path worker (concurrency 8, stalled 3s)
     this.workers.push(startRulesFastWorker({ ...deps, guardrails: this.guardrails } as any));
+    // Phase 5: Trade+ slow-path worker (concurrency 4, stalled 30s)
+    this.workers.push(startRulesSlowWorker({ ...deps, guardrails: this.guardrails } as any));
+    // Phase 5: Canary graduation + tilt-guard archival (runs on schedule)
+    this.workers.push(startCanaryGraduatorWorker(deps));
 
     // Telegram outbound sender — reuse the same Grammy Bot instance owned by
     // TelegramService when available; fall back to a bare instance if we
@@ -347,6 +353,15 @@ export class WorkerBootstrap implements OnModuleInit, OnApplicationShutdown {
         });
       }
     }
+
+    // Canary graduation + tilt-guard — runs every 15 min
+    const canary = makeQueue(QUEUES.CANARY_GRADUATION);
+    await canary.add('canary-graduation', {}, {
+      repeat: { every: 15 * 60_000 },
+      removeOnComplete: 5,
+      removeOnFail: 5,
+      jobId: 'canary-graduation',
+    });
   }
 
   async stop() {

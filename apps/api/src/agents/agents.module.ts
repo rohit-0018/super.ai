@@ -5,6 +5,7 @@ import { AlertsController } from './alerts.controller';
 import { NotificationsService } from './notifications.service';
 import { EmotionalIntelService } from './emotional-intel.service';
 import { WorkerBootstrap } from './worker.bootstrap';
+import { RuleEngineService } from './rule-engine.service';
 import { WsModule } from '../ws/ws.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ExecutionModule } from '../execution/execution.module';
@@ -31,8 +32,8 @@ import { TokenResolverModule } from '../token-resolver/token-resolver.module';
     forwardRef(() => EpisodesModule),
     forwardRef(() => TokenIntelModule),
   ],
-  providers: [AgentsService, NotificationsService, EmotionalIntelService, WorkerBootstrap],
+  providers: [AgentsService, NotificationsService, EmotionalIntelService, WorkerBootstrap, RuleEngineService],
   controllers: [AgentsController, AlertsController],
-  exports: [AgentsService, NotificationsService, EmotionalIntelService],
+  exports: [AgentsService, NotificationsService, EmotionalIntelService, RuleEngineService],
 })
 export class AgentsModule {}

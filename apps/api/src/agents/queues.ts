@@ -46,9 +46,10 @@ export const QUEUES = {
   CONVICTION_LEARNER: 'conviction-learner',
   HOT_TOKENS_SCAN: 'hot-tokens-scan',
   HOT_TOKENS_REFRESH: 'hot-tokens-refresh',
-  // Phase 4: Trade+ signal processing
+  // Phase 4/5: Trade+ signal processing
   RULES_FAST: 'rules-fast',
   RULES_SLOW: 'rules-slow',
+  CANARY_GRADUATION: 'canary-graduation',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
