@@ -214,12 +214,14 @@ export class TokenResolverService {
       const cgRank = (verified || isCanonical) && t.symbol.toLowerCase() === q && canonicalCg
         ? (canonicalCg.market_cap_rank ?? null)
         : null;
-      // Canonical tokens get real market cap + price from CoinGecko.
-      const marketCapUsd = isCanonical && cgMarket
-        ? (cgMarket.market_cap ?? t.marketCapUsd)
+      // For top-100 verified coins use CoinGecko price/mcap on ALL exact matches
+      // (not just canonical address hits) so mispriced DEX pools don't mislead.
+      const useCgData = cgRank != null && cgMarket != null;
+      const marketCapUsd = useCgData
+        ? (cgMarket!.market_cap ?? t.marketCapUsd)
         : t.marketCapUsd;
-      const priceUsd = isCanonical && cgMarket
-        ? (cgMarket.current_price ?? t.priceUsd)
+      const priceUsd = useCgData
+        ? (cgMarket!.current_price ?? t.priceUsd)
         : t.priceUsd;
       return {
         ...t,
