@@ -24,6 +24,30 @@ function chainIdToChain(chainId: string): Chain | null {
   return null;
 }
 
+/**
+ * Fallback canonical token addresses for top coins when DexScreener search
+ * returns empty (scanner has exhausted IP-level rate limit). These are the
+ * highest-liquidity DEX representations. Used ONLY as a last resort so users
+ * never see "No token found" for Bitcoin, Ethereum, etc.
+ */
+const CG_FALLBACK_TOKEN: Record<string, { chainId: string; address: string }> = {
+  'bitcoin':     { chainId: 'solana',   address: '5imLbJMGssyY78uCNk9NucsWbDh2kvtKLyXQJuY8XtkP' },
+  'ethereum':    { chainId: 'bsc',      address: '0x2170Ed0880ac9A755fd29B2688956BD959F933F8' },
+  'binancecoin': { chainId: 'bsc',      address: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c' },
+  'ripple':      { chainId: 'bsc',      address: '0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE' },
+  'solana':      { chainId: 'solana',   address: 'So11111111111111111111111111111111111111112' },
+  'dogecoin':    { chainId: 'bsc',      address: '0xbA2aE424d960c26247Dd6c32edC70B295c744C43' },
+  'usd-coin':    { chainId: 'solana',   address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
+  'tether':      { chainId: 'solana',   address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
+  'pepe':        { chainId: 'ethereum', address: '0x6982508145454Ce325dDbE47a25d4ec3d2311933' },
+  'shiba-inu':   { chainId: 'ethereum', address: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE' },
+  'bonk':        { chainId: 'solana',   address: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' },
+  'dogwifcoin':  { chainId: 'solana',   address: 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm' },
+  'sui':         { chainId: 'solana',   address: '9aFGPqCsGbYk2e3SQbz4PXNdGMUMHmDpRrFiJRAhFtax' },
+  'avalanche-2': { chainId: 'bsc',      address: '0x1CE0c2827e2eF14D5C4f29a091d735A204794041' },
+  'chainlink':   { chainId: 'ethereum', address: '0x514910771AF9Ca656af840dff83E8264EcF986CA' },
+};
+
 // CoinGecko uses its own platform IDs; map to the dexscreener chainId we use.
 const CG_PLATFORM_TO_CHAIN_ID: Record<string, string> = {
   'ethereum': 'ethereum',
@@ -295,6 +319,52 @@ export class TokenResolverService {
       candidates.push(...fetched.filter((t): t is ResolvedToken => t !== null));
     }
 
+    // CoinGecko fallback: when DexScreener returned nothing for a top-100 coin
+    // (scanner exhausted the IP-level rate limit), build a stub from CoinGecko
+    // data + known canonical address. Users never see "No token found" for BTC/ETH.
+    if (candidates.length === 0 && isTopCoin && canonicalCg && cgMarket) {
+      const fb = CG_FALLBACK_TOKEN[canonicalCg.id];
+      if (fb) {
+        const chain = chainIdToChain(fb.chainId);
+        if (chain) {
+          const cgRank = canonicalCg.market_cap_rank ?? null;
+          const tok: ResolvedToken = {
+            chain,
+            chainId: fb.chainId,
+            address: fb.address,
+            symbol: canonicalCg.symbol.toUpperCase(),
+            name: canonicalCg.name,
+            priceUsd: cgMarket.current_price ?? null,
+            liquidityUsd: null,
+            volume24hUsd: cgMarket.total_volume ?? null,
+            marketCapUsd: cgMarket.market_cap ?? null,
+            fdvUsd: null,
+            pairAgeHours: null,
+            txns24h: null,
+            logoURI: cgMarket.image ?? null,
+            url: null,
+            verified: true,
+            cgRank,
+            matchTier: 'exact',
+            score: scoreToken({
+              liquidityUsd: null,
+              volume24hUsd: cgMarket.total_volume ?? null,
+              marketCapUsd: cgMarket.market_cap ?? null,
+              txns24h: null,
+              pairAgeHours: null,
+              verified: true,
+              cgRank,
+            }),
+          };
+          candidates.push(tok);
+          this.logger.warn(
+            `DexScreener unavailable for "$${symbol}" — CoinGecko fallback ` +
+            `${fb.chainId}:${fb.address.slice(0, 8)}… price=$${cgMarket.current_price}`,
+          );
+        }
+      }
+    }
+
     candidates = sortCandidates(candidates).slice(0, opts.limit);
     const result: ResolveResult = {
       kind: 'ticker',
@@ -304,9 +374,9 @@ export class TokenResolverService {
       ambiguous: candidates.length > 1,
       confidence: computeConfidence(candidates),
     };
-    // Only cache successful lookups. An empty result usually means DexScreener
-    // was briefly rate-limited by the hot-feed scanner — caching it for 90s
-    // would make Telegram show "No token found" long after the limit lifted.
+    // Only cache successful lookups. An empty result means DexScreener was
+    // briefly rate-limited — caching it for 90s would serve stale "not found"
+    // long after the limit lifted.
     if (candidates.length > 0) this.cache.set(cacheKey, result);
     this.logger.debug(
       `resolve "$${symbol}" → ${candidates.length} candidate(s)` +
