@@ -145,6 +145,41 @@ export class CoinGeckoProvider {
     }
   }
 
+  /**
+   * Returns platform → contract-address map for a coin.
+   * e.g. { 'binance-smart-chain': '0x7130...', 'ethereum': '0x2260...' }
+   * This is how we find the REAL BTCB/WBTC instead of random DEX pool tokens.
+   * Cached 5 min — platform contracts almost never change.
+   */
+  async getCoinPlatforms(id: string): Promise<Record<string, string>> {
+    const key = `platforms:${id}`;
+    const cached = this.get<Record<string, string>>(key);
+    if (cached) return cached;
+    try {
+      const data = await http.get<{ platforms?: Record<string, string> }>(
+        `${this.base}/coins/${encodeURIComponent(id)}`,
+        {
+          headers: this.headers,
+          timeoutMs: 6_000,
+          params: {
+            localization: 'false',
+            tickers: 'false',
+            market_data: 'false',
+            community_data: 'false',
+            developer_data: 'false',
+            sparkline: 'false',
+          },
+        },
+      );
+      const platforms = data?.platforms ?? {};
+      // Override TTL to 5 min for platform data
+      this.cache.set(key, { data: platforms, ts: Date.now() - (TTL_MS - 300_000) });
+      return platforms;
+    } catch {
+      return {};
+    }
+  }
+
   async trending(): Promise<unknown> {
     const key = 'trending';
     const cached = this.get<unknown>(key);

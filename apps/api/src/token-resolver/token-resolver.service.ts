@@ -24,6 +24,23 @@ function chainIdToChain(chainId: string): Chain | null {
   return null;
 }
 
+// CoinGecko uses its own platform IDs; map to the dexscreener chainId we use.
+const CG_PLATFORM_TO_CHAIN_ID: Record<string, string> = {
+  'ethereum': 'ethereum',
+  'binance-smart-chain': 'bsc',
+  'base': 'base',
+  'arbitrum-one': 'arbitrum',
+  'optimistic-ethereum': 'optimism',
+  'polygon-pos': 'polygon',
+  'avalanche': 'avalanche',
+  'zksync': 'zksync',
+  'linea': 'linea',
+  'blast': 'blast',
+  'solana': 'solana',
+  'fantom': 'fantom',
+  'cronos': 'cronos',
+};
+
 const num = (v: unknown): number | null => {
   if (v == null) return null;
   const n = Number(v);
@@ -156,7 +173,8 @@ export class TokenResolverService {
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
-    // DexScreener is the source of truth; CoinGecko enriches with rank + verified flag.
+    // DexScreener for DEX pairs; CoinGecko for rank, market data, and
+    // canonical platform contracts (the REAL BTC/ETH on each chain).
     const [pairs, cgCoins] = await Promise.all([
       this.dex.search(symbol),
       this.cg.searchBySymbol(symbol).catch(() => []),
@@ -166,36 +184,48 @@ export class TokenResolverService {
       cgCoins.map((c) => (c.symbol ?? '').toLowerCase()).filter(Boolean),
     );
 
-    // Find the canonical CoinGecko entry — exact symbol match, best market-cap rank.
-    // Used to pin BTC/ETH/SOL at the top and enrich with real market cap data.
+    // Canonical CoinGecko entry — exact symbol match, best market-cap rank.
     const canonicalCg = cgCoins
       .filter((c) => c.symbol.toLowerCase() === q && c.market_cap_rank != null)
       .sort((a, b) => (a.market_cap_rank ?? 9999) - (b.market_cap_rank ?? 9999))[0] ?? null;
 
-    // Fetch real market data for canonical top-100 coins (BTC=1, ETH=2, …).
-    // This replaces DEX pool TVL with the coin's actual market cap.
-    const cgMarket = canonicalCg && (canonicalCg.market_cap_rank ?? 9999) <= 100
-      ? await this.cg.markets([canonicalCg.id]).then((m) => m[0] ?? null).catch(() => null)
-      : null;
+    // For top-100 coins fetch real market data + platform contracts in parallel.
+    // Platform contracts are the key: they tell us "BTCB on BSC = 0x7130..."
+    const isTopCoin = canonicalCg != null && (canonicalCg.market_cap_rank ?? 9999) <= 100;
+    const [cgMarket, cgPlatforms] = isTopCoin
+      ? await Promise.all([
+          this.cg.markets([canonicalCg!.id]).then((m) => m[0] ?? null).catch(() => null),
+          this.cg.getCoinPlatforms(canonicalCg!.id).catch(() => ({})),
+        ])
+      : [null, {}];
+
+    // Build a Set of canonical contract addresses (lowercase) from CoinGecko.
+    // These are the "real" tokens — BTCB on BSC, WBTC on ETH, etc.
+    const canonicalAddrs = new Set<string>(
+      Object.values(cgPlatforms as Record<string, string>)
+        .filter(Boolean)
+        .map((a) => a.toLowerCase()),
+    );
 
     const collapsed = this.collapsePairs(pairs, q, opts);
     let candidates: ResolvedToken[] = collapsed.map((t) => {
       const verified = verifiedSymbols.has(t.symbol.toLowerCase());
-      const cgRank = verified && t.symbol.toLowerCase() === q && canonicalCg
+      const isCanonical = canonicalAddrs.has(t.address.toLowerCase());
+      const cgRank = (verified || isCanonical) && t.symbol.toLowerCase() === q && canonicalCg
         ? (canonicalCg.market_cap_rank ?? null)
         : null;
-      // For the canonical top-100 coin, replace DEX TVL with real CG market cap.
-      const marketCapUsd = cgRank != null && cgMarket
+      // Canonical tokens get real market cap + price from CoinGecko.
+      const marketCapUsd = isCanonical && cgMarket
         ? (cgMarket.market_cap ?? t.marketCapUsd)
         : t.marketCapUsd;
-      const priceUsd = cgRank != null && cgMarket
+      const priceUsd = isCanonical && cgMarket
         ? (cgMarket.current_price ?? t.priceUsd)
         : t.priceUsd;
       return {
         ...t,
         priceUsd,
         marketCapUsd,
-        verified,
+        verified: verified || isCanonical,
         cgRank,
         score: scoreToken({
           liquidityUsd: t.liquidityUsd,
@@ -203,11 +233,63 @@ export class TokenResolverService {
           marketCapUsd,
           txns24h: t.txns24h,
           pairAgeHours: t.pairAgeHours,
-          verified,
+          verified: verified || isCanonical,
           cgRank,
         }),
       };
     });
+
+    // If CoinGecko has a platform contract on a supported chain but DexScreener
+    // didn't return that token in the search (common for BSC BTCB vs Solana BTC),
+    // fetch it directly so it's never missing.
+    if (isTopCoin && cgPlatforms) {
+      const knownAddrs = new Set(collapsed.map((t) => t.address.toLowerCase()));
+      const fetchJobs = Object.entries(cgPlatforms as Record<string, string>)
+        .map(([platform, addr]) => ({ chainId: CG_PLATFORM_TO_CHAIN_ID[platform], addr }))
+        .filter(({ chainId, addr }) => chainId && addr && !knownAddrs.has(addr.toLowerCase()));
+
+      const fetched = await Promise.all(
+        fetchJobs.slice(0, 4).map(async ({ chainId, addr }) => {
+          const chain = chainIdToChain(chainId!);
+          if (!chain) return null;
+          const meta = await this.dex.getToken(chain, addr).catch(() => null);
+          if (!meta) return null;
+          const priceUsd = cgMarket?.current_price ?? num(meta.priceUsd);
+          const marketCapUsd = cgMarket?.market_cap ?? num(meta.marketCapUsd);
+          const tok: ResolvedToken = {
+            chain,
+            chainId: chainId!,
+            address: addr,
+            symbol: (meta.symbol ?? canonicalCg!.symbol).toUpperCase(),
+            name: meta.name ?? canonicalCg!.name,
+            priceUsd,
+            liquidityUsd: num(meta.liquidityUsd),
+            volume24hUsd: num(meta.volume24hUsd),
+            marketCapUsd,
+            fdvUsd: num(meta.fdvUsd),
+            pairAgeHours: num(meta.pairAgeHours),
+            txns24h: meta.txns24h ? (meta.txns24h.buys ?? 0) + (meta.txns24h.sells ?? 0) : null,
+            logoURI: null,
+            url: meta.url ?? null,
+            verified: true,
+            cgRank: canonicalCg!.market_cap_rank ?? null,
+            matchTier: 'exact',
+            score: 0,
+          };
+          tok.score = scoreToken({
+            liquidityUsd: tok.liquidityUsd,
+            volume24hUsd: tok.volume24hUsd,
+            marketCapUsd: tok.marketCapUsd,
+            txns24h: tok.txns24h,
+            pairAgeHours: tok.pairAgeHours,
+            verified: true,
+            cgRank: tok.cgRank,
+          });
+          return tok;
+        }),
+      );
+      candidates.push(...fetched.filter((t): t is ResolvedToken => t !== null));
+    }
 
     candidates = sortCandidates(candidates).slice(0, opts.limit);
     const result: ResolveResult = {
