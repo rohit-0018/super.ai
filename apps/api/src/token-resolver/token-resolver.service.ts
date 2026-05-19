@@ -217,13 +217,18 @@ export class TokenResolverService {
 
     // For top-100 coins fetch real market data + platform contracts in parallel.
     // Platform contracts are the key: they tell us "BTCB on BSC = 0x7130..."
+    // getCoinPlatforms runs for ANY coin with a CG match (not just top-100) so
+    // that when DexScreener search is unavailable, we can still resolve the
+    // contract address and fetch via the working /tokens/ endpoint.
     const isTopCoin = canonicalCg != null && (canonicalCg.market_cap_rank ?? 9999) <= 100;
-    const [cgMarket, cgPlatforms] = isTopCoin
+    const [cgMarket, cgPlatforms] = canonicalCg
       ? await Promise.all([
-          this.cg.markets([canonicalCg!.id]).then((m) => m[0] ?? null).catch(() => null),
-          this.cg.getCoinPlatforms(canonicalCg!.id).catch(() => ({})),
+          isTopCoin
+            ? this.cg.markets([canonicalCg.id]).then((m) => m[0] ?? null).catch(() => null)
+            : Promise.resolve(null as null),
+          this.cg.getCoinPlatforms(canonicalCg.id).catch(() => ({} as Record<string, string>)),
         ])
-      : [null, {}];
+      : [null as null, {} as Record<string, string>];
 
     // Build a Set of canonical contract addresses (lowercase) from CoinGecko.
     // These are the "real" tokens — BTCB on BSC, WBTC on ETH, etc.
@@ -268,14 +273,20 @@ export class TokenResolverService {
     });
 
     // If CoinGecko has a platform contract on a supported chain but DexScreener
-    // didn't return that token in the search (common for BSC BTCB vs Solana BTC),
-    // fetch it directly so it's never missing.
-    if (isTopCoin && cgPlatforms) {
+    // didn't return that token in the search (common when search endpoint is
+    // rate-limited/blocked), fetch it directly so it's never missing.
+    // Runs for ANY coin with a CG match — not just top-100.
+    if (canonicalCg && Object.keys(cgPlatforms as Record<string, string>).length > 0) {
       const knownAddrs = new Set(collapsed.map((t) => t.address.toLowerCase()));
       const fetchJobs = Object.entries(cgPlatforms as Record<string, string>)
         .map(([platform, addr]) => ({ chainId: CG_PLATFORM_TO_CHAIN_ID[platform], addr }))
         .filter(({ chainId, addr }) => chainId && addr && !knownAddrs.has(addr.toLowerCase()));
 
+      if (fetchJobs.length > 0 && collapsed.length === 0) {
+        this.logger.warn(
+          `DexScreener search empty for "$${symbol}" — trying ${Math.min(fetchJobs.length, 4)} CG platform address(es) via tokens endpoint`,
+        );
+      }
       const fetched = await Promise.all(
         fetchJobs.slice(0, 4).map(async ({ chainId, addr }) => {
           const chain = chainIdToChain(chainId!);
