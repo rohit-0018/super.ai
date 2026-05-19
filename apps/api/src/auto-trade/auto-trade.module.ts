@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
 import { HotTokensModule } from '../hot-tokens/hot-tokens.module';
 import { WsModule } from '../ws/ws.module';
+import { TokenResolverModule } from '../token-resolver/token-resolver.module';
 import { AutoTradeService } from './auto-trade.service';
 import { AutoTradePickerService } from './auto-trade-picker.service';
 import { AutoTradeWatcherService } from './auto-trade-watcher.service';
@@ -13,7 +14,7 @@ import { AutoTradeController } from './auto-trade.controller';
  * See memory: project_auto_trade_engine.md
  */
 @Module({
-  imports: [PrismaModule, HotTokensModule, WsModule],
+  imports: [PrismaModule, HotTokensModule, WsModule, TokenResolverModule],
   providers: [
     AutoTradeService,
     AutoTradePickerService,

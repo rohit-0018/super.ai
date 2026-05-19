@@ -4,6 +4,8 @@ import { api } from '../lib/api';
 import { useApi } from '../lib/useApi';
 import { Spinner } from './ui/Skeleton';
 import AdvancedOrderBuilder from './AdvancedOrderBuilder';
+import { TokenSearchInput } from './TokenSearchInput';
+import type { ResolvedToken } from '../lib/useTokenResolve';
 
 interface Wallet { id: string; chain: 'SOLANA' | 'EVM'; address: string; isPrimary?: boolean }
 
@@ -11,8 +13,8 @@ export default function SwapForm() {
   const { data: wallets = [] } = useApi<Wallet[]>('/wallets');
   const [walletId, setWalletId] = useState('');
   const [chain, setChain] = useState<'SOLANA' | 'EVM'>('SOLANA');
-  const [tokenIn, setTokenIn] = useState('');
-  const [tokenOut, setTokenOut] = useState('');
+  const [tokenIn, setTokenIn] = useState<ResolvedToken | null>(null);
+  const [tokenOut, setTokenOut] = useState<ResolvedToken | null>(null);
   const [amountIn, setAmountIn] = useState('');
   const [notionalUsd, setNotionalUsd] = useState(100);
   const [slippageBps, setSlippageBps] = useState(100);
@@ -29,6 +31,10 @@ export default function SwapForm() {
   }, [wallets, walletId]);
 
   async function submit() {
+    if (!tokenIn || !tokenOut) {
+      setErr('Resolve both the From and To token first.');
+      return;
+    }
     setBusy(true);
     setErr(null);
     setResult(null);
@@ -36,15 +42,21 @@ export default function SwapForm() {
       const { data } = await api.post('/swap', {
         walletId,
         chain,
-        tokenIn,
-        tokenOut,
+        tokenIn: tokenIn.address,
+        tokenOut: tokenOut.address,
         amountIn,
         notionalUsd,
         slippageBps,
       });
       setResult(`Trade ${data.tradeId} — mode ${data.mode}`);
     } catch (e: any) {
-      setErr(e.response?.data?.message?.guardrail ?? e.response?.data?.message ?? e.message);
+      const d = e.response?.data;
+      // 409 from the resolver guard → tell the user to disambiguate.
+      if (e.response?.status === 409 && Array.isArray(d?.candidates)) {
+        setErr(d.message ?? 'Ticker ambiguous — paste the exact contract address.');
+      } else {
+        setErr(d?.message?.guardrail ?? d?.message ?? e.message);
+      }
     } finally {
       setBusy(false);
     }
@@ -93,25 +105,21 @@ export default function SwapForm() {
           </select>
         </div>
 
-        <div>
-          <label className="label">From</label>
-          <input
-            placeholder="Token in (mint or contract)"
-            value={tokenIn}
-            onChange={(e) => setTokenIn(e.target.value)}
-            className="input font-mono"
-          />
-        </div>
+        <TokenSearchInput
+          label="From"
+          placeholder="Address or $TICKER you're paying with"
+          chain={chain}
+          onResolved={setTokenIn}
+          disabled={busy}
+        />
 
-        <div>
-          <label className="label">To</label>
-          <input
-            placeholder="Token out"
-            value={tokenOut}
-            onChange={(e) => setTokenOut(e.target.value)}
-            className="input font-mono"
-          />
-        </div>
+        <TokenSearchInput
+          label="To"
+          placeholder="Address or $TICKER you're buying"
+          chain={chain}
+          onResolved={setTokenOut}
+          disabled={busy}
+        />
 
         <div>
           <label className="label">Amount</label>
@@ -147,7 +155,11 @@ export default function SwapForm() {
           </div>
         </div>
 
-        <button onClick={submit} disabled={busy || !walletId} className="btn btn-primary w-full mt-2">
+        <button
+          onClick={submit}
+          disabled={busy || !walletId || !tokenIn || !tokenOut}
+          className="btn btn-primary w-full mt-2"
+        >
           {busy ? <Spinner size={14} /> : 'Review swap'}
         </button>
 

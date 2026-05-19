@@ -15,6 +15,7 @@ import { IntentModule } from '../intent/intent.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { EpisodesModule } from '../episodes/episodes.module';
 import { TokenIntelModule } from '../token-intel/token-intel.module';
+import { TokenResolverModule } from '../token-resolver/token-resolver.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { TokenIntelModule } from '../token-intel/token-intel.module';
     PrismaModule,
     forwardRef(() => ExecutionModule),
     MarketDataModule,
+    TokenResolverModule,
     forwardRef(() => TelegramModule),
     StrategiesModule,
     forwardRef(() => IntentModule),

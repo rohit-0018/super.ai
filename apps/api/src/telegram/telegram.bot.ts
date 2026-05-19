@@ -12,6 +12,9 @@ import { HotTokensService } from '../hot-tokens/hot-tokens.service';
 import { SignalPipelineService } from '../hot-tokens/signal-pipeline.service';
 import { detectChain } from '../token-analysis/chain-detector';
 import { fmtPriceUsd } from '../common/format-price';
+import { BoundedCache } from '../common/bounded-cache';
+import { TokenResolverService } from '../token-resolver/token-resolver.service';
+import type { ResolvedToken } from '../token-resolver/token-resolver.types';
 import { TokenAnalysisService } from '../token-analysis/token-analysis.service';
 import { PumpFunProvider, PumpFunCoinData } from '../token-analysis/providers/pump-fun.provider';
 import { isPumpFunMint } from '../token-analysis/providers/pump-fun.util';
@@ -55,6 +58,10 @@ export class TelegramBot {
   // In-memory reminder timers — chatId:ts → timeout handle
   private reminders = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // Ticker-disambiguation choices keyed by a short id (callback_data is
+  // 64-byte limited so the candidate list can't ride along inline). 10-min TTL.
+  private resolveChoices = new BoundedCache<string, { tokens: ResolvedToken[] }>(200, 600_000);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly agent: AiAgentService,
@@ -70,6 +77,15 @@ export class TelegramBot {
     try {
       return this.moduleRef.get(TokenAnalysisService, { strict: false });
     } catch {
+      return null;
+    }
+  }
+
+  private getTokenResolver(): TokenResolverService | null {
+    try {
+      return this.moduleRef.get(TokenResolverService, { strict: false });
+    } catch (e: any) {
+      this.logger.warn(`TokenResolverService not available via moduleRef: ${e?.message}`);
       return null;
     }
   }
@@ -301,11 +317,17 @@ export class TelegramBot {
       const address = parts[1]?.trim();
       if (!address) {
         return ctx.reply(
-          '📋 <b>Usage:</b> <code>/scan &lt;address&gt;</code>\n\nOr just paste a contract address directly — I\'ll detect it automatically.',
+          '📋 <b>Usage:</b> <code>/scan &lt;address | $TICKER&gt;</code>\n\nOr just paste a contract address or <code>$TICKER</code> directly — I\'ll detect it automatically.',
           { parse_mode: 'HTML' },
         );
       }
-      return this.runScan(ctx, address);
+      if (!(await this.resolveAndScan(ctx, address))) {
+        return ctx.reply(
+          '❌ Couldn\'t find a token for that. Paste a contract address or a $TICKER.',
+          { parse_mode: 'HTML' },
+        );
+      }
+      return;
     });
 
     /* ── 5. /top / /top10 — fast-lane hot tokens, no LLM ───────────────────── */
@@ -461,7 +483,7 @@ export class TelegramBot {
       }
 
       const amountUsd = parseFloat(parts[0]);
-      const tokenAddress = parts[1];
+      let tokenAddress = parts[1];
       const intervalStr = parts[2]?.toLowerCase();
       const VALID_INTERVALS = ['hourly', 'daily', 'weekly', 'monthly'];
 
@@ -470,6 +492,24 @@ export class TelegramBot {
       }
       if (!VALID_INTERVALS.includes(intervalStr)) {
         return ctx.reply(`❌ Invalid interval. Use: ${VALID_INTERVALS.join(' | ')}`);
+      }
+      // Accept a $TICKER too. A DCA agent is a recurring programmatic buy, so
+      // an ambiguous ticker auto-picks the top-ranked token and echoes which
+      // one was chosen (no menu — the agent must be created in one shot).
+      if (!detectChain(tokenAddress)) {
+        const resolver = this.getTokenResolver();
+        const res = resolver ? await resolver.resolve(tokenAddress).catch(() => null) : null;
+        if (!res || !res.best) {
+          return ctx.reply('❌ Invalid token. Paste a Solana/EVM address or a $TICKER.');
+        }
+        tokenAddress = res.best.address;
+        if (res.kind === 'ticker') {
+          await ctx.reply(
+            `🔗 Using <b>${esc(res.best.symbol)}</b> · ${chainLabel(res.best.chain)} ` +
+              `(${fmtUsd(res.best.liquidityUsd ?? 0)} liq)\n<code>${tokenAddress}</code>`,
+            { parse_mode: 'HTML' },
+          );
+        }
       }
       const chain = detectChain(tokenAddress);
       if (!chain) {
@@ -689,8 +729,12 @@ export class TelegramBot {
 
     /* ── 🔍 /z — Quick compact scan ────────────────────────────────────────── */
     bot.command('z', async (ctx) => {
-      const addr = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr) return ctx.reply('Usage: /z <token_address>  — quick token scan');
+      const arg = ctx.match?.trim().split(/\s+/)[0];
+      if (!arg) return ctx.reply('Usage: /z <token_address | $TICKER>  — quick token scan');
+      const outcome = await this.resolveToken(ctx, arg);
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') return ctx.reply('❌ Invalid address or unknown ticker.');
+      const addr = outcome.address;
       const chain = detectChain(addr);
       if (!chain) return ctx.reply('❌ Invalid address format.');
       const msg = await ctx.reply('⚡ <i>Quick scan…</i>', { parse_mode: 'HTML' });
@@ -729,9 +773,15 @@ export class TelegramBot {
 
     /* ── 🔍 /pf — PumpFun scan ──────────────────────────────────────────────── */
     bot.command('pf', async (ctx) => {
-      const addr = ctx.match?.trim().split(/\s+/)[0];
-      if (!addr) return ctx.reply('Usage: /pf <solana_token_address>');
-      if (!detectChain(addr) || detectChain(addr) !== 'SOLANA') {
+      const arg = ctx.match?.trim().split(/\s+/)[0];
+      if (!arg) return ctx.reply('Usage: /pf <solana_token_address | $TICKER>');
+      const outcome = await this.resolveToken(ctx, arg, { chain: 'SOLANA' });
+      if (outcome.kind === 'menu' || outcome.kind === 'replied') return;
+      if (outcome.kind === 'none') {
+        return ctx.reply('❌ PumpFun is Solana-only. Provide a Solana base58 address or $TICKER.');
+      }
+      const addr = outcome.address;
+      if (detectChain(addr) !== 'SOLANA') {
         return ctx.reply('❌ PumpFun is Solana-only. Provide a Solana base58 address.');
       }
       const pfLink  = `https://pump.fun/${addr}`;
@@ -1865,6 +1915,21 @@ export class TelegramBot {
 
     bot.callbackQuery('noop', async (ctx) => ctx.answerCallbackQuery());
 
+    /* ── Ticker disambiguation pick → scan ──────────────────────────────────── */
+    bot.callbackQuery(/^rsv:([a-z0-9]+):(\d+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const id = ctx.match[1];
+      const idx = Number(ctx.match[2]);
+      const entry = this.resolveChoices.get(id);
+      if (!entry) {
+        return ctx.reply('⌛ That list expired. Send the ticker again.');
+      }
+      const token = entry.tokens[idx];
+      if (!token) return ctx.reply('❌ Invalid selection.');
+      // Raw data already shown in the disambiguation card above — just kick off deep scan.
+      return this.runScan(ctx, token.address);
+    });
+
     /* ── Inline callbacks ───────────────────────────────────────────────────── */
     bot.callbackQuery(/^action:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
@@ -2063,10 +2128,14 @@ export class TelegramBot {
         );
       }
 
-      // Private chat: auto-detect CA → scan.
+      // Private chat: auto-detect CA → scan (fast path).
       if (detectChain(text)) return this.runScan(ctx, text);
       const embedded = extractAddress(text);
       if (embedded) return this.runScan(ctx, embedded);
+
+      // $TICKER → resolve + (scan or disambiguation menu). Requires the `$`
+      // prefix so we never hijack ordinary chat ("gm", "wen", a bare word).
+      if (text.startsWith('$') && (await this.resolveAndScan(ctx, text))) return;
 
       // Hot tokens shortcut — bypass LLM, format directly
       if (this.isHotTokensQuery(text)) {
@@ -2314,6 +2383,113 @@ export class TelegramBot {
         parse_mode: 'HTML',
       }).catch(() => {});
     }
+  }
+
+  /* ── Ticker / address resolution ─────────────────────────────────────────── */
+
+  /**
+   * Resolve a raw token reference (contract address or $TICKER) to a single
+   * address. On ambiguity it posts a tap-to-pick menu and returns 'menu' —
+   * the rsv: callback finishes the scan. Reusable by every command + the
+   * catch-all so ticker support lands everywhere a CA is accepted.
+   */
+  private async resolveToken(
+    ctx: any,
+    raw: string,
+    opts: { chain?: 'SOLANA' | 'EVM' } = {},
+  ): Promise<{ kind: 'address'; address: string } | { kind: 'menu' } | { kind: 'replied' } | { kind: 'none' }> {
+    const resolver = this.getTokenResolver();
+    if (!resolver) {
+      // Resolver unavailable: address inputs still work; tickers send a friendly error.
+      if (detectChain(raw)) return { kind: 'address', address: raw.trim() };
+      const embedded = extractAddress(raw);
+      if (embedded) return { kind: 'address', address: embedded };
+      if (raw.startsWith('$')) {
+        await ctx.reply(
+          `⚠️ Token lookup is temporarily unavailable. Paste the contract address for <b>${esc(raw.toUpperCase())}</b> directly.`,
+          { parse_mode: 'HTML' },
+        );
+        return { kind: 'replied' };
+      }
+      return { kind: 'none' };
+    }
+
+    let result;
+    try {
+      result = await resolver.resolve(raw, { chain: opts.chain, limit: 6 });
+    } catch (e: any) {
+      this.logger.warn(`resolve failed for "${raw}": ${e?.message}`);
+      if (detectChain(raw)) return { kind: 'address', address: raw.trim() };
+      if (raw.startsWith('$')) {
+        await ctx.reply(
+          `⚠️ Token lookup failed for <b>${esc(raw.toUpperCase())}</b>. Try the contract address directly.`,
+          { parse_mode: 'HTML' },
+        );
+        return { kind: 'replied' };
+      }
+      return { kind: 'none' };
+    }
+
+    if (result.kind === 'address' && result.best) {
+      return { kind: 'address', address: result.best.address };
+    }
+
+    if (result.kind === 'ticker') {
+      const tag = `$${esc(result.query.toUpperCase())}`;
+      if (result.candidates.length === 0) {
+        await ctx.reply(
+          `🔍 No token found for <b>${tag}</b>. Paste the contract address instead.`,
+          { parse_mode: 'HTML' },
+        );
+        return { kind: 'replied' };
+      }
+
+      // Show raw ranked data immediately — no LLM required for this layer.
+      if (result.candidates.length === 1) {
+        const t = result.candidates[0];
+        await ctx.reply(
+          `🔎 <b>${tag}</b> — best match:\n\n${fmtTokenCard(t, 1, 1)}\n\n<i>Running deep scan…</i>`,
+          { parse_mode: 'HTML', link_preview_options: { is_disabled: true } },
+        );
+        return { kind: 'address', address: t.address };
+      }
+
+      // Multiple → show ranked raw data for each, then scan buttons.
+      const top = result.candidates.slice(0, 4);
+      const id = shortId();
+      this.resolveChoices.set(id, { tokens: top });
+      const kb = new InlineKeyboard();
+      top.forEach((t, i) => {
+        kb.text(
+          `🔍 Full Scan #${i + 1} — ${t.symbol} · ${chainShort(t.chain)}${t.verified ? ' ✅' : ''}`,
+          `rsv:${id}:${i}`,
+        ).row();
+      });
+      const lines = [
+        `🔎 <b>${result.candidates.length} tokens match ${tag}</b> — ranked by score:`,
+        '',
+        ...top.map((t, i) => fmtTokenCard(t, i + 1, top.length)),
+      ];
+      await ctx.reply(lines.join('\n\n'), {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        reply_markup: kb,
+      });
+      return { kind: 'menu' };
+    }
+
+    return { kind: 'none' };
+  }
+
+  /** Resolve then run the standard full scan. Returns true if handled. */
+  private async resolveAndScan(ctx: any, raw: string, force = false): Promise<boolean> {
+    const outcome = await this.resolveToken(ctx, raw);
+    if (outcome.kind === 'address') {
+      await this.runScan(ctx, outcome.address, force);
+      return true;
+    }
+    // 'menu' and 'replied' both mean we already sent a response — stop processing.
+    return outcome.kind === 'menu' || outcome.kind === 'replied';
   }
 
   /* ── Core scan implementation ────────────────────────────────────────────── */
@@ -3045,6 +3221,40 @@ function fmtUsd(v: number): string {
   if (v >= 1_000_000)     return `$${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000)         return `$${(v / 1_000).toFixed(0)}K`;
   return `$${v.toFixed(0)}`;
+}
+
+/** Rich raw-data card for a single resolved token candidate. */
+function fmtTokenCard(t: ResolvedToken, rank: number, total: number): string {
+  const lines: string[] = [];
+  const rankPfx = total > 1 ? `<b>${rank}.</b> ` : '';
+  lines.push(`${rankPfx}<b>${esc(t.symbol)}</b> · ${esc(t.name ?? t.symbol)} · ${chainLabel(t.chain)}${t.verified ? ' ✅' : ''}`);
+  lines.push(`💵 ${fmtPriceUsd(t.priceUsd ?? 0)}   MCap ${fmtUsd(t.marketCapUsd ?? 0)}`);
+  lines.push(`💧 Liq ${fmtUsd(t.liquidityUsd ?? 0)}  📈 Vol ${fmtUsd(t.volume24hUsd ?? 0)}/24h`);
+  const txnsStr = t.txns24h ? `  ⚡ ${t.txns24h.toLocaleString()} txns` : '';
+  lines.push(`🕐 ${ageLabel(t.pairAgeHours)}${txnsStr}  Score: <b>${(t.score ?? 0).toFixed(1)}</b>`);
+  lines.push(`<code>${t.address}</code>`);
+  return lines.join('\n');
+}
+
+function chainLabel(chain: 'SOLANA' | 'EVM'): string {
+  return chain === 'SOLANA' ? 'Solana' : 'EVM';
+}
+
+function chainShort(chain: 'SOLANA' | 'EVM'): string {
+  return chain === 'SOLANA' ? 'SOL' : 'EVM';
+}
+
+function ageLabel(hours: number | null): string {
+  if (hours == null) return '?';
+  if (hours < 24) return `${Math.max(1, Math.round(hours))}h`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d`;
+  if (days < 365) return `${Math.round(days / 30)}mo`;
+  return `${(days / 365).toFixed(1)}y`;
+}
+
+function shortId(): string {
+  return Math.random().toString(36).slice(2, 8);
 }
 
 function timeAgo(date: Date): string {

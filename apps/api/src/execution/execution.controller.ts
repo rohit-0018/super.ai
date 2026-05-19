@@ -5,6 +5,9 @@ import { OrderManagerService } from './order-manager.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { IsEnum, IsInt, IsNumber, IsObject, IsString } from 'class-validator';
 import { Chain, OrderType } from '@prisma/client';
+import { detectChain } from '../token-analysis/chain-detector';
+import { TokenResolverService } from '../token-resolver/token-resolver.service';
+import type { ResolvedToken } from '../token-resolver/token-resolver.types';
 
 class SwapDto {
   @IsString() walletId!: string;
@@ -33,11 +36,43 @@ export class ExecutionController {
     private exec: ExecutionService,
     private orders: OrderManagerService,
     private prisma: PrismaService,
+    private resolver: TokenResolverService,
   ) {}
 
+  /**
+   * Turn a tokenIn/tokenOut that may be a $TICKER into a canonical address.
+   * Addresses pass through untouched (backward compatible). Tickers go through
+   * the trade safety guard — ambiguous/low-liq throws 409 with candidates so
+   * the client can disambiguate instead of trading the wrong token.
+   */
+  private async resolveLeg(
+    value: string,
+    chain: Chain,
+  ): Promise<{ address: string; resolved?: ResolvedToken }> {
+    if (detectChain(value)) return { address: value };
+    const token = await this.resolver.resolveForTrade(value, {
+      chain: chain === 'SOLANA' ? 'SOLANA' : 'EVM',
+    });
+    return { address: token.address, resolved: token };
+  }
+
   @Post('swap')
-  swap(@Req() req: any, @Body() dto: SwapDto) {
-    return this.exec.swap({ userId: req.user.userId, ...dto });
+  async swap(@Req() req: any, @Body() dto: SwapDto) {
+    const [inLeg, outLeg] = await Promise.all([
+      this.resolveLeg(dto.tokenIn, dto.chain),
+      this.resolveLeg(dto.tokenOut, dto.chain),
+    ]);
+    const result = await this.exec.swap({
+      userId: req.user.userId,
+      ...dto,
+      tokenIn: inLeg.address,
+      tokenOut: outLeg.address,
+    });
+    return {
+      ...result,
+      resolvedTokenIn: inLeg.resolved ?? null,
+      resolvedTokenOut: outLeg.resolved ?? null,
+    };
   }
 
   @Get('orders') list(@Req() req: any) { return this.orders.list(req.user.userId); }
@@ -170,8 +205,22 @@ export class ExecutionController {
   }
 
   @Post('orders')
-  place(@Req() req: any, @Body() dto: OrderDto) {
-    return this.orders.place({ userId: req.user.userId, ...dto });
+  async place(@Req() req: any, @Body() dto: OrderDto) {
+    const [inLeg, outLeg] = await Promise.all([
+      this.resolveLeg(dto.tokenIn, dto.chain),
+      this.resolveLeg(dto.tokenOut, dto.chain),
+    ]);
+    const result = await this.orders.place({
+      userId: req.user.userId,
+      ...dto,
+      tokenIn: inLeg.address,
+      tokenOut: outLeg.address,
+    });
+    return {
+      ...result,
+      resolvedTokenIn: inLeg.resolved ?? null,
+      resolvedTokenOut: outLeg.resolved ?? null,
+    };
   }
 
   @Delete('orders/:id')

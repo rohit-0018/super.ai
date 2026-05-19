@@ -12,6 +12,7 @@ import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { AgentsModule } from '../agents/agents.module';
 import { SecurityModule } from '../security/security.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { TokenResolverModule } from '../token-resolver/token-resolver.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     GuardrailsModule,
     forwardRef(() => AgentsModule),
     SecurityModule,
+    TokenResolverModule,
   ],
   providers: [ExecutionService, JupiterClient, OneInchClient, OrderManagerService, DcaService, GasSchedulerService],
   controllers: [ExecutionController],

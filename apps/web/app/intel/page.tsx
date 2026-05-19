@@ -1781,10 +1781,30 @@ function IntelPageClient() {
   const triggerAnalyze = useCallback(async (
     addr: string, p: TradingProfile, d: ReportDepth, force: boolean,
   ) => {
-    const trimmed = addr.trim();
+    let trimmed = addr.trim();
     if (!trimmed) return;
     setError(null);
     setAnalysisStep('market');
+
+    // Resolve $TICKER → contract address before analyzing.
+    if (trimmed.startsWith('$') || (trimmed.length < 30 && !/^0x/i.test(trimmed))) {
+      try {
+        const { data: resolved } = await api.get<{ best: { address: string; symbol: string } | null }>(
+          `/resolve?q=${encodeURIComponent(trimmed)}&limit=1`,
+        );
+        if (resolved.best?.address) {
+          trimmed = resolved.best.address;
+          setInput(trimmed);
+        } else {
+          setError(`No token found for "${trimmed}". Paste the contract address.`);
+          return;
+        }
+      } catch {
+        setError(`Could not resolve "${trimmed}".`);
+        return;
+      }
+    }
+
     analyzingAddressRef.current = trimmed;
     if (force) {
       setBusy(true);
@@ -1919,7 +1939,7 @@ function IntelPageClient() {
         <form onSubmit={e => { e.preventDefault(); lastAnalyzedRef.current = null; triggerAnalyze(input, profile, depth, false); }} style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
           <input
             className="input"
-            placeholder="Paste token address — Solana or 0x… EVM"
+            placeholder="Solana / EVM address, or $TICKER"
             value={input}
             onChange={e => setInput(e.target.value)}
             style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 12 }}

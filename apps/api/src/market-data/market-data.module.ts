@@ -8,6 +8,6 @@ import { TokenMetadataService } from './token-metadata.service';
 @Module({
   providers: [MarketDataService, CoinGeckoProvider, BirdeyeProvider, TokenMetadataService],
   controllers: [MarketDataController],
-  exports: [MarketDataService, TokenMetadataService],
+  exports: [MarketDataService, TokenMetadataService, CoinGeckoProvider],
 })
 export class MarketDataModule {}

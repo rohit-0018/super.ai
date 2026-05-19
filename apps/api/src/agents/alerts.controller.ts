@@ -3,6 +3,8 @@ import { IsEnum, IsNumber, IsString } from 'class-validator';
 import { Chain } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
+import { detectChain } from '../token-analysis/chain-detector';
+import { TokenResolverService } from '../token-resolver/token-resolver.service';
 
 class CreatePriceAlertDto {
   @IsString() token!: string;
@@ -14,7 +16,10 @@ class CreatePriceAlertDto {
 @UseGuards(JwtAuthGuard)
 @Controller('alerts')
 export class AlertsController {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private resolver: TokenResolverService,
+  ) {}
 
   @Get()
   async list(
@@ -70,9 +75,20 @@ export class AlertsController {
   }
 
   @Post('price-alerts')
-  createPriceAlert(@Req() req: any, @Body() dto: CreatePriceAlertDto) {
+  async createPriceAlert(@Req() req: any, @Body() dto: CreatePriceAlertDto) {
+    // Accept a $TICKER — store the resolved address + chain so the watcher
+    // prices the exact token the user meant.
+    let token = dto.token;
+    let chain = dto.chain;
+    if (!detectChain(token)) {
+      const t = await this.resolver.resolveForTrade(token, {
+        chain: chain === 'SOLANA' ? 'SOLANA' : 'EVM',
+      });
+      token = t.address;
+      chain = t.chain as typeof chain;
+    }
     return (this.prisma as any).priceAlert.create({
-      data: { userId: req.user.userId, token: dto.token, chain: dto.chain, targetUsd: dto.targetUsd, direction: dto.direction },
+      data: { userId: req.user.userId, token, chain, targetUsd: dto.targetUsd, direction: dto.direction },
     });
   }
 

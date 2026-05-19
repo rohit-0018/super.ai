@@ -3,6 +3,26 @@ import type { Chain, TokenMeta } from '../token-analysis.types';
 import { ProviderPoolService } from '../../provider-pool/provider-pool.service';
 
 /**
+ * One trading pair as returned by DexScreener's search/tokens endpoints.
+ * Only the fields the resolver actually reads are typed; the API returns more.
+ */
+export interface DexSearchPair {
+  chainId: string;
+  dexId?: string;
+  url?: string;
+  pairCreatedAt?: number; // epoch ms
+  baseToken: { address: string; symbol?: string; name?: string };
+  quoteToken: { address: string; symbol?: string; name?: string };
+  priceUsd?: string;
+  liquidity?: { usd?: number };
+  volume?: { h24?: number };
+  marketCap?: number;
+  fdv?: number;
+  txns?: { h24?: { buys?: number; sells?: number } };
+  info?: { imageUrl?: string; socials?: Array<{ type: string; url: string }> };
+}
+
+/**
  * DexScreener free API — https://docs.dexscreener.com/api/reference
  * Tokens endpoint: GET https://api.dexscreener.com/latest/dex/tokens/{address}
  * Returns all pairs for that token across DEXs/chains. We pick the highest-liquidity pair.
@@ -93,6 +113,42 @@ export class DexScreenerProvider {
     } catch (e: any) {
       this.logger.warn(`DexScreener fetch failed: ${e?.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Free-text search across all chains/DEXs.
+   * GET https://api.dexscreener.com/latest/dex/search?q=<query>
+   *
+   * Returns the raw matched pairs (a token can appear in many pools, and the
+   * same symbol can exist on multiple chains). Filtering, pair→token collapse
+   * and ranking are the resolver's job — this provider only fetches.
+   * Returns [] (never throws) on rate-limit / network / non-200 so a ticker
+   * lookup degrades gracefully into "no matches".
+   */
+  async search(query: string): Promise<DexSearchPair[]> {
+    const q = query.trim();
+    if (!q) return [];
+    if (!(await this.pool.isAvailable(this.providerKey))) return [];
+    try {
+      const res = await fetch(`${this.base}/search?q=${encodeURIComponent(q)}`, {
+        headers: { 'User-Agent': 'qwai/1.0' },
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (res.status === 429) {
+        await this.pool.markRateLimited(this.providerKey);
+        return [];
+      }
+      if (!res.ok) {
+        this.logger.warn(`DexScreener search non-200 for "${q}": ${res.status}`);
+        return [];
+      }
+      const body = (await res.json()) as any;
+      const pairs: any[] = Array.isArray(body?.pairs) ? body.pairs : [];
+      return pairs.filter((p) => p?.baseToken?.address && p?.chainId) as DexSearchPair[];
+    } catch (e: any) {
+      this.logger.warn(`DexScreener search failed for "${q}": ${e?.message}`);
+      return [];
     }
   }
 }

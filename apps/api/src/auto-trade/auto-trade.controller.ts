@@ -5,6 +5,8 @@ import { Throttle } from '@nestjs/throttler';
 import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AutoTradeService } from './auto-trade.service';
+import { detectChain } from '../token-analysis/chain-detector';
+import { TokenResolverService } from '../token-resolver/token-resolver.service';
 
 class AutoStartDto {
   @IsOptional() @IsString() autoProfile?: string;
@@ -34,7 +36,10 @@ class CloseDto {
 @UseGuards(JwtAuthGuard)
 @Controller('auto-trade')
 export class AutoTradeController {
-  constructor(private readonly svc: AutoTradeService) {}
+  constructor(
+    private readonly svc: AutoTradeService,
+    private readonly resolver: TokenResolverService,
+  ) {}
 
   // ── Portfolio ────────────────────────────────────────────────────────
 
@@ -89,14 +94,27 @@ export class AutoTradeController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('positions/open')
   async openManual(@Req() req: any, @Body() dto: ManualOpenDto) {
+    // Accept a $TICKER too. Auto-pick the top token (echoed via the position
+    // record); ambiguous/low-liq throws 409 with candidates.
+    let tokenAddress = dto.tokenAddress;
+    let symbol = dto.symbol ?? null;
+    let name = dto.name ?? null;
+    let entryPriceUsd = dto.entryPriceUsd;
+    if (!detectChain(tokenAddress)) {
+      const t = await this.resolver.resolveForTrade(tokenAddress);
+      tokenAddress = t.address;
+      symbol = symbol ?? (t.symbol || null);
+      name = name ?? (t.name || null);
+      if (!(entryPriceUsd > 0) && t.priceUsd) entryPriceUsd = t.priceUsd;
+    }
     return this.svc.openPosition({
       userId:         req.user.userId,
-      tokenAddress:   dto.tokenAddress,
-      symbol:         dto.symbol ?? null,
-      name:           dto.name ?? null,
+      tokenAddress,
+      symbol,
+      name,
       profileKey:     dto.profileKey ?? 'meme_hunter',
       source:         'manual',
-      entryPriceUsd:  dto.entryPriceUsd,
+      entryPriceUsd,
       sizeUsd:        dto.sizeUsd,
       scoreAtEntry:   0,
       verdictAtEntry: 'MANUAL',

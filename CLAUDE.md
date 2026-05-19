@@ -56,6 +56,8 @@ Two entry points share the same `AppModule`:
 
 The **Telegram bot is embedded in the API process** (via `TelegramModule`), not a separate service. Same AI brain, same session layer.
 
+**Token input is resolved through one place.** `token-resolver` (`TokenResolverService`, `GET /api/resolve`) turns any raw string — a contract address **or** a `$TICKER` — into a popularity-ranked token list (DexScreener-first: aggregated liquidity + volume + age; CoinGecko = "verified" nudge). Anything that accepts a CA routes through it: Telegram catch-all + `/scan` `/z` `/pf` `/dca`, the web `TokenSearchInput` component (analyze page, swap form), and the trade paths. Money paths call `resolveForTrade()` which auto-picks the top match but throws **409 with candidates** when ambiguous/low-liquidity. Design: `docs/TICKER_RESOLVER_PLAN.md`.
+
 Trace middleware runs before auth so `traceId` is stamped on every response and downstream services see it via `traceStore`.
 
 Throttler: 120 req/min globally via `APP_GUARD`.

@@ -4,6 +4,8 @@ import type { ReactNode } from 'react';
 import { api } from '../../../lib/api';
 import { Section } from '../../../components/ui/Section';
 import { Stat } from '../../../components/ui/Stat';
+import { TokenSearchInput } from '../../../components/TokenSearchInput';
+import type { ResolvedToken } from '../../../lib/useTokenResolve';
 
 /* ── Types ──────────────────────────────────────────────────────────────────── */
 
@@ -65,20 +67,25 @@ interface Report {
 /* ── Page ───────────────────────────────────────────────────────────────────── */
 
 export default function TokenAnalyze() {
-  const [address, setAddress] = useState('');
+  const [token, setToken] = useState<ResolvedToken | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<Report | null>(null);
 
+  function onResolved(t: ResolvedToken | null) {
+    setToken(t);
+    setReport(null);
+    setError(null);
+  }
+
   async function run(e?: React.FormEvent) {
     e?.preventDefault();
-    const trimmed = address.trim();
-    if (!trimmed) { setError('Paste a token contract address.'); return; }
+    if (!token) { setError('Paste an address or pick a token first.'); return; }
     setLoading(true);
     setError(null);
     setReport(null);
     try {
-      const res = await api.post<Report>('/token-analysis/analyze', { address: trimmed });
+      const res = await api.post<Report>('/token-analysis/analyze', { address: token.address });
       setReport(res.data);
     } catch (e: any) {
       setError(e?.response?.data?.message ?? e?.message ?? 'Analysis failed');
@@ -91,24 +98,24 @@ export default function TokenAnalyze() {
     <div className="page space-y-4">
       <header>
         <div className="section-eyebrow">Token intel</div>
-        <h1 className="page-title">Paste any address, get a pro verdict</h1>
+        <h1 className="page-title">Paste an address or $TICKER, get a pro verdict</h1>
         <p className="page-subtitle">
-          Chain auto-detected. Safety check, holder forensics, social signals, and Claude AI reasoning — in seconds.
+          Chain auto-detected. Type a ticker and we rank every match by popularity. Safety check, holder
+          forensics, social signals, and Claude AI reasoning — in seconds.
         </p>
       </header>
 
       <Section title="Target">
         <form onSubmit={run} className="flex gap-2 flex-wrap items-end">
           <div className="w-full sm:flex-1" style={{ minWidth: 0 }}>
-            <label className="label">Contract / mint address</label>
-            <input
-              className="input mono"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              placeholder="Solana base58 or 0x EVM address — chain auto-detected"
+            <TokenSearchInput
+              label="Contract address or $TICKER"
+              placeholder="Solana / EVM address, or $BONK — chain auto-detected"
+              onResolved={onResolved}
+              autoFocus
             />
           </div>
-          <button className="btn btn-primary w-full sm:w-auto" disabled={loading} style={{ minWidth: 120 }}>
+          <button className="btn btn-primary w-full sm:w-auto" disabled={loading || !token} style={{ minWidth: 120 }}>
             {loading ? 'Analyzing…' : 'Analyze'}
           </button>
         </form>

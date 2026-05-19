@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TokenAnalysisService } from './token-analysis.service';
 import { ComparableTokensService } from './comparable-tokens.service';
 import { TokenAnalysisController } from './token-analysis.controller';
@@ -27,7 +27,7 @@ import { IntelTrackModule } from '../intel-track/intel-track.module';
 import { WsModule } from '../ws/ws.module';
 
 @Module({
-  imports: [TokenIntelModule, IntelTrackModule, WsModule],
+  imports: [forwardRef(() => TokenIntelModule), IntelTrackModule, WsModule],
   providers: [
     TokenAnalysisService,
     ComparableTokensService,
@@ -59,6 +59,6 @@ import { WsModule } from '../ws/ws.module';
     AiReasoner,
   ],
   controllers: [TokenAnalysisController, IntelController],
-  exports: [TokenAnalysisService, PumpFunProvider],
+  exports: [TokenAnalysisService, PumpFunProvider, DexScreenerProvider],
 })
 export class TokenAnalysisModule {}

@@ -1,6 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { http, HttpError } from '../../common/http';
 
+export interface CgSearchCoin {
+  id: string;
+  name: string;
+  symbol: string;
+  market_cap_rank: number | null;
+}
+
 export interface CgCoinMarket {
   id: string;
   symbol: string;
@@ -102,6 +109,39 @@ export class CoinGeckoProvider {
         return stale?.data ?? [];
       }
       throw e;
+    }
+  }
+
+  /**
+   * Symbol/name search. Used only as a "verified" nudge for the token
+   * resolver — a token CoinGecko lists is more likely the canonical one.
+   * Never throws: returns [] on rate-limit / error so it can't block a resolve.
+   */
+  async searchBySymbol(query: string): Promise<CgSearchCoin[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const key = `search:${q.toLowerCase()}`;
+    const cached = this.get<CgSearchCoin[]>(key);
+    if (cached) return cached;
+
+    try {
+      const data = await http.get<{ coins?: CgSearchCoin[] }>(`${this.base}/search`, {
+        headers: this.headers,
+        timeoutMs: 5_000,
+        params: { query: q },
+      });
+      const coins = Array.isArray(data?.coins) ? data.coins : [];
+      this.set(key, coins);
+      return coins;
+    } catch (e) {
+      const status = e instanceof HttpError ? e.status : 0;
+      if (status === 429) {
+        this.logger.warn('CoinGecko rate limit hit — skipping verified-badge enrichment');
+        const stale = this.cache.get(key) as CacheEntry<CgSearchCoin[]> | undefined;
+        return stale?.data ?? [];
+      }
+      this.logger.warn(`CoinGecko search failed for "${q}": ${(e as Error)?.message}`);
+      return [];
     }
   }
 
