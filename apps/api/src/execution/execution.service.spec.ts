@@ -67,7 +67,15 @@ function makeService(overrides: {
     submitBundle: jest.fn().mockResolvedValue({ bundleId: '', accepted: false }),
     waitForBundle: jest.fn().mockResolvedValue(false),
   };
-  const svc = new ExecutionService(prisma, guardrails, jup, jito, oneinch, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit, liveGuard);
+  const raydium: any = {
+    quote: jest.fn().mockResolvedValue({ inputMint: 'i', outputMint: 'o', inAmount: '100', outAmount: '95', priceImpactPct: '0.1' }),
+    swapTx: jest.fn().mockResolvedValue('base64=='),
+  };
+  const paraswap: any = {
+    quote: jest.fn().mockResolvedValue({ srcToken: 'i', destToken: 'o', srcAmount: '100', destAmount: '95', priceRoute: {} }),
+    buildTx: jest.fn().mockResolvedValue({ to: '0x', data: '0x', value: '0', gas: '0', gasPrice: '0' }),
+  };
+  const svc = new ExecutionService(prisma, guardrails, jup, jito, oneinch, raydium, paraswap, wallets, dna, emotional, securityCompliance, riskEngine, securityAudit, liveGuard);
   return { svc, prisma, guardrails, jup, oneinch, wallets, dna, trades, audits, paperBalances };
 }
 

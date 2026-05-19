@@ -10,6 +10,8 @@ import { GuardrailsService } from '../guardrails/guardrails.service';
 import { JupiterClient } from './jupiter.client';
 import { JitoClient, type JitoTipMode } from './jito.client';
 import { OneInchClient } from './oneinch.client';
+import { RaydiumClient } from './raydium.client';
+import { ParaswapClient } from './paraswap.client';
 import { WalletsService } from '../wallets/wallets.service';
 import { TradingDnaService } from '../ai-agent/trading-dna.service';
 import { EmotionalIntelService } from '../agents/emotional-intel.service';
@@ -75,6 +77,8 @@ export class ExecutionService {
     private jup: JupiterClient,
     private jito: JitoClient,
     private oneinch: OneInchClient,
+    private raydium: RaydiumClient,
+    private paraswap: ParaswapClient,
     private wallets: WalletsService,
     private dna: TradingDnaService,
     @Inject(forwardRef(() => EmotionalIntelService))
@@ -520,10 +524,35 @@ export class ExecutionService {
     }
 
     // All attempts exhausted
-    throw new Error(
-      lastErr?.message?.replace('SLIPPAGE:', '') ??
-      `Slippage exceeded on all ${MAX_SWAP_ATTEMPTS} attempts`,
-    );
+    const primaryErr = lastErr?.message?.replace('SLIPPAGE:', '') ??
+      `Slippage exceeded on all ${MAX_SWAP_ATTEMPTS} attempts`;
+
+    // DEX fallback: try Raydium when Jupiter circuit is open or all retries failed.
+    if (process.env.DEX_FALLBACK_ENABLED === 'true') {
+      this.logger.warn(`[trc=${trace}] Jupiter failed — trying Raydium fallback`);
+      try {
+        const rQuote = await this.raydium.quote(input.tokenIn, input.tokenOut, input.amountIn, input.slippageBps);
+        const rTx = await this.raydium.swapTx(rQuote, wallet.address, input.slippageBps);
+        const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
+          const kp = Keypair.fromSecretKey(new Uint8Array(key));
+          const raw = Buffer.from(rTx, 'base64');
+          const tx = VersionedTransaction.deserialize(raw);
+          tx.sign([kp]);
+          const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+          const { lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+          const result = await connection.confirmTransaction({ signature: sig, blockhash: tx.message.recentBlockhash, lastValidBlockHeight }, 'confirmed');
+          if (result.value.err) throw new Error(`Raydium tx failed: ${JSON.stringify(result.value.err)}`);
+          return sig;
+        });
+        this.logger.log(`[trc=${trace}] Raydium fallback succeeded: ${txHash}`);
+        return { txHash, outAmount: rQuote.outAmount };
+      } catch (fallbackErr: any) {
+        this.logger.error(`[trc=${trace}] Raydium fallback also failed: ${fallbackErr.message}`);
+        throw new Error(`Jupiter failed (${primaryErr}) and Raydium fallback failed (${fallbackErr.message})`);
+      }
+    }
+
+    throw new Error(primaryErr);
   }
 
   private async executeEvm(input: SwapInput): Promise<{ txHash: string; outAmount: string }> {
@@ -562,21 +591,38 @@ export class ExecutionService {
     }
 
     // Mainnet: real 1inch swap
-    const txReq = swap.tx;
-    const txHash = await this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
-      const signer = new ethers.Wallet('0x' + key.toString('hex'), provider);
-      const sent = await signer.sendTransaction({
-        to: txReq.to,
-        data: txReq.data,
-        value: txReq.value ? BigInt(txReq.value) : 0n,
-        gasLimit: txReq.gas ? BigInt(txReq.gas) : undefined,
-        gasPrice: txReq.gasPrice ? BigInt(txReq.gasPrice) : undefined,
+    const sendEvm = async (txReq: { to: string; data: string; value?: string; gas?: string; gasPrice?: string }) =>
+      this.wallets.withSigningKey(input.userId, input.walletId, async (key) => {
+        const signer = new ethers.Wallet('0x' + key.toString('hex'), provider);
+        const sent = await signer.sendTransaction({
+          to: txReq.to,
+          data: txReq.data,
+          value: txReq.value ? BigInt(txReq.value) : 0n,
+          gasLimit: txReq.gas ? BigInt(txReq.gas) : undefined,
+          gasPrice: txReq.gasPrice ? BigInt(txReq.gasPrice) : undefined,
+        });
+        await sent.wait(1);
+        return sent.hash;
       });
-      await sent.wait(1);
-      return sent.hash;
-    });
 
-    return { txHash, outAmount: swap?.dstAmount ?? input.amountIn };
+    try {
+      const txHash = await sendEvm(swap.tx);
+      return { txHash, outAmount: swap?.dstAmount ?? input.amountIn };
+    } catch (primaryErr: any) {
+      if (process.env.DEX_FALLBACK_ENABLED !== 'true') throw primaryErr;
+
+      this.logger.warn(`[trc=${trace}] 1inch failed (${primaryErr.message}) — trying Paraswap fallback`);
+      try {
+        const psQuote = await this.paraswap.quote(chainId, input.tokenIn, input.tokenOut, input.amountIn);
+        const psTx = await this.paraswap.buildTx(chainId, psQuote, wallet.address, input.slippageBps);
+        const txHash = await sendEvm(psTx);
+        this.logger.log(`[trc=${trace}] Paraswap fallback succeeded: ${txHash}`);
+        return { txHash, outAmount: psQuote.destAmount };
+      } catch (fallbackErr: any) {
+        this.logger.error(`[trc=${trace}] Paraswap fallback also failed: ${fallbackErr.message}`);
+        throw new Error(`1inch failed (${primaryErr.message}) and Paraswap fallback failed (${fallbackErr.message})`);
+      }
+    }
   }
 
   private resolveEvmChainId(input: SwapInput): number {
