@@ -4,16 +4,20 @@ import { makeQueue, QUEUES, QueueName } from '../agents/queues';
 import { SnipeSessionService } from './snipe-session.service';
 import { SnipeFastService } from './snipe-fast.service';
 
-// Heavy recurring queues we pause during a burst so they don't compete for
-// RPC bandwidth / event loop time. POSITION_MONITOR stays alive — existing
-// stop-losses must still fire while a burst is in flight.
-const PAUSE_QUEUES: QueueName[] = [
-  QUEUES.HOT_TOKENS_SCAN,
-  QUEUES.HOT_TOKENS_REFRESH,
-  QUEUES.AUTONOMOUS_TRADER,
-  QUEUES.DCA,
-  QUEUES.LEARNING_INGEST,
+// Queues that stay alive during a burst.
+//   POSITION_MONITOR  — sell worker; existing stop-losses must still fire.
+//   TELEGRAM_SEND     — burst summary notification gets posted here; queue
+//                       jobs survive the pause anyway, but keeping it alive
+//                       means the post-burst ping isn't delayed by 30s.
+const KEEP_ALIVE: QueueName[] = [
+  QUEUES.POSITION_MONITOR,
+  QUEUES.TELEGRAM_SEND,
 ];
+
+// Everything else gets paused — explicit derivation so adding a new queue
+// to QUEUES auto-pauses it during a burst (safer default than allowlist).
+const PAUSE_QUEUES: QueueName[] = (Object.values(QUEUES) as QueueName[])
+  .filter((q) => !KEEP_ALIVE.includes(q));
 
 // How long the queues stay paused after a burst. The burst itself returns
 // in ~100-300 ms, but the background monitor needs the rest of this window
@@ -27,9 +31,18 @@ export interface BurstResult {
   outAmount: string;
   durationMs: number;
   traceId: string;
-  status: 'broadcast' | 'failed';
+  status: 'broadcast' | 'failed' | 'skipped';
   error?: string;
 }
+
+// Fee headroom (SOL) reserved on top of the buy amount: Jupiter compute fee,
+// priority fee, possible ATA rent for the new token account. The actual buy
+// for any wallet is `min(configured, balance - FEE_HEADROOM_SOL)`.
+const FEE_HEADROOM_SOL = 0.002;
+// Floor for a buy worth doing — below this the fee dwarfs the position and
+// the wallet skips. 0.005 SOL ≈ $1 buy at current SOL price.
+const MIN_BUY_SOL = 0.005;
+const LAMPORTS_PER_SOL = 1_000_000_000;
 
 /**
  * Orchestrates a "burst" snipe: fires the same buy across every Solana wallet
@@ -65,6 +78,7 @@ export class ParallelSnipeService {
     pauseWorkers?: boolean;
   }): Promise<{
     fired: number;
+    skipped: number;
     results: BurstResult[];
     durationMs: number;
     paused: string[];
@@ -72,40 +86,102 @@ export class ParallelSnipeService {
     const t0 = Date.now();
     const { userId, mint, buyAmountRaw, maxSlippageBps, pauseWorkers = true } = opts;
 
-    const sessions = this.snipeSession.getBurstSessions(userId);
-    if (sessions.length === 0) {
+    const allSessions = this.snipeSession.getBurstSessions(userId);
+    if (allSessions.length === 0) {
       throw new Error('No active burst sessions — call POST /api/snipe/burst/start first');
+    }
+
+    // Per-wallet auto-sizing. Each wallet fires the *largest* buy it can
+    // afford up to the configured amount. So a wallet with 0.05 SOL can
+    // still join a "0.1 SOL each" burst — it'll just buy 0.048 SOL.
+    //
+    // Only wallets that can't even cover MIN_BUY_SOL + fee headroom skip.
+    const feeHeadroomLamports = BigInt(Math.round(FEE_HEADROOM_SOL * LAMPORTS_PER_SOL));
+    const minBuyLamports      = BigInt(Math.round(MIN_BUY_SOL       * LAMPORTS_PER_SOL));
+    const configuredBuy       = BigInt(buyAmountRaw);
+    const minTotalLamports    = minBuyLamports + feeHeadroomLamports;
+
+    type Funded = { session: typeof allSessions[number]; perWalletBuyRaw: string };
+    const fundedSessions: Funded[] = [];
+    const skipped: BurstResult[] = [];
+    for (const s of allSessions) {
+      const bal = BigInt(s.balanceLamports ?? 0);
+      if (bal < minTotalLamports) {
+        const haveSol = Number(bal) / LAMPORTS_PER_SOL;
+        skipped.push({
+          walletId: s.walletId, address: s.address,
+          txHash: null, outAmount: '0',
+          durationMs: 0, traceId: '',
+          status: 'skipped',
+          error: `dust balance: ${haveSol.toFixed(4)} SOL (need ≥ ${(MIN_BUY_SOL + FEE_HEADROOM_SOL).toFixed(4)})`,
+        });
+        continue;
+      }
+      // Affordable = balance minus fee headroom. Capped at the configured amount.
+      const affordable = bal - feeHeadroomLamports;
+      const perWalletRaw = affordable < configuredBuy ? affordable : configuredBuy;
+      fundedSessions.push({ session: s, perWalletBuyRaw: perWalletRaw.toString() });
+    }
+
+    if (fundedSessions.length === 0) {
+      this.logger.warn(
+        `Burst skipped: user=${userId} mint=${mint.slice(0, 8)}… all ${allSessions.length} wallets underfunded`,
+      );
+      // Still emit a "complete" event so UI knows the burst ended.
+      this.ws?.emitToUser(userId, 'burst_snipe_complete', {
+        mint, fired: 0, skipped: skipped.length, total: allSessions.length,
+        durationMs: Date.now() - t0, ts: Date.now(),
+      });
+      return {
+        fired: 0, skipped: skipped.length, results: skipped,
+        durationMs: Date.now() - t0, paused: [],
+      };
     }
 
     const paused: string[] = [];
     if (pauseWorkers) {
-      // Pause is best-effort: a failed pause should never abort the snipe.
-      for (const name of PAUSE_QUEUES) {
-        try {
-          await makeQueue(name).pause();
-          paused.push(name);
-        } catch (e: any) {
-          this.logger.warn(`Failed to pause queue ${name}: ${e?.message}`);
-        }
-      }
+      // Fire-and-forget — Redis roundtrips for ~25 queues add 25-75ms of
+      // blocked time before any wallet broadcasts. The snipe's job isn't
+      // to wait for the cleanup crew to clock out. Each pause runs in
+      // parallel; resume is scheduled now (not after the pause settles)
+      // so the timer is anchored to t0, not t0 + pause-rtt.
+      for (const name of PAUSE_QUEUES) paused.push(name);
+      Promise.allSettled(
+        PAUSE_QUEUES.map((name) =>
+          makeQueue(name).pause().catch((e: any) => {
+            this.logger.warn(`Pause ${name} failed: ${e?.message}`);
+          }),
+        ),
+      );
       this.scheduleResume(userId, paused);
     }
 
     this.ws?.emitToUser(userId, 'burst_snipe_started', {
-      mint, walletCount: sessions.length,
+      mint, walletCount: fundedSessions.length, skippedCount: skipped.length,
       buyAmountRaw, maxSlippageBps, paused, ts: Date.now(),
     });
 
+    // Surface skipped wallets immediately so the UI grid lights up "skipped"
+    // rows alongside the in-flight ones.
+    for (const s of skipped) {
+      this.ws?.emitToUser(userId, 'burst_snipe_progress', {
+        walletId: s.walletId, address: s.address,
+        mint, txHash: null, durationMs: 0,
+        amountRaw: buyAmountRaw, outAmount: '0',
+        status: 'skipped', error: s.error, ts: Date.now(),
+      });
+    }
+
     const settled = await Promise.allSettled(
-      sessions.map((session) =>
+      fundedSessions.map(({ session, perWalletBuyRaw }) =>
         this.snipeFast.executeBurst({
           session, userId, chain: 'SOLANA', mint,
-          buyAmountRaw, maxSlippageBps,
+          buyAmountRaw: perWalletBuyRaw, maxSlippageBps,
         }),
       ),
     );
 
-    const results: BurstResult[] = settled.map((r, i) => {
+    const broadcastResults: BurstResult[] = settled.map((r, i) => {
       if (r.status === 'fulfilled') {
         const v = r.value;
         return {
@@ -115,7 +191,7 @@ export class ParallelSnipeService {
           status: v.txHash ? 'broadcast' : 'failed',
         };
       }
-      const s = sessions[i];
+      const { session: s } = fundedSessions[i];
       return {
         walletId: s.walletId, address: s.address,
         txHash: null, outAmount: '0',
@@ -125,17 +201,19 @@ export class ParallelSnipeService {
       };
     });
 
+    const results = [...broadcastResults, ...skipped];
     const durationMs = Date.now() - t0;
-    const fired = results.filter((r) => r.status === 'broadcast').length;
+    const fired = broadcastResults.filter((r) => r.status === 'broadcast').length;
     this.logger.log(
-      `Burst complete: user=${userId} mint=${mint.slice(0, 8)}… fired=${fired}/${results.length} ${durationMs}ms`,
+      `Burst complete: user=${userId} mint=${mint.slice(0, 8)}… fired=${fired}/${fundedSessions.length} skipped=${skipped.length} ${durationMs}ms`,
     );
 
     this.ws?.emitToUser(userId, 'burst_snipe_complete', {
-      mint, fired, total: results.length, durationMs, ts: Date.now(),
+      mint, fired, skipped: skipped.length, total: allSessions.length,
+      durationMs, ts: Date.now(),
     });
 
-    return { fired, results, durationMs, paused };
+    return { fired, skipped: skipped.length, results, durationMs, paused };
   }
 
   private scheduleResume(userId: string, paused: string[]) {

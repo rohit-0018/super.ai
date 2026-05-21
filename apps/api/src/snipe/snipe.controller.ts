@@ -114,10 +114,23 @@ export class SnipeController {
     return { ok: true };
   }
 
-  /** GET /api/snipe/burst — burst session status with balances. */
+  /**
+   * GET /api/snipe/burst — burst session status with live balances.
+   *
+   * Triggers a single batched `getMultipleAccountsInfo` RPC call to refresh
+   * every armed wallet's SOL balance from chain before returning. This is
+   * the source of truth for the Signing wallets list on /snipe — the page
+   * polls this every 15s, so balances stay live without a per-wallet RPC.
+   *
+   * Cost: 1 RPC roundtrip total, regardless of wallet count (~50-100ms on
+   * a warm Helius connection). Safe to call as frequently as the page polls.
+   */
   @Get('burst')
-  getBurst(@Req() req: any) {
+  async getBurst(@Req() req: any) {
     const userId: string = req.user.userId;
+    // Best-effort refresh — failure (RPC blip) leaves the previous cached
+    // values in place rather than blanking the UI.
+    await this.snipeSession.refreshBurstBalances(userId);
     return this.snipeSession.burstStatus(userId);
   }
 

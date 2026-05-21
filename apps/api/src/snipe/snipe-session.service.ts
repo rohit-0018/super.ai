@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Keypair, Connection } from '@solana/web3.js';
-import { getSolanaRpcUrl } from '../common/network-config';
+import { getSolanaRpcUrl, getJupiterApiBase } from '../common/network-config';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { HeliusService } from './helius.service';
@@ -172,6 +172,8 @@ export class SnipeSessionService implements OnModuleDestroy {
 
     const out: Array<{ walletId: string; address: string; label: string | null; isPrimary: boolean; balanceLamports: number; expiresAt: number }> = [];
 
+    // Pass 1: decrypt + register sessions sequentially (KMS is the bottleneck).
+    const newSessions: HotSession[] = [];
     for (const w of wallets) {
       let session = map.get(w.id);
       if (!session || session.expiresAt < Date.now()) {
@@ -185,16 +187,81 @@ export class SnipeSessionService implements OnModuleDestroy {
         };
         map.set(w.id, session);
       }
-      let balanceLamports = 0;
-      try { balanceLamports = await session.connection.getBalance(session.keypair.publicKey); } catch {}
-      session.balanceLamports = balanceLamports;
+      newSessions.push(session);
+    }
+
+    // Pass 2: balance + priority-fee + TLS pre-warm in parallel. This is the
+    // "cosmetic" prep — done now, before any snipe — so the hot path has
+    // no RPC roundtrips beyond the Jupiter quote + broadcast.
+    //
+    // TLS pre-warm: a single getSlot() on the send connection completes the
+    // TLS handshake to Helius's staked endpoint. Saves ~50-150ms on the
+    // first sendRawTransaction after arm (the most latency-sensitive call).
+    const sendConnPrewarm = sendConn.getSlot().catch(() => 0);
+    const jupBase = getJupiterApiBase();
+    const jupPrewarm = jupBase === 'MOCK'
+      ? Promise.resolve(null)
+      : fetch(`${jupBase}/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&amount=1000&slippageBps=100`, {
+          signal: AbortSignal.timeout(3_000),
+        }).then((r) => { r.body?.cancel(); return null; }).catch(() => null);
+
+    const balances = await Promise.all([
+      ...newSessions.map((s) =>
+        s.connection.getBalance(s.keypair.publicKey).catch(() => 0),
+      ),
+      this.helius.getPriorityFeeEstimate().catch(() => null), // primes the 2s cache
+      sendConnPrewarm,                                         // primes TLS to staked Helius endpoint
+      jupPrewarm,                                              // primes TLS to Jupiter API
+    ]);
+
+    newSessions.forEach((s, i) => {
+      s.balanceLamports = balances[i] as number;
+    });
+
+    for (let i = 0; i < wallets.length; i++) {
+      const w = wallets[i];
+      const s = newSessions[i];
       out.push({
         walletId: w.id, address: w.address, label: w.label,
-        isPrimary: w.isPrimary, balanceLamports, expiresAt: session.expiresAt,
+        isPrimary: w.isPrimary, balanceLamports: s.balanceLamports ?? 0,
+        expiresAt: s.expiresAt,
       });
     }
-    this.logger.log(`Burst sessions started: user=${userId} wallets=${out.length}`);
+    this.logger.log(`Burst sessions started: user=${userId} wallets=${out.length} (balances + fee pre-warmed)`);
     return out;
+  }
+
+  /**
+   * Background balance refresh — call periodically from a cheap timer so
+   * the cached `session.balanceLamports` stays usable for the pre-flight
+   * filter without paying the RPC cost on the hot path.
+   *
+   * Implemented as ONE batched `getMultipleAccountsInfo` call rather than N
+   * parallel `getBalance` calls. For 5 wallets that's 1 RPC roundtrip
+   * instead of 5 — same latency budget regardless of wallet count.
+   */
+  async refreshBurstBalances(userId: string): Promise<void> {
+    const sessions = this.getBurstSessions(userId);
+    if (sessions.length === 0) return;
+    // All burst sessions share the same readConn (set at startBurstSessions),
+    // so pick any and batch.
+    const conn = sessions[0].connection;
+    const pubkeys = sessions.map((s) => s.keypair.publicKey);
+    try {
+      const infos = await conn.getMultipleAccountsInfo(pubkeys, 'confirmed');
+      sessions.forEach((s, i) => {
+        // A freshly created (never-funded) wallet returns null here, which
+        // correctly means 0 lamports. Keep the existing cached value if the
+        // RPC returned nothing for an index (defensive — shouldn't happen).
+        const info = infos[i];
+        if (info !== undefined) {
+          s.balanceLamports = info?.lamports ?? 0;
+        }
+      });
+    } catch (e: any) {
+      this.logger.debug(`refreshBurstBalances batched fetch failed: ${e?.message}`);
+      // Don't overwrite cached balances on transient RPC errors.
+    }
   }
 
   stopBurstSessions(userId: string) {
@@ -324,7 +391,13 @@ export class SnipeSessionService implements OnModuleDestroy {
           map.delete(walletId);
         }
       }
-      if (map.size === 0) this.burstSessions.delete(userId);
+      if (map.size === 0) {
+        this.burstSessions.delete(userId);
+      } else {
+        // Cheap parallel balance refresh so the hot path can rely on
+        // cached balanceLamports for its pre-flight filter.
+        this.refreshBurstBalances(userId).catch(() => {});
+      }
     }
     // Prune dedupe entries older than 5 min
     for (const [key, ts] of this.seen) {

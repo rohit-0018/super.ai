@@ -359,7 +359,7 @@ export default function SnipePage() {
         </div>
         {/* Col 2: inbox */}
         <div className="snipe-col-inbox" style={!isColVisible('inbox') ? { display: 'none' } : expandedCol === 'inbox' ? { gridArea: 'active', width: '100%' } : undefined}>
-          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} headerRight={mkExpandBtn('inbox')} />
+          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} burstStatus={burstStatus ?? null} headerRight={mkExpandBtn('inbox')} />
         </div>
         {/* Col 3: history */}
         <div className="snipe-col-history" style={!isColVisible('history') ? { display: 'none' } : expandedCol === 'history' ? { gridArea: 'active', width: '100%' } : undefined}>
@@ -1159,7 +1159,9 @@ function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | n
   // Human-readable display values (SOL, %, seconds)
   const [solInput,  setSolInput]  = useState('0.1000');
   const [slipInput, setSlipInput] = useState('50.0');
-  const [tab, setTab]             = useState<'buy' | 'sell'>('buy');
+  // Buy/Sell tab toggle was removed — both panels now stack in a single
+  // scrollable view. Kept the ref-style declaration to avoid touching state
+  // wiring elsewhere; the `tab` value is irrelevant to render now.
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const saveTimer                 = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userModified              = useRef(false);
@@ -1274,21 +1276,6 @@ function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | n
       <div style={{ borderBottom: '1px solid var(--border)', padding: '9px 12px' }}>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="section-title" style={{ flex: 1 }}>Settings</span>
-          <div className="flex items-center gap-1">
-            {(['buy', 'sell'] as const).map((t) => (
-              <button key={t} onClick={() => setTab(t)}
-                className="btn btn-ghost btn-sm"
-                style={{
-                  fontSize: 11, fontWeight: tab === t ? 700 : 400,
-                  height: 24, padding: '0 8px', borderRadius: 5,
-                  color: tab === t ? 'var(--accent)' : 'var(--text-3)',
-                  background: tab === t ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
-                  border: tab === t ? '1px solid color-mix(in srgb, var(--accent) 28%, transparent)' : '1px solid transparent',
-                }}>
-                {t === 'buy' ? 'Buy' : 'Sell'}
-              </button>
-            ))}
-          </div>
           <div className="flex items-center gap-1.5">
             <Toggle checked={form.enabled} onChange={(v) => set('enabled', v)} />
             <span className="text-[11px] font-mono" style={{
@@ -1302,8 +1289,8 @@ function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | n
       </div>
 
       <div style={{ padding: '12px' }}>
-        {tab === 'buy' && (
-          <div className="space-y-3">
+        {/* BUY block ──────────────────────────────────────────────── */}
+        <div className="space-y-3">
             {/* Wallets — every Solana wallet snipes in parallel ─────────── */}
             <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -1421,65 +1408,86 @@ function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | n
               ))}
             </div>
           </div>
-        )}
 
-        {tab === 'sell' && (
-          <div className="space-y-3">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div className="text-[12px] font-semibold">Auto-sell</div>
-                <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>Exit positions automatically</div>
+        {/* SELL block ─────────────────────────────────────────────── */}
+        <div
+          className="space-y-3"
+          style={{
+            marginTop: 16, paddingTop: 12,
+            borderTop: '1px dashed var(--border)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div className="text-[12px] font-semibold" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                Auto-sell
+                <span className="font-mono" style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.08em',
+                  padding: '1px 5px', borderRadius: 3,
+                  color: form.sellEnabled ? 'var(--ok)' : 'var(--text-3)',
+                  background: form.sellEnabled
+                    ? 'color-mix(in srgb, var(--ok) 14%, transparent)'
+                    : 'var(--surface-2)',
+                  border: `1px solid ${form.sellEnabled ? 'color-mix(in srgb, var(--ok) 30%, transparent)' : 'var(--border)'}`,
+                }}>
+                  {form.sellEnabled ? 'ON' : 'OFF'}
+                </span>
               </div>
-              <Toggle checked={form.sellEnabled} onChange={(v) => set('sellEnabled', v)} />
+              <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                {form.sellEnabled
+                  ? 'Exits TP / SL / trail / time across every armed wallet'
+                  : 'Off — positions stay open until you sell manually'}
+              </div>
             </div>
-            {form.sellEnabled && (
-              <>
-                {/* Mode */}
-                <div className="grid grid-cols-2 gap-1.5">
-                  {(['TRIGGER', 'INTELLIGENT'] as const).map((m) => (
-                    <button key={m} onClick={() => set('sellMode', m)}
-                      style={{
-                        padding: '7px 8px', borderRadius: 7, textAlign: 'left', cursor: 'pointer',
-                        background: form.sellMode === m ? 'color-mix(in srgb, var(--accent) 14%, var(--surface-2))' : 'var(--surface-2)',
-                        border: `1px solid ${form.sellMode === m ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border)'}`,
-                      }}>
-                      <div className="font-semibold text-[11px]" style={{ color: form.sellMode === m ? 'var(--accent)' : 'var(--text)' }}>{m}</div>
-                      <div className="text-[10px]" style={{ color: 'var(--text-3)', marginTop: 1 }}>
-                        {m === 'TRIGGER' ? 'Instant on trigger' : 'AI reviews first'}
-                      </div>
+            <Toggle checked={form.sellEnabled} onChange={(v) => set('sellEnabled', v)} />
+          </div>
+          {form.sellEnabled && (
+            <>
+              {/* Mode */}
+              <div className="grid grid-cols-2 gap-1.5">
+                {(['TRIGGER', 'INTELLIGENT'] as const).map((m) => (
+                  <button key={m} onClick={() => set('sellMode', m)}
+                    style={{
+                      padding: '7px 8px', borderRadius: 7, textAlign: 'left', cursor: 'pointer',
+                      background: form.sellMode === m ? 'color-mix(in srgb, var(--accent) 14%, var(--surface-2))' : 'var(--surface-2)',
+                      border: `1px solid ${form.sellMode === m ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border)'}`,
+                    }}>
+                    <div className="font-semibold text-[11px]" style={{ color: form.sellMode === m ? 'var(--accent)' : 'var(--text)' }}>{m}</div>
+                    <div className="text-[10px]" style={{ color: 'var(--text-3)', marginTop: 1 }}>
+                      {m === 'TRIGGER' ? 'Instant on trigger' : 'AI reviews first'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              {/* Quick strategies */}
+              <div>
+                <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>Quick preset</div>
+                <div className="flex flex-wrap gap-1">
+                  {SELL_STRATEGIES.map((s) => (
+                    <button key={s.label}
+                      onClick={() => applyStrategy(s)}
+                      className="btn btn-ghost btn-sm"
+                      style={{ fontSize: 10, height: 22, padding: '0 8px' }}>
+                      {s.label}
                     </button>
                   ))}
                 </div>
+              </div>
 
-                {/* Quick strategies */}
-                <div>
-                  <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>Quick preset</div>
-                  <div className="flex flex-wrap gap-1">
-                    {SELL_STRATEGIES.map((s) => (
-                      <button key={s.label}
-                        onClick={() => applyStrategy(s)}
-                        className="btn btn-ghost btn-sm"
-                        style={{ fontSize: 10, height: 22, padding: '0 8px' }}>
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Triggers */}
-                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                  <TriggerRow label="Take profit" unit="%" value={form.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} min={1} max={10000} />
-                  <TriggerRow label="Stop loss"   unit="%" value={form.stopLossPct}   onChange={(v) => set('stopLossPct', v)}   min={-99} max={-1} />
-                  <TriggerRow label="Trail stop"  unit="%" value={form.trailingStopPct} onChange={(v) => set('trailingStopPct', v)} min={1} max={99} />
-                  <TriggerRow label="Time exit"   unit="min"
-                    value={form.exitAfterMs != null ? form.exitAfterMs / 60_000 : null}
-                    onChange={(v) => set('exitAfterMs', v != null ? Math.round(v * 60_000) : null)}
-                    min={1} max={1440} />
-                </div>
-              </>
-            )}
-          </div>
-        )}
+              {/* Triggers */}
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                <TriggerRow label="Take profit" unit="%" value={form.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} min={1} max={10000} />
+                <TriggerRow label="Stop loss"   unit="%" value={form.stopLossPct}   onChange={(v) => set('stopLossPct', v)}   min={-99} max={-1} />
+                <TriggerRow label="Trail stop"  unit="%" value={form.trailingStopPct} onChange={(v) => set('trailingStopPct', v)} min={1} max={99} />
+                <TriggerRow label="Time exit"   unit="min"
+                  value={form.exitAfterMs != null ? form.exitAfterMs / 60_000 : null}
+                  onChange={(v) => set('exitAfterMs', v != null ? Math.round(v * 60_000) : null)}
+                  min={1} max={1440} />
+              </div>
+            </>
+          )}
+        </div>
         {saveState === 'error' && <p className="text-[11px] mt-2" style={{ color: 'var(--bad)' }}>Save failed — check connection</p>}
       </div>
     </div>
@@ -1533,15 +1541,44 @@ function highlightCAs(text: string): React.ReactNode[] {
   return parts;
 }
 
-function TgInboxPanel({ config, tgConnected, session, headerRight }: { config: SnipeConfig | null; tgConnected: boolean; session: { active: boolean; balanceLamports?: number }; headerRight?: React.ReactNode }) {
+function TgInboxPanel({ config, tgConnected, session, burstStatus, headerRight }: { config: SnipeConfig | null; tgConnected: boolean; session: { active: boolean; balanceLamports?: number }; burstStatus: BurstStatus | null; headerRight?: React.ReactNode }) {
+  // Multi-wallet, auto-sized: each wallet fires the lesser of (configured
+  // amount, balance - 0.002 SOL fee). A wallet only skips if it can't even
+  // afford the minimum dust buy (~0.005 SOL + fee headroom).
+  const buyAmountSol = Number(config?.buyAmountRaw ?? '0') / 1e9;
+  const FEE_HEADROOM = 0.002;
+  const MIN_BUY = 0.005;
+  const dustThreshold = MIN_BUY + FEE_HEADROOM; // ~0.007 SOL — below this, wallet skips
+  const burstWallets = burstStatus?.wallets ?? [];
+  // "Eligible" = can fire at least the minimum buy. Most wallets qualify.
+  const eligibleBurstWallets = burstWallets.filter(
+    (w) => (w.balanceLamports ?? 0) / 1e9 >= dustThreshold,
+  );
+  const totalBurstWallets = burstWallets.length;
+  const hasBurstArmed = burstStatus?.active === true && totalBurstWallets > 0;
+
+  // Fallback to the primary single-wallet session when burst isn't armed.
   const solBalance = session.balanceLamports !== undefined ? session.balanceLamports / 1e9 : null;
-  const snipeWillRun = config?.enabled && session.active && tgConnected && (solBalance === null || solBalance >= 0.005);
+  const singleWalletMinSol = buyAmountSol + FEE_HEADROOM;
+
+  const snipeWillRun = config?.enabled && tgConnected && (
+    hasBurstArmed
+      ? eligibleBurstWallets.length > 0
+      : session.active && (solBalance === null || solBalance >= dustThreshold)
+  );
+
   const snipeWarning = config?.enabled && tgConnected
-    ? !session.active
-      ? 'No hot session — trades will be skipped. Load a hot session in Snipe settings.'
-      : solBalance !== null && solBalance < 0.005
-        ? `Wallet balance ${solBalance.toFixed(4)} SOL is too low — transactions will be dropped by validators. Fund the wallet first.`
-        : null
+    ? hasBurstArmed
+      ? eligibleBurstWallets.length === 0
+        ? `None of the ${totalBurstWallets} armed wallets have ≥ ${dustThreshold.toFixed(3)} SOL. Fund at least one wallet before a CA arrives.`
+        : eligibleBurstWallets.length < totalBurstWallets
+          ? `${eligibleBurstWallets.length}/${totalBurstWallets} wallets ready — low-balance wallets will buy what they can afford (capped at ${buyAmountSol.toFixed(3)} SOL).`
+          : null
+      : !session.active
+        ? 'No wallets armed — toggle ON in Settings or fund a wallet.'
+        : solBalance !== null && solBalance < singleWalletMinSol
+          ? `Primary wallet has ${solBalance.toFixed(4)} SOL — need at least ${singleWalletMinSol.toFixed(3)} SOL for buy + fees.`
+          : null
     : null;
   const [groups, setGroups]       = useState<TgGroup[]>([]);
   const [groupsLoading, setGroupsLoading] = useState(false);

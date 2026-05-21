@@ -191,8 +191,11 @@ export class ExecutionService {
     const mode: TradeMode = user.paperMode ? 'PAPER' : 'LIVE';
 
     // LiveTradeGuard — per-user rate limit + first-live-trade cap.
+    // Side passed in so sells skip the rate-limit bucket (exits must always
+    // be available, even when the user is firing them in quick succession).
     if (mode === 'LIVE') {
-      await this.liveGuard.checkLiveSwap({ userId: input.userId, notionalUsd: input.notionalUsd });
+      const side = inferSwapSide(input.tokenIn, input.tokenOut);
+      await this.liveGuard.checkLiveSwap({ userId: input.userId, notionalUsd: input.notionalUsd, side });
     }
 
     let txHash: string | null = null;

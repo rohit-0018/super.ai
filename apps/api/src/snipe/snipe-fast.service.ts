@@ -256,20 +256,24 @@ export class SnipeFastService {
         };
       }
 
-      const feeEstimate = await this.helius.getPriorityFeeEstimate();
-      const maxPriorityLamports = this.helius.computeMaxLamports(feeEstimate);
-
-      const levels = this.buildSlippageLevels(maxSlippageBps);
-      const bundles = await this.buildBundlesParallel(
-        jupBase, mint, buyAmountRaw, session.address, session.keypair,
-        levels, traceId, maxPriorityLamports,
+      // ⚡ MINIMUM WORK PATH — every line here costs landing latency.
+      //
+      // We used to build 4 pre-signed bundles at different slippage levels and
+      // wait for the *slowest* to resolve before broadcasting (200–600ms).
+      // The monitorWithRetry loop **does not actually use** those pre-built
+      // bundles — it always re-quotes fresh on a slippage failure (stale
+      // price anchors miss). So we build ONE bundle at the user's max
+      // slippage (highest fill probability) and broadcast.
+      // Synchronous accessor — uses the 2s cache primed at arm time, never
+      // awaits. Worst case: returns the fallback constant on first burst
+      // before the cache is warm (which means arming itself failed to prime).
+      const maxPriorityLamports = this.helius.computeMaxLamports(
+        this.helius.getPriorityFeeSync(),
       );
-      if (bundles.length === 0) throw new Error('All parallel quote attempts failed');
 
-      const primary = bundles[0];
-      const durationPrep = Date.now() - t0;
-      this.logger.log(
-        `[trc=${traceId}] ⚡ BURST wallet=${session.address.slice(0,6)} ${bundles.length} bundles ready (${durationPrep}ms) — broadcasting`,
+      const primary = await this.buildBundle(
+        jupBase, mint, buyAmountRaw, session.address, session.keypair,
+        maxSlippageBps, maxPriorityLamports,
       );
 
       const sig0 = await session.sendConnection.sendRawTransaction(primary.rawTx, {
@@ -277,24 +281,25 @@ export class SnipeFastService {
         maxRetries: 0,
       });
       const durationMs = Date.now() - t0;
-      this.logger.log(`[trc=${traceId}] ⚡ burst broadcast wallet=${session.address.slice(0,6)} sig=${sig0} duration=${durationMs}ms`);
 
-      await this.recordTrade(cfg, mint, primary.outAmount, sig0, 'burst', `burst snipe wallet=${session.address}`, 'broadcast');
-
-      this.attachBuySnapshot(userId, mint, sig0, traceId).catch(() => {});
-
-      this.ws?.emitToUser(userId, 'burst_snipe_progress', {
-        walletId: session.walletId, address: session.address,
-        mint, txHash: sig0, durationMs,
-        amountRaw: buyAmountRaw, outAmount: primary.outAmount,
-        status: 'broadcast', ts: Date.now(),
+      // Everything after this point is post-broadcast — deferred via
+      // setImmediate so we return to the caller (and the retry monitor
+      // starts polling) without paying the cost of logging / DB / WS.
+      setImmediate(() => {
+        this.logger.log(`[trc=${traceId}] ⚡ burst wallet=${session.address.slice(0,6)} sig=${sig0} ${durationMs}ms`);
+        this.recordTrade(cfg, mint, primary.outAmount, sig0, 'burst', `burst snipe wallet=${session.address}`, 'broadcast').catch(() => {});
+        this.ws?.emitToUser(userId, 'burst_snipe_progress', {
+          walletId: session.walletId, address: session.address,
+          mint, txHash: sig0, durationMs,
+          amountRaw: buyAmountRaw, outAmount: primary.outAmount,
+          status: 'broadcast', ts: Date.now(),
+        });
+        // Background confirmation + retry (groupId='burst' = skip intel-track).
+        this.monitorWithRetry(
+          session.connection, session.sendConnection, cfg, mint, 'burst',
+          `burst snipe wallet=${session.address}`, [], sig0, jupBase, traceId, t0,
+        );
       });
-
-      // Background confirmation + retry (reuses the same loop as the tg path).
-      this.monitorWithRetry(
-        session.connection, session.sendConnection, cfg, mint, 'burst',
-        `burst snipe wallet=${session.address}`, bundles, sig0, jupBase, traceId, t0,
-      );
 
       return {
         txHash: sig0, outAmount: primary.outAmount, traceId, durationMs,
@@ -471,14 +476,10 @@ export class SnipeFastService {
           });
           this.ws?.emitToUser(config.userId, 'snipe_update', { txHash: currentSig, status: 'confirmed' });
           // Track-record capture — fire-and-forget direct call into IntelTrackModule.
-          // Earlier we routed this through TokenAnalysisModule.analyzeAddress(),
-          // but that closes a circular import (Snipe → TokenAnalysis → TokenIntel
-          // → Agents → ... → Snipe) that even forwardRef can't break. Going
-          // straight to IntelSnapshotService.captureMinimal keeps the dep graph
-          // a DAG and still produces a usable snapshot row — the rescan worker
-          // will tick it forward and the marketing math (peak delta, sparkline)
-          // works off the captured priceUsd anchor.
-          if (this.intelTrack) {
+          // Skipped for burst snipes: the snipe page is the primary surface
+          // and doesn't need the IntelTrack pulse for these. Saves a token
+          // metadata fetch + a Prisma write on the post-confirm path.
+          if (this.intelTrack && groupId !== 'burst') {
             (async () => {
               try {
                 const trade = await this.prisma.snipeTrade.findFirst({

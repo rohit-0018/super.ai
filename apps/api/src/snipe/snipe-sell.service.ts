@@ -258,26 +258,14 @@ export class SnipeSellService implements OnModuleInit, OnModuleDestroy {
     this.execLock.add(lockKey);
 
     try {
-      // Atomic DB claim: only succeeds if no active sell exists
-      const claimed = await this.prisma.snipeTrade.updateMany({
-        where: {
-          id: trade.id,
-          userId: trade.userId,
-          OR: [{ sellStatus: null }, { sellStatus: 'failed' }],
-        },
-        data: { sellStatus: 'pending', sellReason: reason },
-      });
-
-      if (claimed.count === 0) {
-        this.logger.debug(`sell already claimed for trade=${trade.id}`);
-        return { txHash: null };
-      }
-
       const hot = this.session.getSession(trade.userId);
       const jupBase = getJupiterApiBase();
-
       if (!hot || jupBase === 'MOCK') {
-        await this.releaseClaim(trade.id, 'skip');
+        // No session / mock mode — claim+release in one go so DB stays consistent.
+        await this.prisma.snipeTrade.updateMany({
+          where: { id: trade.id, userId: trade.userId, OR: [{ sellStatus: null }, { sellStatus: 'failed' }] },
+          data: { sellStatus: 'skip', sellReason: reason },
+        }).catch(() => {});
         return { txHash: null };
       }
 
@@ -286,57 +274,75 @@ export class SnipeSellService implements OnModuleInit, OnModuleDestroy {
 
       const t0 = Date.now();
 
-      // ── Step 1: Get Helius priority fee estimate (cached 2 s, ~0 ms if warm) ──
-      const feeEstimate    = await this.helius.getPriorityFeeEstimate([SOL_MINT, trade.mint]);
-      const maxLamports    = this.helius.computeMaxLamports(feeEstimate);
+      // ⚡ MINIMUM WORK PATH — mirrors the buy hot path. Every line costs landing latency.
+      //
+      // 1) Sync priority-fee read (cached 2s, pre-warmed at arm time).
+      // 2) Build ONE bundle at 5000bps (highest slippage = highest fill probability).
+      //    monitorSell does fresh re-quotes on retry, so the pre-built array isn't reused.
+      // 3) DB atomic claim runs in PARALLEL with the bundle build — saves the Redis/PG
+      //    round-trip from the critical path. If claim loses (another sell already claimed),
+      //    we abandon the built bundle without broadcasting.
+      const maxLamports = this.helius.computeMaxLamports(this.helius.getPriorityFeeSync());
 
-      // ── Step 2: Build all slippage bundles in parallel with the actual fee ──
-      const builtBundles = await this.buildBundlesParallel(
-        jupBase, trade, hot.address, hot.keypair, maxLamports,
-      );
+      const [claimResult, primaryBundle] = await Promise.all([
+        this.prisma.snipeTrade.updateMany({
+          where: {
+            id: trade.id,
+            userId: trade.userId,
+            OR: [{ sellStatus: null }, { sellStatus: 'failed' }],
+          },
+          data: { sellStatus: 'pending', sellReason: reason },
+        }),
+        this.buildBundle(jupBase, trade.mint, trade.outAmount, hot.address, hot.keypair, 5_000, maxLamports)
+          .catch((e) => { this.logger.warn(`[sell] build failed trade=${trade.id}: ${e?.message}`); return null; }),
+      ]);
 
-      if (builtBundles.length === 0) {
+      if (claimResult.count === 0) {
+        this.logger.debug(`sell already claimed for trade=${trade.id}`);
+        return { txHash: null };
+      }
+      if (!primaryBundle) {
         await this.releaseClaim(trade.id, 'failed');
         this.ws?.emitToUser(trade.userId, 'snipe_sell_update', {
           tradeId: trade.id, mint: trade.mint, sellStatus: 'failed',
-          reason, error: 'All Jupiter quote attempts failed — token may be illiquid',
+          reason, error: 'Jupiter quote failed — token may be illiquid',
         });
         return { txHash: null };
       }
 
-      // ── Broadcast level 0 via staked Helius sendConnection ──
-      const primary = builtBundles[0];
-      const sig = await hot.sendConnection.sendRawTransaction(primary.rawTx, {
+      // ── Broadcast via staked Helius sendConnection ──
+      const sig = await hot.sendConnection.sendRawTransaction(primaryBundle.rawTx, {
         skipPreflight: true,
-        maxRetries: 0, // we control retries ourselves
+        maxRetries: 0,
       });
-
       const broadcastMs = Date.now() - t0;
-      this.logger.log(
-        `[sell] broadcast trade=${trade.id} mint=${trade.mint} ` +
-        `reason=${reason} sig=${sig.slice(0, 16)}… slippage=${primary.slippage} ${broadcastMs}ms`,
-      );
 
-      await this.prisma.snipeTrade.update({
-        where: { id: trade.id },
-        data: {
-          sellTxHash: sig,
+      // Everything after is post-broadcast — deferred via setImmediate so we
+      // return to the caller without paying for DB / WS / monitor kickoff.
+      setImmediate(() => {
+        this.logger.log(
+          `[sell] broadcast trade=${trade.id} mint=${trade.mint.slice(0,6)} ` +
+          `reason=${reason} sig=${sig.slice(0, 16)}… slippage=${primaryBundle.slippage} ${broadcastMs}ms`,
+        );
+        this.prisma.snipeTrade.update({
+          where: { id: trade.id },
+          data: {
+            sellTxHash: sig,
+            sellStatus: 'broadcast',
+            sellReason: reason,
+            sellAttempts: { increment: 1 },
+          },
+        }).catch(() => {});
+        this.ws?.emitToUser(trade.userId, 'snipe_sold', {
+          tradeId: trade.id, mint: trade.mint,
+          txHash: sig, reason,
+          durationMs: broadcastMs,
           sellStatus: 'broadcast',
-          sellReason: reason,
-          sellAttempts: { increment: 1 },
-        },
+          ts: Date.now(),
+        });
+        // Background: confirm + slippage retry (fresh re-quotes inside monitorSell).
+        this.monitorSell(hot.connection, hot.sendConnection, trade, [primaryBundle], sig, jupBase, reason, t0);
       });
-
-      this.ws?.emitToUser(trade.userId, 'snipe_sold', {
-        tradeId: trade.id, mint: trade.mint,
-        txHash: sig, reason,
-        durationMs: broadcastMs,
-        sellStatus: 'broadcast',
-        ts: Date.now(),
-      });
-
-      // Background: confirm + slippage retry (fire-and-forget)
-      this.monitorSell(hot.connection, hot.sendConnection, trade, builtBundles, sig, jupBase, reason, t0);
 
       return { txHash: sig };
 

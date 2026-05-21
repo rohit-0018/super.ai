@@ -132,7 +132,7 @@ export class SnipeGroupService {
     this.logger.log(
       `TG → burst: user=${config.userId} mint=${mint.slice(0, 8)}… wallets=${walletCount} group=${groupId}`,
     );
-    let summary: { fired: number; results: { txHash: string | null; address: string }[]; durationMs: number };
+    let summary: { fired: number; skipped: number; results: { txHash: string | null; address: string }[]; durationMs: number };
     try {
       const r = await this.parallelSnipe.burst({
         userId: config.userId,
@@ -141,7 +141,7 @@ export class SnipeGroupService {
         maxSlippageBps: config.maxSlippageBps,
         pauseWorkers: true,
       });
-      summary = { fired: r.fired, results: r.results, durationMs: r.durationMs };
+      summary = { fired: r.fired, skipped: r.skipped, results: r.results, durationMs: r.durationMs };
     } catch (e: any) {
       this.logger.error(`TG burst failed user=${config.userId}: ${e?.message}`);
       return;
@@ -154,15 +154,19 @@ export class SnipeGroupService {
     const total = summary.results.length;
     const perWalletSol = (Number(config.buyAmountRaw) / 1e9).toFixed(4);
     const firstHash = summary.results.find((r) => r.txHash)?.txHash ?? null;
+    const skipLine = summary.skipped > 0 ? `Skipped: ${summary.skipped} (low balance)` : '';
     const msgText = summary.fired > 0
       ? [
           `⚡ *Burst sniped!*`,
           `Mint: \`${mint}\``,
-          `Fired: *${summary.fired}/${total}* wallets · ${perWalletSol} SOL each`,
+          `Fired: *${summary.fired}/${total - summary.skipped}* wallets · ${perWalletSol} SOL each`,
+          skipLine,
           `Latency: ${summary.durationMs}ms`,
           firstHash ? `[First tx](https://solscan.io/tx/${firstHash})` : '',
         ].filter(Boolean).join('\n')
-      : `❌ Burst snipe failed across all ${total} wallets for \`${mint.slice(0, 12)}…\``;
+      : summary.skipped === total
+        ? `❌ All ${total} wallets underfunded for \`${mint.slice(0, 12)}…\` — fund a wallet to enable sniping.`
+        : `❌ Burst snipe failed across all ${total - summary.skipped} funded wallets for \`${mint.slice(0, 12)}…\``;
 
     await this.tgSendQueue.add('send', {
       chatId: tgChatId,

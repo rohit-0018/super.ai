@@ -8,7 +8,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { KmsService } from './kms.service';
 import { LiveTradeGuardService } from '../common/live-trade-guard.service';
 
-const MAX_WALLETS_PER_USER = 5;
+// Hard ceiling exists only as a sanity guard against runaway scripts; can be
+// raised via the WALLET_CAP env var. Sniping is multi-wallet so users
+// stacking 20+ wallets is a normal flow.
+const MAX_WALLETS_PER_USER = Number(process.env.WALLET_CAP ?? '100');
 
 export interface HoldingRow {
   mint: string;
