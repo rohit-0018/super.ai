@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { makeQueue, QUEUES } from '../agents/queues';
 import { SnipeSessionService, CachedSnipeConfig } from './snipe-session.service';
 import { SnipeFastService } from './snipe-fast.service';
+import { ParallelSnipeService } from './parallel-snipe.service';
 import { extractAddresses, matchesPattern } from './address-extractor';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 
@@ -26,6 +27,7 @@ export class SnipeGroupService {
     private prisma: PrismaService,
     private snipeSession: SnipeSessionService,
     private snipeFast: SnipeFastService,
+    private parallelSnipe: ParallelSnipeService,
     @Optional() private ws: RealtimeGateway,
   ) {}
 
@@ -59,7 +61,10 @@ export class SnipeGroupService {
       const addresses = extractAddresses(text, config.chain);
       if (addresses.length === 0) continue;
 
-      if (!this.snipeSession.hasActiveSession(config.userId)) {
+      // Either a primary hot session OR an armed burst session set is enough
+      // to fire. Burst mode takes precedence when armed — see snipeOne.
+      const hasBurst = this.snipeSession.getBurstSessions(config.userId).length > 0;
+      if (!hasBurst && !this.snipeSession.hasActiveSession(config.userId)) {
         this.logger.debug(`No hot session user=${config.userId} — skipping`);
         this.ws?.emitToUser(config.userId, 'snipe_skipped', { reason: 'no_session', groupId: normId, ts: Date.now() });
         continue;
@@ -80,6 +85,15 @@ export class SnipeGroupService {
     groupId: string,
     text: string,
   ): Promise<void> {
+    // When burst sessions are armed for this user, the TG-received address
+    // gets fan-out-fired across every armed Solana wallet instead of the
+    // single configured one. Amount + slippage come from SnipeConfig so the
+    // existing /snipe tuning still applies per-wallet.
+    const burstSessions = this.snipeSession.getBurstSessions(config.userId);
+    if (burstSessions.length > 0) {
+      return this.snipeBurst(config, mint, groupId, burstSessions.length);
+    }
+
     const result = await this.snipeFast.execute(config, mint, groupId, text);
     if (!config.notifyOnBuy) return;
 
@@ -96,6 +110,59 @@ export class SnipeGroupService {
           solscanUrl ? `[View tx](${solscanUrl})` : `Sig: \`${result.txHash?.slice(0, 16)}...\``,
         ].join('\n')
       : `❌ Snipe failed for \`${mint.slice(0, 12)}...\` (${result.durationMs}ms)`;
+
+    await this.tgSendQueue.add('send', {
+      chatId: tgChatId,
+      text: msgText,
+      opts: { parseMode: 'Markdown', disableWebPagePreview: true },
+    }, { attempts: 2, removeOnComplete: 50, removeOnFail: 50 });
+  }
+
+  /**
+   * Burst-mode TG snipe: fan out across every armed wallet for this user.
+   * Emits a single rolled-up TG notification (not one per wallet) so the
+   * user sees "5/5 fired" rather than five separate "Sniped!" messages.
+   */
+  private async snipeBurst(
+    config: CachedSnipeConfig,
+    mint: string,
+    groupId: string,
+    walletCount: number,
+  ): Promise<void> {
+    this.logger.log(
+      `TG → burst: user=${config.userId} mint=${mint.slice(0, 8)}… wallets=${walletCount} group=${groupId}`,
+    );
+    let summary: { fired: number; results: { txHash: string | null; address: string }[]; durationMs: number };
+    try {
+      const r = await this.parallelSnipe.burst({
+        userId: config.userId,
+        mint,
+        buyAmountRaw: config.buyAmountRaw,
+        maxSlippageBps: config.maxSlippageBps,
+        pauseWorkers: true,
+      });
+      summary = { fired: r.fired, results: r.results, durationMs: r.durationMs };
+    } catch (e: any) {
+      this.logger.error(`TG burst failed user=${config.userId}: ${e?.message}`);
+      return;
+    }
+
+    if (!config.notifyOnBuy) return;
+    const tgChatId = await this.resolveTgChatId(config.userId);
+    if (!tgChatId) return;
+
+    const total = summary.results.length;
+    const perWalletSol = (Number(config.buyAmountRaw) / 1e9).toFixed(4);
+    const firstHash = summary.results.find((r) => r.txHash)?.txHash ?? null;
+    const msgText = summary.fired > 0
+      ? [
+          `⚡ *Burst sniped!*`,
+          `Mint: \`${mint}\``,
+          `Fired: *${summary.fired}/${total}* wallets · ${perWalletSol} SOL each`,
+          `Latency: ${summary.durationMs}ms`,
+          firstHash ? `[First tx](https://solscan.io/tx/${firstHash})` : '',
+        ].filter(Boolean).join('\n')
+      : `❌ Burst snipe failed across all ${total} wallets for \`${mint.slice(0, 12)}…\``;
 
     await this.tgSendQueue.add('send', {
       chatId: tgChatId,

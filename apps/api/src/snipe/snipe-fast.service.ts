@@ -3,7 +3,7 @@ import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { getJupiterApiBase } from '../common/network-config';
-import { SnipeSessionService, CachedSnipeConfig } from './snipe-session.service';
+import { SnipeSessionService, CachedSnipeConfig, HotSession } from './snipe-session.service';
 import { HeliusService } from './helius.service';
 import { newTraceId } from '../common/trace-context';
 import { TokenMetadataService } from '../market-data/token-metadata.service';
@@ -190,6 +190,132 @@ export class SnipeFastService {
 
     } finally {
       // Release lock so later messages for the same mint can proceed after confirmation
+      this.execLock.delete(lockKey);
+    }
+  }
+
+  /**
+   * Burst-mode snipe with an explicit session passed in (one wallet's session).
+   *
+   * Differs from execute() in two ways:
+   *   1. No userId-only dedupe — burst mode WANTS every wallet to fire on the
+   *      same mint, so we lock per-wallet (`userId:walletId:mint`) instead.
+   *   2. No SnipeConfig lookup — caller passes amount/slippage inline.
+   *
+   * Otherwise: identical hot path (parallel bundle build → broadcast → monitor
+   * & retry). Returns immediately after broadcast.
+   */
+  async executeBurst(opts: {
+    session: HotSession;
+    userId: string;
+    chain: 'SOLANA' | 'EVM';
+    mint: string;
+    buyAmountRaw: string;
+    maxSlippageBps: number;
+  }): Promise<SnipeResult & { walletId: string; address: string }> {
+    const { session, userId, chain, mint, buyAmountRaw, maxSlippageBps } = opts;
+    const t0 = Date.now();
+    const traceId = newTraceId();
+
+    // Per-wallet lock so a single user spamming the same burst doesn't double-fire
+    // on the same wallet/mint, while still allowing N wallets to fire concurrently.
+    const lockKey = `burst:${userId}:${session.walletId}:${mint}`;
+    if (this.execLock.has(lockKey)) {
+      return {
+        txHash: null, outAmount: '0', traceId, durationMs: Date.now() - t0,
+        walletId: session.walletId, address: session.address,
+      };
+    }
+    this.execLock.add(lockKey);
+
+    // Synthetic config used by the existing helpers (recordTrade, snapshot, ws emit).
+    // groupId='burst' makes the history row easy to filter / explain in the UI.
+    const cfg: CachedSnipeConfig = {
+      id: `burst:${session.walletId}`,
+      userId,
+      enabled: true,
+      chain,
+      walletId: session.walletId,
+      buyAmountRaw,
+      maxSlippageBps,
+      groupIds: [],
+      skipSafety: true,
+      dedupeWindowMs: 0,
+      notifyOnBuy: false,
+      matchPattern: null,
+    };
+
+    try {
+      const jupBase = getJupiterApiBase();
+      if (jupBase === 'MOCK') {
+        const err = 'Jupiter unavailable in testnet mode — set NETWORK_MODE=mainnet to execute real trades';
+        await this.recordTrade(cfg, mint, '0', null, 'burst', `burst snipe wallet=${session.address}`, 'failed', err);
+        return {
+          txHash: null, outAmount: '0', traceId, durationMs: Date.now() - t0,
+          walletId: session.walletId, address: session.address,
+        };
+      }
+
+      const feeEstimate = await this.helius.getPriorityFeeEstimate();
+      const maxPriorityLamports = this.helius.computeMaxLamports(feeEstimate);
+
+      const levels = this.buildSlippageLevels(maxSlippageBps);
+      const bundles = await this.buildBundlesParallel(
+        jupBase, mint, buyAmountRaw, session.address, session.keypair,
+        levels, traceId, maxPriorityLamports,
+      );
+      if (bundles.length === 0) throw new Error('All parallel quote attempts failed');
+
+      const primary = bundles[0];
+      const durationPrep = Date.now() - t0;
+      this.logger.log(
+        `[trc=${traceId}] ⚡ BURST wallet=${session.address.slice(0,6)} ${bundles.length} bundles ready (${durationPrep}ms) — broadcasting`,
+      );
+
+      const sig0 = await session.sendConnection.sendRawTransaction(primary.rawTx, {
+        skipPreflight: true,
+        maxRetries: 0,
+      });
+      const durationMs = Date.now() - t0;
+      this.logger.log(`[trc=${traceId}] ⚡ burst broadcast wallet=${session.address.slice(0,6)} sig=${sig0} duration=${durationMs}ms`);
+
+      await this.recordTrade(cfg, mint, primary.outAmount, sig0, 'burst', `burst snipe wallet=${session.address}`, 'broadcast');
+
+      this.attachBuySnapshot(userId, mint, sig0, traceId).catch(() => {});
+
+      this.ws?.emitToUser(userId, 'burst_snipe_progress', {
+        walletId: session.walletId, address: session.address,
+        mint, txHash: sig0, durationMs,
+        amountRaw: buyAmountRaw, outAmount: primary.outAmount,
+        status: 'broadcast', ts: Date.now(),
+      });
+
+      // Background confirmation + retry (reuses the same loop as the tg path).
+      this.monitorWithRetry(
+        session.connection, session.sendConnection, cfg, mint, 'burst',
+        `burst snipe wallet=${session.address}`, bundles, sig0, jupBase, traceId, t0,
+      );
+
+      return {
+        txHash: sig0, outAmount: primary.outAmount, traceId, durationMs,
+        walletId: session.walletId, address: session.address,
+      };
+    } catch (err: any) {
+      const durationMs = Date.now() - t0;
+      const errMsg: string = err?.message ?? 'Unknown error';
+      this.logger.error(`[trc=${traceId}] burst snipe failed wallet=${session.address.slice(0,6)} mint=${mint} err=${errMsg}`);
+      this.recordTrade(cfg, mint, '0', null, 'burst', `burst snipe wallet=${session.address}`, 'failed', errMsg).catch(() => {});
+      this.ws?.emitToUser(userId, 'burst_snipe_progress', {
+        walletId: session.walletId, address: session.address,
+        mint, txHash: null, durationMs,
+        amountRaw: buyAmountRaw, outAmount: '0',
+        status: 'failed', error: errMsg.slice(0, 200), ts: Date.now(),
+      });
+      return {
+        txHash: null, outAmount: '0', traceId, durationMs,
+        walletId: session.walletId, address: session.address,
+      };
+    } finally {
       this.execLock.delete(lockKey);
     }
   }

@@ -47,8 +47,16 @@ export interface CachedSnipeConfig {
 export class SnipeSessionService implements OnModuleDestroy {
   private readonly logger = new Logger(SnipeSessionService.name);
 
-  // userId → HotSession (keypair in memory)
+  // userId → HotSession (keypair in memory). This is the *primary* session
+  // used by the Telegram-driven sniper. There is one primary per user, tied
+  // to SnipeConfig.walletId.
   private sessions = new Map<string, HotSession>();
+
+  // userId → walletId → HotSession. Burst mode (parallel-wallet sniping)
+  // keeps a hot session per Solana wallet so we can sign N transactions
+  // simultaneously without paying KMS round-trips per fire. Separate from
+  // `sessions` so the existing tg-snipe code path is untouched.
+  private burstSessions = new Map<string, Map<string, HotSession>>();
 
   // groupId → { configs, cachedAt }
   private groupCache = new Map<string, { configs: CachedSnipeConfig[]; cachedAt: number }>();
@@ -75,6 +83,10 @@ export class SnipeSessionService implements OnModuleDestroy {
   onModuleDestroy() {
     clearInterval(this.cleanupInterval);
     this.sessions.clear();
+    for (const map of this.burstSessions.values()) {
+      for (const s of map.values()) s.keypair.secretKey.fill(0);
+    }
+    this.burstSessions.clear();
   }
 
   async startSession(userId: string, walletId: string): Promise<{ address: string; expiresAt: number; balanceLamports: number }> {
@@ -131,6 +143,96 @@ export class SnipeSessionService implements OnModuleDestroy {
       data: { sessionExpiresAt: null },
     }).catch(() => {});
     this.logger.log(`Hot session stopped: user=${userId}`);
+  }
+
+  // ── Burst (multi-wallet) sessions ────────────────────────────────────────
+
+  /**
+   * Decrypt every SOLANA wallet for the user into a HotSession. Skips wallets
+   * that already have a live burst session. Returns the per-wallet summary
+   * the UI uses to render the burst panel. Idempotent.
+   */
+  async startBurstSessions(userId: string): Promise<Array<{
+    walletId: string; address: string; label: string | null;
+    isPrimary: boolean; balanceLamports: number; expiresAt: number;
+  }>> {
+    const wallets = await this.prisma.wallet.findMany({
+      where: { userId, chain: 'SOLANA' },
+      select: { id: true, address: true, label: true, isPrimary: true },
+      orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+    });
+    if (wallets.length === 0) throw new Error('No Solana wallets found for this user');
+
+    const expiresAt = Date.now() + 3_600_000; // 1 h
+    let map = this.burstSessions.get(userId);
+    if (!map) { map = new Map(); this.burstSessions.set(userId, map); }
+
+    const readConn = this.helius.makeReadConnection();
+    const sendConn = this.helius.makeSendConnection();
+
+    const out: Array<{ walletId: string; address: string; label: string | null; isPrimary: boolean; balanceLamports: number; expiresAt: number }> = [];
+
+    for (const w of wallets) {
+      let session = map.get(w.id);
+      if (!session || session.expiresAt < Date.now()) {
+        const keypair = await this.wallets.withSigningKey(userId, w.id, async (key) => {
+          const bytes = new Uint8Array([...key]);
+          return Keypair.fromSecretKey(bytes);
+        });
+        session = {
+          keypair, connection: readConn, sendConnection: sendConn,
+          walletId: w.id, address: w.address, expiresAt,
+        };
+        map.set(w.id, session);
+      }
+      let balanceLamports = 0;
+      try { balanceLamports = await session.connection.getBalance(session.keypair.publicKey); } catch {}
+      session.balanceLamports = balanceLamports;
+      out.push({
+        walletId: w.id, address: w.address, label: w.label,
+        isPrimary: w.isPrimary, balanceLamports, expiresAt: session.expiresAt,
+      });
+    }
+    this.logger.log(`Burst sessions started: user=${userId} wallets=${out.length}`);
+    return out;
+  }
+
+  stopBurstSessions(userId: string) {
+    const map = this.burstSessions.get(userId);
+    if (!map) return;
+    for (const s of map.values()) s.keypair.secretKey.fill(0);
+    this.burstSessions.delete(userId);
+    this.logger.log(`Burst sessions stopped: user=${userId}`);
+  }
+
+  /** Returns all live burst sessions for a user (filters expired). */
+  getBurstSessions(userId: string): HotSession[] {
+    const map = this.burstSessions.get(userId);
+    if (!map) return [];
+    const now = Date.now();
+    const live: HotSession[] = [];
+    for (const [walletId, s] of map) {
+      if (s.expiresAt < now) {
+        s.keypair.secretKey.fill(0);
+        map.delete(walletId);
+        continue;
+      }
+      live.push(s);
+    }
+    return live;
+  }
+
+  burstStatus(userId: string) {
+    const sessions = this.getBurstSessions(userId);
+    return {
+      active: sessions.length > 0,
+      count: sessions.length,
+      wallets: sessions.map((s) => ({
+        walletId: s.walletId, address: s.address,
+        balanceLamports: s.balanceLamports ?? null,
+        expiresAt: new Date(s.expiresAt),
+      })),
+    };
   }
 
   getSession(userId: string): HotSession | null {
@@ -214,6 +316,15 @@ export class SnipeSessionService implements OnModuleDestroy {
         this.sessions.delete(userId);
         this.logger.debug(`Auto-expired hot session: user=${userId}`);
       }
+    }
+    for (const [userId, map] of this.burstSessions) {
+      for (const [walletId, s] of map) {
+        if (s.expiresAt < now) {
+          s.keypair.secretKey.fill(0);
+          map.delete(walletId);
+        }
+      }
+      if (map.size === 0) this.burstSessions.delete(userId);
     }
     // Prune dedupe entries older than 5 min
     for (const [key, ts] of this.seen) {

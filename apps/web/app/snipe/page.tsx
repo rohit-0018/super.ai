@@ -113,7 +113,13 @@ interface SnipeTrade {
   createdAt: string;
 }
 
-interface Wallet { id: string; chain: string; address: string; label: string | null }
+interface Wallet { id: string; chain: string; address: string; label: string | null; isPrimary?: boolean }
+
+interface BurstStatus {
+  active: boolean;
+  count: number;
+  wallets: Array<{ walletId: string; address: string; balanceLamports: number | null; expiresAt: string }>;
+}
 
 /* ─────────────────────────────────────────────────────────────
    Page
@@ -132,6 +138,7 @@ export default function SnipePage() {
   const { data: tgRaw,    loading: tgLoading }        = useApi<TgStatus>('/snipe/tg/status');
   const { data: history, loading: histLoading }       = useApi<SnipeTrade[]>('/snipe/history?limit=50');
   const { data: wallets }                             = useApi<Wallet[]>('/wallets');
+  const { data: burstStatus }                         = useApi<BurstStatus>('/snipe/burst', { pollMs: 15_000 });
 
   const [tgStatus, setTgStatus] = useState<TgStatus | null>(null);
   useEffect(() => { if (tgRaw !== undefined) setTgStatus(tgRaw ?? null); }, [tgRaw]);
@@ -154,18 +161,28 @@ export default function SnipePage() {
   const bannerTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoStarted   = useRef(false);
 
-  // ── Auto-start session silently on page load ─────────────────────────
+  // ── Auto-start sessions silently on page load ────────────────────────
+  // Sniping is now multi-wallet by default — every Solana wallet gets armed
+  // when snipe is enabled, so a CA picked up via Telegram fires across all
+  // of them. The single-wallet `session/start` is kept as a fallback for
+  // legacy SnipeConfig.walletId rows.
   useEffect(() => {
     if (autoStarted.current) return;
     if (!configData) return;
     const cfg = configData.config;
-    if (!cfg?.walletId) return;
-    if (configData.session.active) { autoStarted.current = true; return; }
+    if (!cfg?.enabled) return;
     autoStarted.current = true;
-    // Fire-and-forget — if it fails (no KMS key, etc.) the user still sees the UI
-    api.post('/snipe/session/start', { walletId: cfg.walletId })
-      .then(() => invalidate('/snipe/config'))
-      .catch(() => {}); // silent — they can still use the page
+    Promise.all([
+      // Primary tg-snipe session (back-compat — burst takes over when armed).
+      cfg.walletId && !configData.session.active
+        ? api.post('/snipe/session/start', { walletId: cfg.walletId }).catch(() => {})
+        : Promise.resolve(),
+      // Arm every Solana wallet for burst mode.
+      api.post('/snipe/burst/start', {}).catch(() => {}),
+    ]).then(() => {
+      invalidate('/snipe/config');
+      invalidate('/snipe/burst');
+    });
   }, [configData]);
 
   useRealtime('snipe_triggered', useCallback((evt: any) => {
@@ -238,12 +255,17 @@ export default function SnipePage() {
   const killSession = useCallback(async () => {
     setKilling(true);
     try {
-      await api.delete('/snipe/session');
+      // Tear down both the primary session AND the multi-wallet burst arm.
+      await Promise.all([
+        api.delete('/snipe/session').catch(() => {}),
+        api.delete('/snipe/burst').catch(() => {}),
+      ]);
       // Also disable snipe so it doesn't auto-restart next load
       const cfg = configData?.config;
       if (cfg) await api.put('/snipe/config', { ...toSnipeDtoSafe(cfg), enabled: false });
       autoStarted.current = false; // allow re-start if user re-enables
       invalidate('/snipe/config');
+      invalidate('/snipe/burst');
     } catch { /* swallow */ } finally { setKilling(false); }
   }, [configData]);
 
@@ -333,7 +355,7 @@ export default function SnipePage() {
         {/* Col 1: setup */}
         <div className="snipe-col-setup" style={!isColVisible('setup') ? { display: 'none' } : expandedCol === 'setup' ? { gridArea: 'active', width: '100%' } : undefined}>
           <TgPanel status={tgStatus} headerRight={mkExpandBtn('setup')} />
-          <ConfigPanel config={config} wallets={wallets ?? []} />
+          <ConfigPanel config={config} wallets={wallets ?? []} burstStatus={burstStatus ?? null} />
         </div>
         {/* Col 2: inbox */}
         <div className="snipe-col-inbox" style={!isColVisible('inbox') ? { display: 'none' } : expandedCol === 'inbox' ? { gridArea: 'active', width: '100%' } : undefined}>
@@ -1127,7 +1149,7 @@ const SELL_STRATEGIES = [
 /** Strip Prisma-only fields before sending to the API (forbidNonWhitelisted rejects them). */
 function toSnipeDto(c: SnipeConfig) { return toSnipeDtoSafe(c); }
 
-function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets: Wallet[] }) {
+function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | null; wallets: Wallet[]; burstStatus: BurstStatus | null }) {
   const [form, setForm] = useState<SnipeConfig>({
     enabled: false, chain: 'SOLANA', walletId: '', buyAmountRaw: '100000000',
     maxSlippageBps: 5000, groupIds: [], skipSafety: true, dedupeWindowMs: 30000,
@@ -1203,6 +1225,41 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
 
   const filteredWallets = wallets.filter((w) => w.chain === form.chain);
 
+  // Auto-pin a wallet so the SnipeConfig row always validates (DB requires
+  // walletId). Burst mode still fans out across every wallet — this is just
+  // the legacy back-compat field.
+  useEffect(() => {
+    if (form.walletId || filteredWallets.length === 0) return;
+    const primary = filteredWallets.find((w) => w.isPrimary) ?? filteredWallets[0];
+    if (primary) {
+      userModified.current = true;
+      setForm((f) => ({ ...f, walletId: primary.id }));
+    }
+  }, [filteredWallets, form.walletId]);
+
+  const armedSet = useMemo(
+    () => new Set((burstStatus?.wallets ?? []).map((w) => w.walletId)),
+    [burstStatus],
+  );
+  const armedBalances = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const w of burstStatus?.wallets ?? []) m.set(w.walletId, w.balanceLamports);
+    return m;
+  }, [burstStatus]);
+
+  const armAll = async () => {
+    try {
+      await api.post('/snipe/burst/start', {});
+      invalidate('/snipe/burst');
+    } catch { /* surfaced via status poll */ }
+  };
+  const disarmAll = async () => {
+    try {
+      await api.delete('/snipe/burst');
+      invalidate('/snipe/burst');
+    } catch {}
+  };
+
   const inputUnit = (unit: string) => (
     <span style={{
       position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
@@ -1247,17 +1304,81 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
       <div style={{ padding: '12px' }}>
         {tab === 'buy' && (
           <div className="space-y-3">
-            {/* Wallet */}
+            {/* Wallets — every Solana wallet snipes in parallel ─────────── */}
             <div>
-              <label className="label" style={{ fontSize: 10 }}>Signing wallet</label>
-              <select className="input" style={{ height: 30, fontSize: 12 }} value={form.walletId} onChange={(e) => set('walletId', e.target.value)}>
-                <option value="">Select wallet…</option>
-                {filteredWallets.map((w) => (
-                  <option key={w.id} value={w.id}>{w.label ?? `${w.address.slice(0, 8)}…${w.address.slice(-4)}`}</option>
-                ))}
-              </select>
-              {filteredWallets.length === 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                <label className="label" style={{ fontSize: 10, margin: 0 }}>
+                  Signing wallets {filteredWallets.length > 0 && (
+                    <span className="font-mono" style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 4 }}>
+                      ({armedSet.size}/{filteredWallets.length} armed)
+                    </span>
+                  )}
+                </label>
+                <div className="flex items-center gap-1">
+                  {burstStatus?.active ? (
+                    <button className="btn btn-ghost btn-sm" style={{ height: 20, padding: '0 8px', fontSize: 10 }} onClick={disarmAll}>
+                      Disarm
+                    </button>
+                  ) : (
+                    <button className="btn btn-sm" style={{ height: 20, padding: '0 8px', fontSize: 10 }} onClick={armAll}>
+                      Arm all
+                    </button>
+                  )}
+                </div>
+              </div>
+              {filteredWallets.length === 0 ? (
                 <p className="text-[10px] mt-1" style={{ color: 'var(--warn)' }}>No Solana wallets — create one on the Wallets page.</p>
+              ) : (
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {filteredWallets.map((w) => {
+                    const armed = armedSet.has(w.id);
+                    const bal = armedBalances.get(w.id);
+                    return (
+                      <div key={w.id} style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr auto auto',
+                        alignItems: 'center', gap: 8,
+                        padding: '6px 8px',
+                        background: 'var(--surface-2)',
+                        border: `1px solid ${armed ? 'color-mix(in srgb, var(--ok) 35%, transparent)' : 'var(--border)'}`,
+                        borderRadius: 6,
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                          {w.isPrimary && (
+                            <span className="font-mono" style={{
+                              fontSize: 8, fontWeight: 700, letterSpacing: '0.08em',
+                              color: 'var(--accent)',
+                              padding: '1px 4px', borderRadius: 3,
+                              background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                            }}>1°</span>
+                          )}
+                          <code className="font-mono" style={{ fontSize: 11, color: 'var(--text)' }}>
+                            {w.label ?? `${w.address.slice(0, 6)}…${w.address.slice(-4)}`}
+                          </code>
+                        </div>
+                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-2)', fontFeatureSettings: '"tnum" 1' }}>
+                          {bal != null ? `${(bal / 1e9).toFixed(3)} SOL` : '—'}
+                        </span>
+                        <span className="font-mono text-[9px]" style={{
+                          fontWeight: 700, letterSpacing: '0.08em',
+                          padding: '1px 5px', borderRadius: 3,
+                          color: armed ? 'var(--ok)' : 'var(--text-3)',
+                          background: armed
+                            ? 'color-mix(in srgb, var(--ok) 14%, transparent)'
+                            : 'var(--surface)',
+                          border: `1px solid ${armed ? 'color-mix(in srgb, var(--ok) 30%, transparent)' : 'var(--border)'}`,
+                        }}>
+                          {armed ? 'HOT' : 'COLD'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <p className="text-[10px] mt-1" style={{ color: burstStatus?.active ? 'var(--ok)' : 'var(--text-3)' }}>
+                    {burstStatus?.active
+                      ? `Every CA picked up via Telegram fires across all ${armedSet.size} armed wallet${armedSet.size === 1 ? '' : 's'} in parallel.`
+                      : 'Arm to enable multi-wallet sniping — every wallet trades the same buy in parallel.'}
+                  </p>
+                </div>
               )}
             </div>
 
