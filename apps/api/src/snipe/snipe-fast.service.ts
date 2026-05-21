@@ -475,6 +475,21 @@ export class SnipeFastService {
             data: { status: 'confirmed' },
           });
           this.ws?.emitToUser(config.userId, 'snipe_update', { txHash: currentSig, status: 'confirmed' });
+
+          // Phase 2.3 — Pre-warm Jupiter's sell route. We don't know the
+          // post-confirm token balance yet (DB hasn't persisted outAmount
+          // for this row), so we issue a *tiny* probe quote (1 base unit
+          // of the mint → SOL). Jupiter's router caches the path; the next
+          // real sell quote drops ~100-150ms because it doesn't have to
+          // re-discover routes. Discard the body, ignore errors.
+          // Skipped for burst rows that immediately go into mass-sell flows
+          // — but burst snipes also benefit. Always run when not testnet.
+          setTimeout(() => {
+            const probeQuote = `${jupBase}/quote?inputMint=${mint}&outputMint=${SOL_MINT}&amount=1&slippageBps=500&onlyDirectRoutes=false`;
+            fetch(probeQuote, { signal: AbortSignal.timeout(3_000) })
+              .then((r) => { try { r.body?.cancel(); } catch {} })
+              .catch(() => {});
+          }, 5_000); // 5s delay — let the pool settle post-launch / post-buy
           // Track-record capture — fire-and-forget direct call into IntelTrackModule.
           // Skipped for burst snipes: the snipe page is the primary surface
           // and doesn't need the IntelTrack pulse for these. Saves a token
@@ -671,6 +686,11 @@ export class SnipeFastService {
         status,
         attempts: 1,
         errorMsg: errorMsg ? errorMsg.slice(0, 1000) : null,
+        // Critical: stamp which wallet bought this row. Without this the
+        // auto-sell engine can't find the right session to sign exits.
+        // For burst rows, config.walletId == session.walletId (set in executeBurst).
+        // For TG single-wallet rows, config.walletId comes from SnipeConfig.
+        walletId: config.walletId,
       },
     });
   }

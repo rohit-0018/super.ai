@@ -40,6 +40,11 @@ export class UpsertSnipeConfigDto {
   @IsIn(['TRIGGER', 'INTELLIGENT'])
   sellMode!: 'TRIGGER' | 'INTELLIGENT';
 
+  /** Risk preset that drives the phase-machine playbook. */
+  @IsOptional() @IsIn(['CONSERVATIVE', 'DEFAULT', 'AGGRESSIVE'])
+  riskPreset?: 'CONSERVATIVE' | 'DEFAULT' | 'AGGRESSIVE';
+
+  // Legacy per-knob fields — accepted for back-compat, no longer drive engine.
   @IsOptional() @IsNumber()
   takeProfitPct?: number;
 

@@ -38,6 +38,7 @@ export class SnipeController {
     const sellFields = {
       sellEnabled:     dto.sellEnabled,
       sellMode:        dto.sellMode as any,
+      riskPreset:      dto.riskPreset ?? 'DEFAULT',
       takeProfitPct:   dto.takeProfitPct   ?? null,
       stopLossPct:     dto.stopLossPct     ?? null,
       trailingStopPct: dto.trailingStopPct ?? null,

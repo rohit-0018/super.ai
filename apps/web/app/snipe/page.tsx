@@ -51,6 +51,9 @@ interface SnipeConfig {
   matchPattern: string | null;
   sellEnabled: boolean;
   sellMode: 'TRIGGER' | 'INTELLIGENT';
+  /** Phase-machine playbook preset. Drives all TP/SL/trail/time math server-side. */
+  riskPreset: 'CONSERVATIVE' | 'DEFAULT' | 'AGGRESSIVE';
+  // Legacy fields — still on the row but no longer drive engine. Hidden in UI.
   takeProfitPct: number | null;
   stopLossPct: number | null;
   trailingStopPct: number | null;
@@ -378,6 +381,7 @@ function toSnipeDtoSafe(c: SnipeConfig) {
     groupIds: c.groupIds, skipSafety: c.skipSafety, dedupeWindowMs: c.dedupeWindowMs,
     notifyOnBuy: c.notifyOnBuy, matchPattern: c.matchPattern,
     sellEnabled: c.sellEnabled, sellMode: c.sellMode,
+    riskPreset: c.riskPreset ?? 'DEFAULT',
     takeProfitPct: c.takeProfitPct, stopLossPct: c.stopLossPct,
     trailingStopPct: c.trailingStopPct, exitAfterMs: c.exitAfterMs,
     partialExitPct: c.partialExitPct ?? null,
@@ -1140,6 +1144,21 @@ function TgPanel(props: { status: TgStatus | null; headerRight?: React.ReactNode
 /* ─────────────────────────────────────────────────────────────
    Config panel — Buy / Sell tabs only
 ───────────────────────────────────────────────────────────── */
+// Risk presets surfaced in the Settings UI. Backend authority lives in
+// apps/api/src/snipe/snipe-sell.service.ts (PRESETS) — keep these labels
+// in sync if numbers change there.
+const RISK_PRESETS = [
+  { key: 'CONSERVATIVE' as const, label: 'Conservative',
+    sl: '-30%', tp1: '+50%/50%', tp2: '+200%/70%',
+    desc: 'Tighter stops, earlier profit-taking. Lower variance, lower upside.' },
+  { key: 'DEFAULT' as const, label: 'Default',
+    sl: '-40%', tp1: '+100%/50%', tp2: '+300%/50%',
+    desc: 'Research-backed memecoin playbook (BullX/Trojan-aligned). Recommended.' },
+  { key: 'AGGRESSIVE' as const, label: 'Aggressive',
+    sl: '-50%', tp1: '+150%/40%', tp2: '+500%/60%',
+    desc: 'Looser stops, later profit-taking. Higher variance, higher moonbag.' },
+];
+
 const SELL_STRATEGIES = [
   { label: 'Conservative', tp: 100, sl: -25, trail: null, exit: 20 * 60_000 },
   { label: 'Aggressive',   tp: 400, sl: -30, trail: 20,   exit: null },
@@ -1154,6 +1173,7 @@ function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | n
     enabled: false, chain: 'SOLANA', walletId: '', buyAmountRaw: '100000000',
     maxSlippageBps: 5000, groupIds: [], skipSafety: true, dedupeWindowMs: 30000,
     notifyOnBuy: true, matchPattern: null, sellEnabled: true, sellMode: 'TRIGGER',
+    riskPreset: 'DEFAULT',
     takeProfitPct: null, stopLossPct: null, trailingStopPct: null, exitAfterMs: null, partialExitPct: null,
   });
   // Human-readable display values (SOL, %, seconds)
@@ -1443,47 +1463,37 @@ function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | n
           </div>
           {form.sellEnabled && (
             <>
-              {/* Mode */}
-              <div className="grid grid-cols-2 gap-1.5">
-                {(['TRIGGER', 'INTELLIGENT'] as const).map((m) => (
-                  <button key={m} onClick={() => set('sellMode', m)}
-                    style={{
-                      padding: '7px 8px', borderRadius: 7, textAlign: 'left', cursor: 'pointer',
-                      background: form.sellMode === m ? 'color-mix(in srgb, var(--accent) 14%, var(--surface-2))' : 'var(--surface-2)',
-                      border: `1px solid ${form.sellMode === m ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border)'}`,
-                    }}>
-                    <div className="font-semibold text-[11px]" style={{ color: form.sellMode === m ? 'var(--accent)' : 'var(--text)' }}>{m}</div>
-                    <div className="text-[10px]" style={{ color: 'var(--text-3)', marginTop: 1 }}>
-                      {m === 'TRIGGER' ? 'Instant on trigger' : 'AI reviews first'}
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              {/* Quick strategies */}
+              {/* Risk preset — drives the phase-machine playbook (see docs/AUTO_SELL_STRATEGY.md) */}
               <div>
-                <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>Quick preset</div>
-                <div className="flex flex-wrap gap-1">
-                  {SELL_STRATEGIES.map((s) => (
-                    <button key={s.label}
-                      onClick={() => applyStrategy(s)}
-                      className="btn btn-ghost btn-sm"
-                      style={{ fontSize: 10, height: 22, padding: '0 8px' }}>
-                      {s.label}
-                    </button>
-                  ))}
+                <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>Risk preset</div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {RISK_PRESETS.map((p) => {
+                    const active = (form.riskPreset ?? 'DEFAULT') === p.key;
+                    return (
+                      <button key={p.key} onClick={() => set('riskPreset', p.key)}
+                        style={{
+                          padding: '8px 10px', borderRadius: 8, textAlign: 'left', cursor: 'pointer',
+                          background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface-2))' : 'var(--surface-2)',
+                          border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border)'}`,
+                        }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                          <span className="font-semibold text-[12px]" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>
+                            {p.label}
+                          </span>
+                          <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
+                            SL {p.sl} · TP1 {p.tp1} · TP2 {p.tp2}
+                          </span>
+                        </div>
+                        <div className="text-[10px]" style={{ color: 'var(--text-3)', marginTop: 3 }}>
+                          {p.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
-              </div>
-
-              {/* Triggers */}
-              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                <TriggerRow label="Take profit" unit="%" value={form.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} min={1} max={10000} />
-                <TriggerRow label="Stop loss"   unit="%" value={form.stopLossPct}   onChange={(v) => set('stopLossPct', v)}   min={-99} max={-1} />
-                <TriggerRow label="Trail stop"  unit="%" value={form.trailingStopPct} onChange={(v) => set('trailingStopPct', v)} min={1} max={99} />
-                <TriggerRow label="Time exit"   unit="min"
-                  value={form.exitAfterMs != null ? form.exitAfterMs / 60_000 : null}
-                  onChange={(v) => set('exitAfterMs', v != null ? Math.round(v * 60_000) : null)}
-                  min={1} max={1440} />
+                <p className="text-[10px] mt-2" style={{ color: 'var(--text-3)' }}>
+                  Mechanical playbook: TP1 partial → trail post-TP1 → TP2 partial → moonbag trail. Liquidity-drop &amp; honeypot panic exits active in all phases.
+                </p>
               </div>
             </>
           )}

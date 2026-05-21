@@ -272,6 +272,22 @@ export class SnipeSessionService implements OnModuleDestroy {
     this.logger.log(`Burst sessions stopped: user=${userId}`);
   }
 
+  /**
+   * Direct walletId → session lookup. Used by the auto-sell engine to find
+   * the right session for a given SnipeTrade row's wallet (not the primary).
+   * Falls back to the primary session when no burst session is armed for
+   * that wallet — useful for back-compat with rows from before walletId was
+   * tracked.
+   */
+  getSessionForWallet(userId: string, walletId: string | null): HotSession | null {
+    if (walletId) {
+      const map = this.burstSessions.get(userId);
+      const s = map?.get(walletId);
+      if (s && s.expiresAt > Date.now()) return s;
+    }
+    return this.getSession(userId); // fallback to primary single-wallet session
+  }
+
   /** Returns all live burst sessions for a user (filters expired). */
   getBurstSessions(userId: string): HotSession[] {
     const map = this.burstSessions.get(userId);

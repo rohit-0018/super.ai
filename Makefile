@@ -2,7 +2,11 @@
 	prisma-generate prisma-migrate prisma-studio prisma-reset \
 	infra-up infra-down infra-restart infra-logs infra-ps infra-nuke \
 	logs-postgres logs-redis logs logs-api logs-worker logs-web \
-	dev dev-api dev-worker dev-web dev-all dev-stop
+	dev dev-api dev-worker dev-web dev-all dev-stop \
+	db-backup db-backup-rotate db-restore db-wallets-count
+
+QWAI_BACKUP_DIR := ./data/backups
+QWAI_BACKUP_KEEP := 14
 
 QWAI_LOG_DIR := /tmp/qwai-logs
 
@@ -46,13 +50,27 @@ prisma-migrate: ## Create + apply a new migration (prompts for name)
 prisma-push: ## Push schema changes directly to DB (no migration file, good for dev)
 	npx prisma db push --schema=./prisma/schema.prisma
 
-prisma-push-force: ## Push schema changes, accept data loss if needed
+prisma-push-force: ## ⚠️  Push schema, --accept-data-loss. ALWAYS make db-backup first.
+	@echo "  ⚠️  This may DROP tables/columns with data. Wallets contain real money."
+	@echo "  Running automatic backup first…"
+	@$(MAKE) db-backup
+	@echo ""
+	@read -p "  Continue with --accept-data-loss push? [y/N] " ans; \
+	if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then \
+		echo "  Aborted. Backup is at ./data/backups/."; exit 1; \
+	fi
 	npx prisma db push --schema=./prisma/schema.prisma --accept-data-loss
 
 prisma-studio: ## Open Prisma Studio (visual DB browser)
 	npx prisma studio --schema=./prisma/schema.prisma
 
-prisma-reset: ## Reset database + re-run all migrations (destructive)
+prisma-reset: ## ⚠️  Drop + recreate DB. ALL DATA LOST (wallets, snipes, configs). Auto-backup first.
+	@echo "  ⚠️  This DROPS the entire database. Wallets gone. Snipe history gone."
+	@echo "  Running automatic backup first…"
+	@$(MAKE) db-backup
+	@echo ""
+	@read -p "  Type 'RESET' to confirm: " ans; \
+	if [ "$$ans" != "RESET" ]; then echo "  Aborted. Backup is at ./data/backups/."; exit 1; fi
 	npx prisma migrate reset --schema=./prisma/schema.prisma
 
 prisma-seed: ## Seed database (if prisma/seed.ts exists)
@@ -85,8 +103,63 @@ infra-ps: ## List running infra services
 infra-logs: ## Tail infra logs
 	$(COMPOSE) logs -f
 
-infra-nuke: ## Wipe infra volumes (destructive: DB data is lost)
+infra-nuke: ## ⚠️  STOP and remove containers. DB data SURVIVES (bind mount at ./data/postgres).
+	@echo ""
+	@echo "  ⚠️  About to stop containers and remove docker-managed volumes."
+	@echo "      Postgres data is on a BIND MOUNT (./data/postgres) — it survives."
+	@echo "      Wallets, snipe history, configs stay safe."
+	@echo ""
+	@echo "      To ACTUALLY wipe wallet data you'd need to manually delete"
+	@echo "      ./data/postgres — Makefile will never do that for you."
+	@echo ""
+	@read -p "  Continue stopping containers? [y/N] " ans; \
+	if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then \
+		echo "  Aborted."; exit 1; \
+	fi
 	$(COMPOSE) down -v
+
+# ---------- wallet-safety: backups ----------
+# Real money runs through this. Wallets are KMS-encrypted in DB but the
+# encrypted DEK lives in the same row — lose the DB, lose the keys forever.
+# Make backups before every destructive op (db-sync with --accept-data-loss,
+# prisma migrate reset, schema drift fixes).
+db-backup: ## Dump postgres → ./data/backups/qwai-<ts>.sql.gz (rotates after $(QWAI_BACKUP_KEEP))
+	@mkdir -p $(QWAI_BACKUP_DIR)
+	@TS=$$(date -u +%Y%m%d-%H%M%S); \
+	OUT="$(QWAI_BACKUP_DIR)/qwai-$$TS.sql.gz"; \
+	echo "Dumping → $$OUT"; \
+	PGPASSWORD=qwai pg_dump -h localhost -p 55432 -U qwai -d qwai --no-owner --no-privileges \
+		| gzip > "$$OUT"; \
+	SIZE=$$(du -h "$$OUT" | cut -f1); \
+	WALLETS=$$(PGPASSWORD=qwai psql -h localhost -p 55432 -U qwai -d qwai -tAc "SELECT COUNT(*) FROM \"Wallet\";" 2>/dev/null || echo "?"); \
+	echo "  ✓ $$SIZE  ($$WALLETS wallets captured)"; \
+	$(MAKE) db-backup-rotate
+
+db-backup-rotate: ## Keep only the last $(QWAI_BACKUP_KEEP) backups
+	@if [ -d $(QWAI_BACKUP_DIR) ]; then \
+		cd $(QWAI_BACKUP_DIR) && ls -1t qwai-*.sql.gz 2>/dev/null | tail -n +$$(($(QWAI_BACKUP_KEEP)+1)) | xargs -r rm -v; \
+	fi
+
+db-restore: ## Restore from backup. Usage: make db-restore FILE=./data/backups/qwai-<ts>.sql.gz
+	@if [ -z "$(FILE)" ]; then \
+		echo "Usage: make db-restore FILE=./data/backups/qwai-<ts>.sql.gz"; \
+		echo "Available:"; ls -1t $(QWAI_BACKUP_DIR)/qwai-*.sql.gz 2>/dev/null | head -10; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(FILE)" ]; then echo "File not found: $(FILE)"; exit 1; fi
+	@echo "  ⚠️  This REPLACES current DB with backup contents."
+	@echo "      Current DB will be lost. Run 'make db-backup' first if unsure."
+	@read -p "  Continue restore from $(FILE)? [y/N] " ans; \
+	if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then \
+		echo "  Aborted."; exit 1; \
+	fi
+	gunzip -c "$(FILE)" | PGPASSWORD=qwai psql -h localhost -p 55432 -U qwai -d qwai
+	@echo "  ✓ Restore complete. Run 'make prisma-generate' to refresh client."
+
+db-wallets-count: ## Quick safety check — how many wallets in current DB
+	@PGPASSWORD=qwai psql -h localhost -p 55432 -U qwai -d qwai -tAc \
+		"SELECT COUNT(*) || ' wallets, ' || COUNT(DISTINCT \"userId\") || ' users' FROM \"Wallet\";" 2>/dev/null \
+		|| echo "  Cannot read DB — is infra up? Try 'make infra-up'"
 
 logs-postgres: ; $(COMPOSE) logs -f postgres
 logs-redis: ; $(COMPOSE) logs -f redis
