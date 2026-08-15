@@ -110,7 +110,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS "ProviderConfig_key_key" ON "ProviderConfig"("
 CREATE INDEX        IF NOT EXISTS "ProviderConfig_dataGroup_priority_idx" ON "ProviderConfig"("dataGroup", "priority");
 
 -- ── SnipeTrade missing columns ───────────────────────────────────────────────
+-- 20260429_snipe_tables is in render-start.sh's `migrate resolve --rolled-back`
+-- list, so on databases where the table predates it the CREATE TABLE is skipped
+-- and these two columns never land. SnipeSellService.findMany() then throws on
+-- every position-check tick. Both are nullable in schema.prisma, so a plain
+-- idempotent ADD COLUMN reconciles without touching existing rows.
 ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "sellAttempts" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "walletId"     TEXT;
+ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "sellPhase"    TEXT;
 
 -- ── Trade exit-engine sell-reliability columns ───────────────────────────────
 ALTER TABLE "Trade" ADD COLUMN IF NOT EXISTS "realizedProceedsUsd" DOUBLE PRECISION;
