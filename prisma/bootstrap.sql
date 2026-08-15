@@ -112,6 +112,12 @@ CREATE INDEX        IF NOT EXISTS "ProviderConfig_dataGroup_priority_idx" ON "Pr
 -- ── SnipeTrade missing columns ───────────────────────────────────────────────
 ALTER TABLE "SnipeTrade" ADD COLUMN IF NOT EXISTS "sellAttempts" INTEGER NOT NULL DEFAULT 0;
 
+-- ── Trade exit-engine sell-reliability columns ───────────────────────────────
+ALTER TABLE "Trade" ADD COLUMN IF NOT EXISTS "realizedProceedsUsd" DOUBLE PRECISION;
+ALTER TABLE "Trade" ADD COLUMN IF NOT EXISTS "sellAttempts"        INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Trade" ADD COLUMN IF NOT EXISTS "lastSellError"       TEXT;
+ALTER TABLE "Trade" ADD COLUMN IF NOT EXISTS "sellStuck"           BOOLEAN NOT NULL DEFAULT false;
+
 -- ── User leaderboard privacy controls ────────────────────────────────────────
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "leaderboardOptIn"  BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "leaderboardHandle" TEXT;

@@ -333,8 +333,13 @@ model Trade {
   tiersExecuted         Json?     // e.g. [0, 1] — which take-profit tiers have fired
   exitReason            String?   // 'tier_0'|'tier_1'|'tier_2'|'trailing_stop'|'time_stop'|'thesis_break'|'manual'
   exitAt                DateTime?
-  realizedPnl           Float?    // USD profit/loss realised at exit
+  realizedPnl           Float?    // USD profit/loss realised at full exit (proceeds - entry cost)
+  realizedProceedsUsd   Float?    // running sum of USD received across all (partial) sells
   holdDurationSec       Int?      // seconds from buy to full exit
+  // ── Sell reliability tracking ───────────────────────────────────────────────
+  sellAttempts          Int       @default(0)     // consecutive failed sell attempts for the pending action
+  lastSellError         String?   // last sell failure reason (diagnostics / alerts)
+  sellStuck             Boolean   @default(false)  // retries exhausted — needs attention, auto-retry paused
   @@index([userId, createdAt])
   @@index([userId, strategyId])
   @@index([traceId])

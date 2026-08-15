@@ -3,6 +3,7 @@ import { Chain, OrderStatus, Prisma, TradeMode } from '@prisma/client';
 import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
 import { ethers } from 'ethers';
 import { getSolanaRpcUrl, getEvmRpcUrl, getEvmChainId, isTestnet, getNetworkMode } from '../common/network-config';
+import { fromEvmChainId, rpcUrlFor } from '../venues/chain-registry';
 import { currentTraceId } from '../common/trace-context';
 import { PrismaService } from '../prisma/prisma.service';
 import { GuardrailsService } from '../guardrails/guardrails.service';
@@ -27,6 +28,12 @@ export interface SwapInput {
   userId: string;
   walletId: string;
   chain: Chain;
+  /**
+   * Precise EVM chain id (8453 = Base, 42161 = Arbitrum, …). Ignored when
+   * `chain` is SOLANA. Prefer this over the legacy `riskFlags: 'chainId:N'`
+   * hint, which is still honoured for callers that have not migrated.
+   */
+  evmChainId?: number;
   tokenIn: string;
   tokenOut: string;
   amountIn: string;
@@ -544,20 +551,24 @@ export class ExecutionService {
   }
 
   private resolveEvmChainId(input: SwapInput): number {
+    if (input.evmChainId && Number.isFinite(input.evmChainId)) return input.evmChainId;
     const hint = (input.riskFlags ?? []).find((f) => f.startsWith('chainId:'));
-    if (hint) return parseInt(hint.split(':')[1], 10);
+    if (hint) {
+      const parsed = parseInt(hint.split(':')[1], 10);
+      if (Number.isFinite(parsed)) return parsed;
+    }
     return EVM_CHAIN_IDS.ETH;
   }
 
+  /**
+   * RPC for an EVM chain, sourced from the chain registry so adding a chain
+   * never means editing a switch statement here. Falls back to the legacy
+   * env-based resolver for chain ids we have not registered.
+   */
   private resolveEvmRpc(chainId: number): string {
-    switch (chainId) {
-      case EVM_CHAIN_IDS.ARBITRUM:
-        return process.env.ARBITRUM_RPC_URL ?? 'https://arb1.arbitrum.io/rpc';
-      case EVM_CHAIN_IDS.BASE:
-        return process.env.BASE_RPC_URL ?? 'https://mainnet.base.org';
-      default:
-        return getEvmRpcUrl();
-    }
+    const spec = fromEvmChainId(chainId);
+    if (spec) return rpcUrlFor(spec);
+    return getEvmRpcUrl();
   }
 
   /**

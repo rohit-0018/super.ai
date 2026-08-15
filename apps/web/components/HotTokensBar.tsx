@@ -1,7 +1,10 @@
 'use client';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useHotTokens, type HotToken } from '../lib/useHotTokens';
+import { type HotToken } from '../lib/useHotTokens';
+import { useNetworkFeed, chainName, type UnifiedToken } from '../lib/useNetworkFeed';
+import { useNetwork } from '../lib/NetworkContext';
+import { ChainBadge } from './ui/ChainBadge';
 import { fmtPriceUsd } from '../lib/format-price';
 import { QuickBuyModal } from './QuickBuyModal';
 
@@ -32,27 +35,30 @@ function CopyCA({ address }: { address: string }) {
 }
 
 /* ─── helpers ──────────────────────────────────────────────────────────────── */
-function verdictColor(v: HotToken['verdict']): string {
+function verdictColor(v?: HotToken['verdict']): string {
   switch (v) {
     case 'STRONG_BUY': return 'var(--ok)';
     case 'BUY':        return '#4ade80';
     case 'CAUTIOUS':   return 'var(--warn)';
     case 'SKIP':       return 'var(--text-3)';
     case 'HIGH_RISK':  return 'var(--bad)';
+    default:           return 'var(--text-3)';
   }
 }
 
-function verdictLabel(v: HotToken['verdict']): string {
+function verdictLabel(v?: HotToken['verdict']): string {
   switch (v) {
     case 'STRONG_BUY': return 'STRONG';
     case 'BUY':        return 'BUY';
     case 'CAUTIOUS':   return 'CAUTION';
     case 'SKIP':       return 'SKIP';
     case 'HIGH_RISK':  return 'RISK';
+    default:           return '';
   }
 }
 
-function ageLabel(hours: number): string {
+function ageLabel(hours?: number): string {
+  if (hours == null) return '';
   if (hours < 1) return `${Math.round(hours * 60)}m`;
   if (hours < 24) return `${hours.toFixed(1)}h`;
   return `${Math.floor(hours / 24)}d`;
@@ -67,34 +73,12 @@ function fmtChange(pct: number): string {
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
 }
 
-/* ─── Countdown ─────────────────────────────────────────────────────────────── */
-function Countdown({ nextScanAt }: { nextScanAt: string | null }) {
-  const [secs, setSecs] = useState<number | null>(null);
-  useEffect(() => {
-    if (!nextScanAt) return;
-    const update = () =>
-      setSecs(Math.max(0, Math.round((new Date(nextScanAt).getTime() - Date.now()) / 1000)));
-    update();
-    const t = setInterval(update, 1000);
-    return () => clearInterval(t);
-  }, [nextScanAt]);
-
-  if (secs === null) return null;
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return (
-    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-      {secs === 0 ? 'scanning…' : `${m}:${String(s).padStart(2, '0')}`}
-    </span>
-  );
-}
-
 /* ─── Individual chip — button so click always fires, even inside marquee ───── */
-function TokenChip({ token, onClick }: { token: HotToken; onClick: (t: HotToken) => void }) {
+function TokenChip({ token, onClick, showChain }: { token: UnifiedToken; onClick: (t: UnifiedToken) => void; showChain: boolean }) {
   const [buyOpen, setBuyOpen] = useState(false);
   const col = verdictColor(token.verdict);
   const isBullish = token.verdict === 'STRONG_BUY' || token.verdict === 'BUY';
-  const changeUp = token.priceChange1h >= 0;
+  const changeUp = (token.priceChange1h ?? 0) >= 0;
 
   return (
     <>
@@ -116,7 +100,9 @@ function TokenChip({ token, onClick }: { token: HotToken; onClick: (t: HotToken)
             background: 'none', border: 'none', cursor: 'pointer', outline: 'none', padding: 0,
           }}
         >
-          <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: col, boxShadow: isBullish ? `0 0 5px ${col}` : undefined }} />
+          {showChain
+            ? <ChainBadge chain={token.chain} size="xs" showLabel={false} />
+            : <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: col, boxShadow: isBullish ? `0 0 5px ${col}` : undefined }} />}
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.03em' }}>
             {token.symbol}
           </span>
@@ -125,17 +111,21 @@ function TokenChip({ token, onClick }: { token: HotToken; onClick: (t: HotToken)
             {fmtPrice(token.priceUsd)}
           </span>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: changeUp ? 'var(--ok)' : 'var(--bad)', minWidth: 42, textAlign: 'right' }}>
-            {fmtChange(token.priceChange1h)}
+            {token.priceChange1h == null ? '—' : fmtChange(token.priceChange1h)}
           </span>
           <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
             {ageLabel(token.pairAgeHours)}
           </span>
-          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: col, fontFamily: 'var(--font-mono)', background: `${col}18`, borderRadius: 4, padding: '1px 4px' }}>
-            {verdictLabel(token.verdict)}
-          </span>
-          <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-            {token.score}
-          </span>
+          {token.verdict && (
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: col, fontFamily: 'var(--font-mono)', background: `${col}18`, borderRadius: 4, padding: '1px 4px' }}>
+              {verdictLabel(token.verdict)}
+            </span>
+          )}
+          {token.score != null && (
+            <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+              {token.score}
+            </span>
+          )}
         </button>
         {/* Quick buy button inline in the chip */}
         <button
@@ -158,7 +148,7 @@ function TokenChip({ token, onClick }: { token: HotToken; onClick: (t: HotToken)
         <QuickBuyModal
           address={token.address}
           symbol={token.symbol}
-          chain="SOLANA"
+          chain={token.chain === 'solana' ? 'SOLANA' : 'EVM'}
           mode="buy"
           onClose={() => setBuyOpen(false)}
         />
@@ -177,11 +167,25 @@ function IconFlame() {
   );
 }
 
+/**
+ * Below this many tokens the strip is rendered static rather than scrolled —
+ * a duplicated two-item loop looks broken, not busy.
+ */
+const MARQUEE_MIN_TOKENS = 6;
+
 /* ─── Marquee ticker wrapper ─────────────────────────────────────────────────── */
-function TokenTicker({ tokens, onClick }: { tokens: HotToken[]; onClick: (t: HotToken) => void }) {
+function TokenTicker({ tokens, onClick, showChain }: { tokens: UnifiedToken[]; onClick: (t: UnifiedToken) => void; showChain: boolean }) {
   const [paused, setPaused] = useState(false);
-  // duplicate for seamless loop — need at least some tokens
-  const items = tokens.length > 0 ? [...tokens, ...tokens] : [];
+
+  /**
+   * The marquee duplicates the list for a seamless loop. That reads as a bug
+   * when a chain only has a handful of tokens — scoping to BNB Chain showed
+   * "八八火发, 安迪, 八八火发, 安迪" scrolling past, which looks like a rendering
+   * fault rather than a short list. Below the threshold we render a static row
+   * instead: nothing is repeated, nothing moves, and the content is all visible.
+   */
+  const shouldScroll = tokens.length >= MARQUEE_MIN_TOKENS;
+  const items = shouldScroll ? [...tokens, ...tokens] : tokens;
   // speed: roughly 60px per second; each chip ≈ 180px; total width = tokens*180
   const durationSec = Math.max(20, tokens.length * 6);
 
@@ -199,12 +203,19 @@ function TokenTicker({ tokens, onClick }: { tokens: HotToken[]; onClick: (t: Hot
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6,
         width: 'max-content',
-        animation: `hot-scroll ${durationSec}s linear infinite`,
-        animationPlayState: paused ? 'paused' : 'running',
+        // Longhand only: mixing the `animation` shorthand with `animationPlayState`
+        // makes React warn, because it cannot reconcile the two on rerender.
+        ...(shouldScroll ? {
+          animationName: 'hot-scroll',
+          animationDuration: `${durationSec}s`,
+          animationTimingFunction: 'linear',
+          animationIterationCount: 'infinite',
+          animationPlayState: paused ? 'paused' : 'running',
+        } : {}),
         paddingLeft: 10,
       }}>
         {items.map((t, i) => (
-          <TokenChip key={`${t.address}-${i}`} token={t} onClick={onClick} />
+          <TokenChip key={`${t.chain}-${t.address}-${i}`} token={t} onClick={onClick} showChain={showChain} />
         ))}
       </div>
     </div>
@@ -212,29 +223,25 @@ function TokenTicker({ tokens, onClick }: { tokens: HotToken[]; onClick: (t: Hot
 }
 
 /* ─── Bar ────────────────────────────────────────────────────────────────────── */
-const PROFILE_LABELS: Record<string, string> = {
-  meme_hunter: 'MEME',
-  degen_sniper: 'DEGEN',
-  swing_trader: 'SWING',
-  gem_hunt: 'GEM',
-  alpha_hunt: 'ALPHA',
-};
-
 export function HotTokensBar() {
-  const { scan, loading } = useHotTokens();
+  const { network, isAll } = useNetwork();
+  const { tokens: feedTokens, loading } = useNetworkFeed(60);
   const router = useRouter();
 
-  const profile      = scan?.profileKey ?? 'meme_hunter';
-  const profileLabel = PROFILE_LABELS[profile] ?? profile.toUpperCase();
-  // Sort newest-first so the freshest tokens appear at the start of the marquee
-  const tokens = useMemo(() => {
-    const t = scan?.tokens ?? [];
-    return [...t].sort((a, b) => new Date(b.scannedAt).getTime() - new Date(a.scannedAt).getTime());
-  }, [scan?.tokens]);
-  const hasTokens    = tokens.length > 0;
+  // Highest-volume first. The Solana-only scanner used scan recency, but that
+  // ordering is meaningless once rows arrive from chains with no scan clock —
+  // volume is the one signal every chain reports.
+  const tokens = useMemo(
+    () => [...feedTokens].sort((a, b) => b.volume24hUsd - a.volume24hUsd),
+    [feedTokens],
+  );
+  const hasTokens = tokens.length > 0;
 
-  function openAnalysis(token: HotToken) {
-    router.push(`/intel?address=${encodeURIComponent(token.address)}&profile=${token.profileKey}`);
+  // Label the scope so it is obvious what the bar is showing.
+  const scopeLabel = isAll ? 'ALL' : chainName(network).toUpperCase();
+
+  function openAnalysis(token: UnifiedToken) {
+    router.push(`/intel?address=${encodeURIComponent(token.address)}&chain=${token.chain}`);
   }
 
   return (
@@ -272,18 +279,21 @@ export function HotTokensBar() {
           HOT
         </span>
         <span style={{ width: 1, height: 12, background: 'var(--border)', flexShrink: 0 }} />
+        {!isAll && <ChainBadge chain={network} size="xs" showLabel={false} />}
         <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-          {profileLabel}
+          {scopeLabel}
         </span>
       </div>
 
       {/* ── CENTER: auto-scrolling ticker ──────────────────────────────────── */}
       {hasTokens
-        ? <TokenTicker tokens={tokens} onClick={openAnalysis} />
+        ? <TokenTicker tokens={tokens} onClick={openAnalysis} showChain={isAll} />
         : (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', padding: '0 14px' }}>
             <span style={{ color: 'var(--text-3)', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
-              {loading ? 'Scanning…' : 'No hot tokens yet · scan every 10 min'}
+              {loading
+                ? 'Scanning…'
+                : `No tokens on ${isAll ? 'any network' : chainName(network)} yet`}
             </span>
           </div>
         )
@@ -302,7 +312,7 @@ export function HotTokensBar() {
             {tokens.length}t
           </span>
         )}
-        {scan?.nextScanAt && <Countdown nextScanAt={scan.nextScanAt} />}
+
       </div>
     </div>
   );
