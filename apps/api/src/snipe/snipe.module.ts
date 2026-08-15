@@ -8,6 +8,7 @@ import { SnipeSessionService } from './snipe-session.service';
 import { SnipeFastService } from './snipe-fast.service';
 import { SnipeGroupService } from './snipe-group.service';
 import { SnipeSellService } from './snipe-sell.service';
+import { ParallelSnipeService } from './parallel-snipe.service';
 import { SnipeController } from './snipe.controller';
 import { TgUserbotService } from './tg-userbot.service';
 import { TgAuthService } from './tg-auth.service';
@@ -29,10 +30,11 @@ import { HeliusService } from './helius.service';
     SnipeFastService,
     SnipeGroupService,
     SnipeSellService,
+    ParallelSnipeService,
     TgUserbotService,
     TgAuthService,
   ],
   controllers: [SnipeController, TgAuthController],
-  exports: [HeliusService, SnipeSessionService, SnipeFastService, SnipeGroupService, SnipeSellService, TgUserbotService],
+  exports: [HeliusService, SnipeSessionService, SnipeFastService, SnipeGroupService, SnipeSellService, ParallelSnipeService, TgUserbotService],
 })
 export class SnipeModule {}

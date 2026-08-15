@@ -18,6 +18,8 @@ import { useRealtime } from '../lib/useRealtime';
 import { useApi } from '../lib/useApi';
 import { api } from '../lib/api';
 import { TokenPoolProvider } from '../lib/TokenPoolContext';
+import { NetworkProvider } from '../lib/NetworkContext';
+import NetworkChooser from './NetworkChooser';
 
 /**
  * AppShell — pro-terminal shell for qwai.
@@ -38,7 +40,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <TokenPoolProvider>
+    <NetworkProvider>
+      <TokenPoolProvider>
       <div className="shell-outer">
         <Rail pathname={pathname} />
         <div className="shell-main-col flex-1 flex flex-col min-w-0">
@@ -54,7 +57,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <NotificationBanner />
         <PumpStreakToast />
       </div>
-    </TokenPoolProvider>
+      </TokenPoolProvider>
+    </NetworkProvider>
   );
 }
 
@@ -340,6 +344,7 @@ function TopStatusBar() {
         >
           <IconSearch size={16} />
         </button>
+        <NetworkChooser />
         <div className="hide-sm flex items-center gap-1 md:gap-2">
           <PaperModePill />
           <LearningModePill />

@@ -2,6 +2,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../../lib/api';
 import { useApi, invalidate } from '../../lib/useApi';
+import { useNetwork } from '../../lib/NetworkContext';
+import { ChainBadge as ChainDot } from '../../components/ui/ChainBadge';
+import BulkWalletPanel from '../../components/BulkWalletPanel';
+import { WalletTokens, TokensButton } from '../../components/WalletTokens';
+import { WalletGroupSection, GroupModeToggle } from '../../components/WalletGroupSection';
+import { groupWallets, walletUsd, type GroupMode } from '../../lib/wallet-groups';
 import { Skeleton, Spinner } from '../../components/ui/Skeleton';
 import CexPortfolio from '../../components/CexPortfolio';
 
@@ -11,6 +17,16 @@ interface WalletBalance {
   symbol: string;
   usd: number;
   tokens?: Array<{ mint: string; symbol: string; amount: number; usd: number }>;
+  /** EVM only — native balance on every EVM chain, from EvmBalancesService. */
+  chains?: Array<{
+    chain: string;
+    chainName: string;
+    symbol: string;
+    native: number;
+    usd: number;
+    explorerUrl: string;
+    error?: string;
+  }>;
   error?: string;
 }
 
@@ -27,6 +43,7 @@ interface Wallet {
 }
 
 export default function Wallets() {
+  const { network, isAll, selected } = useNetwork();
   const { data: wallets, loading } = useApi<Wallet[]>('/wallets');
   const { data: balances, loading: balLoading } = useApi<WalletBalance[]>('/wallets/balances');
   const [depositId, setDepositId] = useState<string | null>(null);
@@ -35,6 +52,23 @@ export default function Wallets() {
   const [newWallet, setNewWallet] = useState<{ id: string; address: string; chain: string; privateKey: string; label: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
+  const [groupMode, setGroupMode] = useState<GroupMode>('chain');
+  // Which wallets have their token list expanded. Lazy — fetched on open only.
+  const [openTokens, setOpenTokens] = useState<Set<string>>(new Set());
+  // Set by a group's Fund/Collect button so the bulk panel opens pre-targeted.
+  const [bulkPrefill, setBulkPrefill] = useState<{ op: 'fund' | 'collect'; walletIds: string[]; nonce: number } | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('qwai_wallet_group_mode');
+      if (saved === 'chain' || saved === 'set' || saved === 'none') setGroupMode(saved);
+    } catch { /* ignore */ }
+  }, []);
+
+  function changeGroupMode(m: GroupMode) {
+    setGroupMode(m);
+    try { localStorage.setItem('qwai_wallet_group_mode', m); } catch { /* ignore */ }
+  }
 
   const balMap = new Map<string, WalletBalance>();
   balances?.forEach((b) => balMap.set(b.walletId, b));
@@ -70,7 +104,14 @@ export default function Wallets() {
     invalidate('/wallets');
   }
 
-  const totalUsd = balances?.reduce((s, b) => s + (b.usd ?? 0), 0) ?? 0;
+  // Total follows the chooser. Uses the same walletUsd() the group headers and
+  // rows use, so a summary can never disagree with the numbers beneath it.
+  const totalUsd = (wallets ?? []).reduce(
+    (sum, w) => sum + walletUsd(balMap.get(w.id), w, network, isAll),
+    0,
+  );
+
+  const groups = groupWallets(wallets ?? [], balMap, { mode: groupMode, network, isAll });
   const isTestnet = process.env.NEXT_PUBLIC_NETWORK_MODE === 'testnet';
 
   return (
@@ -99,7 +140,17 @@ export default function Wallets() {
       <section className="section">
         <div className="section-body flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <div className="stat-label mb-1">Total on-chain value</div>
+            <div className="stat-label mb-1 flex items-center gap-2">
+              <span>Total on-chain value</span>
+              {!isAll && (
+                <span className="flex items-center gap-1">
+                  <ChainDot chain={network} size="xs" showLabel={false} />
+                  <span style={{ color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>
+                    {selected?.name ?? network} only
+                  </span>
+                </span>
+              )}
+            </div>
             {balLoading && !balances ? (
               <Skeleton w={180} h={32} />
             ) : (
@@ -119,11 +170,19 @@ export default function Wallets() {
         </div>
       </section>
 
+      {/* Bulk operations — create / fund / sweep many wallets at once */}
+      <div className="mb-4">
+        <BulkWalletPanel wallets={wallets ?? []} prefill={bulkPrefill} />
+      </div>
+
       {/* Wallet list */}
       <section className="section">
         <div className="section-header">
           <h3 className="section-title">Wallets</h3>
-          <button onClick={() => { invalidate('/wallets'); invalidate('/wallets/balances'); }} className="btn btn-ghost btn-sm">Refresh</button>
+          <div className="flex items-center gap-2">
+            <GroupModeToggle mode={groupMode} onChange={changeGroupMode} />
+            <button onClick={() => { invalidate('/wallets'); invalidate('/wallets/balances'); }} className="btn btn-ghost btn-sm">Refresh</button>
+          </div>
         </div>
         {loading && !wallets ? (
           <ul className="divide-y divide-border">
@@ -148,8 +207,16 @@ export default function Wallets() {
             <p className="text-[11px] text-[color:var(--text-3)]">Create a Solana or EVM wallet to start trading</p>
           </div>
         ) : (
-          <ul className="divide-y divide-border fade-in">
-            {wallets.map((w) => (
+          <div className="fade-in">
+            {groups.map((g) => (
+            <WalletGroupSection
+              key={g.key}
+              group={g}
+              scopeLabel={isAll ? undefined : (selected?.name ?? network)}
+              onFund={(ids) => setBulkPrefill({ op: 'fund', walletIds: ids, nonce: Date.now() })}
+              onCollect={(ids) => setBulkPrefill({ op: 'collect', walletIds: ids, nonce: Date.now() })}
+            >
+            {g.wallets.map((w) => (
               <li key={w.id} className="px-3.5 md:px-5 py-4">
                 {/* Row 1: chain + address + balance + actions */}
                 <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -211,6 +278,43 @@ export default function Wallets() {
                           </div>
                         );
                       }
+                      // Scoped to one network: show only that chain's balance,
+                      // so the number on screen always matches the chooser.
+                      const scopedChain = !isAll && bal.chains
+                        ? bal.chains.find((c) => c.chain === network)
+                        : undefined;
+
+                      if (!isAll && bal.chains && !scopedChain) {
+                        return (
+                          <div className="fade-in text-right">
+                            <div className="font-mono text-[13px]" style={{ color: 'var(--text-3)' }}>
+                              — {selected?.nativeSymbol ?? ''}
+                            </div>
+                            <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                              not on {selected?.name ?? network}
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (scopedChain) {
+                        return (
+                          <div className="fade-in">
+                            <div className="font-mono text-[15px] font-semibold">
+                              {scopedChain.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {scopedChain.symbol}
+                            </div>
+                            <div className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
+                              ${scopedChain.usd.toFixed(2)}
+                            </div>
+                            {scopedChain.error && (
+                              <div className="text-[10px] mt-0.5" style={{ color: 'var(--warn)' }}>
+                                RPC unavailable
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
                       // Success — show native + any SPL tokens
                       return (
                         <div className="fade-in">
@@ -220,6 +324,27 @@ export default function Wallets() {
                           <div className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
                             ${bal.usd.toFixed(2)}
                           </div>
+                          {/* Per-chain split for EVM wallets. This is the payoff of the
+                              multi-chain balance fix — previously only Ethereum was queried,
+                              so L2 funds were invisible. */}
+                          {bal.chains && bal.chains.filter((c) => c.native > 0).length > 0 && (
+                            <div className="mt-1.5 flex flex-col items-end gap-0.5">
+                              {bal.chains
+                                .filter((c) => c.native > 0)
+                                .sort((a, b) => b.usd - a.usd)
+                                .map((c) => (
+                                  <div key={c.chain} className="flex items-center gap-1.5">
+                                    <ChainDot chain={c.chain} size="xs" showLabel={false} />
+                                    <span className="font-mono text-[10px]" style={{ color: 'var(--text-2)' }}>
+                                      {c.native.toLocaleString(undefined, { maximumFractionDigits: 5 })} {c.symbol}
+                                    </span>
+                                    <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
+                                      ${c.usd.toFixed(2)}
+                                    </span>
+                                  </div>
+                                ))}
+                            </div>
+                          )}
                           {bal.tokens && bal.tokens.map((t) => (
                             <div key={t.mint} className="font-mono text-[11px] mt-0.5" style={{ color: 'var(--text-2)' }}>
                               {t.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })} {t.symbol}
@@ -236,6 +361,14 @@ export default function Wallets() {
 
                 {/* Row 2: action buttons */}
                 <div className="flex items-center gap-1.5 mt-3 flex-wrap">
+                  <TokensButton
+                    open={openTokens.has(w.id)}
+                    onClick={() => setOpenTokens((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(w.id)) next.delete(w.id); else next.add(w.id);
+                      return next;
+                    })}
+                  />
                   {isTestnet && w.chain === 'SOLANA' && (
                     <FaucetButton walletId={w.id} />
                   )}
@@ -329,9 +462,15 @@ export default function Wallets() {
                     </div>
                   </div>
                 )}
+
+                {openTokens.has(w.id) && (
+                  <WalletTokens walletId={w.id} chainFamily={w.chain} />
+                )}
               </li>
             ))}
-          </ul>
+            </WalletGroupSection>
+            ))}
+          </div>
         )}
       </section>
 

@@ -34,15 +34,24 @@ export class CexService {
 
   async unifiedPortfolio(userId: string) {
     const conns = await this.prisma.cexConnection.findMany({ where: { userId } });
+
+    // Fan out rather than awaiting each exchange in turn. These are independent
+    // third-party HTTP calls with an 8s timeout each — serially, a user with
+    // Binance + Bybit + OKX connected waited up to 24s for one portfolio view,
+    // and a single slow venue stalled the other two behind it.
+    const results = await Promise.all(
+      conns.map(async (c) => {
+        try {
+          return [c.exchange, await this.fetchBalance(c)] as const;
+        } catch (e: any) {
+          this.logger.warn(`${c.exchange} balance fetch failed: ${e.message}`);
+          return [c.exchange, { error: e.message }] as const;
+        }
+      }),
+    );
+
     const out: Record<string, BalanceRow[] | { error: string }> = {};
-    for (const c of conns) {
-      try {
-        out[c.exchange] = await this.fetchBalance(c);
-      } catch (e: any) {
-        this.logger.warn(`${c.exchange} balance fetch failed: ${e.message}`);
-        out[c.exchange] = { error: e.message };
-      }
-    }
+    for (const [exchange, value] of results) out[exchange] = value;
     return out;
   }
 

@@ -3,7 +3,7 @@ import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { getJupiterApiBase } from '../common/network-config';
-import { SnipeSessionService, CachedSnipeConfig } from './snipe-session.service';
+import { SnipeSessionService, CachedSnipeConfig, HotSession } from './snipe-session.service';
 import { HeliusService } from './helius.service';
 import { newTraceId } from '../common/trace-context';
 import { TokenMetadataService } from '../market-data/token-metadata.service';
@@ -194,6 +194,137 @@ export class SnipeFastService {
     }
   }
 
+  /**
+   * Burst-mode snipe with an explicit session passed in (one wallet's session).
+   *
+   * Differs from execute() in two ways:
+   *   1. No userId-only dedupe — burst mode WANTS every wallet to fire on the
+   *      same mint, so we lock per-wallet (`userId:walletId:mint`) instead.
+   *   2. No SnipeConfig lookup — caller passes amount/slippage inline.
+   *
+   * Otherwise: identical hot path (parallel bundle build → broadcast → monitor
+   * & retry). Returns immediately after broadcast.
+   */
+  async executeBurst(opts: {
+    session: HotSession;
+    userId: string;
+    chain: 'SOLANA' | 'EVM';
+    mint: string;
+    buyAmountRaw: string;
+    maxSlippageBps: number;
+  }): Promise<SnipeResult & { walletId: string; address: string }> {
+    const { session, userId, chain, mint, buyAmountRaw, maxSlippageBps } = opts;
+    const t0 = Date.now();
+    const traceId = newTraceId();
+
+    // Per-wallet lock so a single user spamming the same burst doesn't double-fire
+    // on the same wallet/mint, while still allowing N wallets to fire concurrently.
+    const lockKey = `burst:${userId}:${session.walletId}:${mint}`;
+    if (this.execLock.has(lockKey)) {
+      return {
+        txHash: null, outAmount: '0', traceId, durationMs: Date.now() - t0,
+        walletId: session.walletId, address: session.address,
+      };
+    }
+    this.execLock.add(lockKey);
+
+    // Synthetic config used by the existing helpers (recordTrade, snapshot, ws emit).
+    // groupId='burst' makes the history row easy to filter / explain in the UI.
+    const cfg: CachedSnipeConfig = {
+      id: `burst:${session.walletId}`,
+      userId,
+      enabled: true,
+      chain,
+      walletId: session.walletId,
+      buyAmountRaw,
+      maxSlippageBps,
+      groupIds: [],
+      skipSafety: true,
+      dedupeWindowMs: 0,
+      notifyOnBuy: false,
+      matchPattern: null,
+    };
+
+    try {
+      const jupBase = getJupiterApiBase();
+      if (jupBase === 'MOCK') {
+        const err = 'Jupiter unavailable in testnet mode — set NETWORK_MODE=mainnet to execute real trades';
+        await this.recordTrade(cfg, mint, '0', null, 'burst', `burst snipe wallet=${session.address}`, 'failed', err);
+        return {
+          txHash: null, outAmount: '0', traceId, durationMs: Date.now() - t0,
+          walletId: session.walletId, address: session.address,
+        };
+      }
+
+      // ⚡ MINIMUM WORK PATH — every line here costs landing latency.
+      //
+      // We used to build 4 pre-signed bundles at different slippage levels and
+      // wait for the *slowest* to resolve before broadcasting (200–600ms).
+      // The monitorWithRetry loop **does not actually use** those pre-built
+      // bundles — it always re-quotes fresh on a slippage failure (stale
+      // price anchors miss). So we build ONE bundle at the user's max
+      // slippage (highest fill probability) and broadcast.
+      // Synchronous accessor — uses the 2s cache primed at arm time, never
+      // awaits. Worst case: returns the fallback constant on first burst
+      // before the cache is warm (which means arming itself failed to prime).
+      const maxPriorityLamports = this.helius.computeMaxLamports(
+        this.helius.getPriorityFeeSync(),
+      );
+
+      const primary = await this.buildBundle(
+        jupBase, mint, buyAmountRaw, session.address, session.keypair,
+        maxSlippageBps, maxPriorityLamports,
+      );
+
+      const sig0 = await session.sendConnection.sendRawTransaction(primary.rawTx, {
+        skipPreflight: true,
+        maxRetries: 0,
+      });
+      const durationMs = Date.now() - t0;
+
+      // Everything after this point is post-broadcast — deferred via
+      // setImmediate so we return to the caller (and the retry monitor
+      // starts polling) without paying the cost of logging / DB / WS.
+      setImmediate(() => {
+        this.logger.log(`[trc=${traceId}] ⚡ burst wallet=${session.address.slice(0,6)} sig=${sig0} ${durationMs}ms`);
+        this.recordTrade(cfg, mint, primary.outAmount, sig0, 'burst', `burst snipe wallet=${session.address}`, 'broadcast').catch(() => {});
+        this.ws?.emitToUser(userId, 'burst_snipe_progress', {
+          walletId: session.walletId, address: session.address,
+          mint, txHash: sig0, durationMs,
+          amountRaw: buyAmountRaw, outAmount: primary.outAmount,
+          status: 'broadcast', ts: Date.now(),
+        });
+        // Background confirmation + retry (groupId='burst' = skip intel-track).
+        this.monitorWithRetry(
+          session.connection, session.sendConnection, cfg, mint, 'burst',
+          `burst snipe wallet=${session.address}`, [], sig0, jupBase, traceId, t0,
+        );
+      });
+
+      return {
+        txHash: sig0, outAmount: primary.outAmount, traceId, durationMs,
+        walletId: session.walletId, address: session.address,
+      };
+    } catch (err: any) {
+      const durationMs = Date.now() - t0;
+      const errMsg: string = err?.message ?? 'Unknown error';
+      this.logger.error(`[trc=${traceId}] burst snipe failed wallet=${session.address.slice(0,6)} mint=${mint} err=${errMsg}`);
+      this.recordTrade(cfg, mint, '0', null, 'burst', `burst snipe wallet=${session.address}`, 'failed', errMsg).catch(() => {});
+      this.ws?.emitToUser(userId, 'burst_snipe_progress', {
+        walletId: session.walletId, address: session.address,
+        mint, txHash: null, durationMs,
+        amountRaw: buyAmountRaw, outAmount: '0',
+        status: 'failed', error: errMsg.slice(0, 200), ts: Date.now(),
+      });
+      return {
+        txHash: null, outAmount: '0', traceId, durationMs,
+        walletId: session.walletId, address: session.address,
+      };
+    } finally {
+      this.execLock.delete(lockKey);
+    }
+  }
+
   // ── Slippage level computation ──────────────────────────────────────────────
 
   private buildSlippageLevels(maxBps: number): Array<number | 'dynamic'> {
@@ -344,15 +475,26 @@ export class SnipeFastService {
             data: { status: 'confirmed' },
           });
           this.ws?.emitToUser(config.userId, 'snipe_update', { txHash: currentSig, status: 'confirmed' });
+
+          // Phase 2.3 — Pre-warm Jupiter's sell route. We don't know the
+          // post-confirm token balance yet (DB hasn't persisted outAmount
+          // for this row), so we issue a *tiny* probe quote (1 base unit
+          // of the mint → SOL). Jupiter's router caches the path; the next
+          // real sell quote drops ~100-150ms because it doesn't have to
+          // re-discover routes. Discard the body, ignore errors.
+          // Skipped for burst rows that immediately go into mass-sell flows
+          // — but burst snipes also benefit. Always run when not testnet.
+          setTimeout(() => {
+            const probeQuote = `${jupBase}/quote?inputMint=${mint}&outputMint=${SOL_MINT}&amount=1&slippageBps=500&onlyDirectRoutes=false`;
+            fetch(probeQuote, { signal: AbortSignal.timeout(3_000) })
+              .then((r) => { try { r.body?.cancel(); } catch {} })
+              .catch(() => {});
+          }, 5_000); // 5s delay — let the pool settle post-launch / post-buy
           // Track-record capture — fire-and-forget direct call into IntelTrackModule.
-          // Earlier we routed this through TokenAnalysisModule.analyzeAddress(),
-          // but that closes a circular import (Snipe → TokenAnalysis → TokenIntel
-          // → Agents → ... → Snipe) that even forwardRef can't break. Going
-          // straight to IntelSnapshotService.captureMinimal keeps the dep graph
-          // a DAG and still produces a usable snapshot row — the rescan worker
-          // will tick it forward and the marketing math (peak delta, sparkline)
-          // works off the captured priceUsd anchor.
-          if (this.intelTrack) {
+          // Skipped for burst snipes: the snipe page is the primary surface
+          // and doesn't need the IntelTrack pulse for these. Saves a token
+          // metadata fetch + a Prisma write on the post-confirm path.
+          if (this.intelTrack && groupId !== 'burst') {
             (async () => {
               try {
                 const trade = await this.prisma.snipeTrade.findFirst({
@@ -544,6 +686,11 @@ export class SnipeFastService {
         status,
         attempts: 1,
         errorMsg: errorMsg ? errorMsg.slice(0, 1000) : null,
+        // Critical: stamp which wallet bought this row. Without this the
+        // auto-sell engine can't find the right session to sign exits.
+        // For burst rows, config.walletId == session.walletId (set in executeBurst).
+        // For TG single-wallet rows, config.walletId comes from SnipeConfig.
+        walletId: config.walletId,
       },
     });
   }

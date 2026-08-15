@@ -51,6 +51,9 @@ interface SnipeConfig {
   matchPattern: string | null;
   sellEnabled: boolean;
   sellMode: 'TRIGGER' | 'INTELLIGENT';
+  /** Phase-machine playbook preset. Drives all TP/SL/trail/time math server-side. */
+  riskPreset: 'CONSERVATIVE' | 'DEFAULT' | 'AGGRESSIVE';
+  // Legacy fields — still on the row but no longer drive engine. Hidden in UI.
   takeProfitPct: number | null;
   stopLossPct: number | null;
   trailingStopPct: number | null;
@@ -113,7 +116,13 @@ interface SnipeTrade {
   createdAt: string;
 }
 
-interface Wallet { id: string; chain: string; address: string; label: string | null }
+interface Wallet { id: string; chain: string; address: string; label: string | null; isPrimary?: boolean }
+
+interface BurstStatus {
+  active: boolean;
+  count: number;
+  wallets: Array<{ walletId: string; address: string; balanceLamports: number | null; expiresAt: string }>;
+}
 
 /* ─────────────────────────────────────────────────────────────
    Page
@@ -132,6 +141,7 @@ export default function SnipePage() {
   const { data: tgRaw,    loading: tgLoading }        = useApi<TgStatus>('/snipe/tg/status');
   const { data: history, loading: histLoading }       = useApi<SnipeTrade[]>('/snipe/history?limit=50');
   const { data: wallets }                             = useApi<Wallet[]>('/wallets');
+  const { data: burstStatus }                         = useApi<BurstStatus>('/snipe/burst', { pollMs: 15_000 });
 
   const [tgStatus, setTgStatus] = useState<TgStatus | null>(null);
   useEffect(() => { if (tgRaw !== undefined) setTgStatus(tgRaw ?? null); }, [tgRaw]);
@@ -154,18 +164,28 @@ export default function SnipePage() {
   const bannerTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoStarted   = useRef(false);
 
-  // ── Auto-start session silently on page load ─────────────────────────
+  // ── Auto-start sessions silently on page load ────────────────────────
+  // Sniping is now multi-wallet by default — every Solana wallet gets armed
+  // when snipe is enabled, so a CA picked up via Telegram fires across all
+  // of them. The single-wallet `session/start` is kept as a fallback for
+  // legacy SnipeConfig.walletId rows.
   useEffect(() => {
     if (autoStarted.current) return;
     if (!configData) return;
     const cfg = configData.config;
-    if (!cfg?.walletId) return;
-    if (configData.session.active) { autoStarted.current = true; return; }
+    if (!cfg?.enabled) return;
     autoStarted.current = true;
-    // Fire-and-forget — if it fails (no KMS key, etc.) the user still sees the UI
-    api.post('/snipe/session/start', { walletId: cfg.walletId })
-      .then(() => invalidate('/snipe/config'))
-      .catch(() => {}); // silent — they can still use the page
+    Promise.all([
+      // Primary tg-snipe session (back-compat — burst takes over when armed).
+      cfg.walletId && !configData.session.active
+        ? api.post('/snipe/session/start', { walletId: cfg.walletId }).catch(() => {})
+        : Promise.resolve(),
+      // Arm every Solana wallet for burst mode.
+      api.post('/snipe/burst/start', {}).catch(() => {}),
+    ]).then(() => {
+      invalidate('/snipe/config');
+      invalidate('/snipe/burst');
+    });
   }, [configData]);
 
   useRealtime('snipe_triggered', useCallback((evt: any) => {
@@ -238,12 +258,17 @@ export default function SnipePage() {
   const killSession = useCallback(async () => {
     setKilling(true);
     try {
-      await api.delete('/snipe/session');
+      // Tear down both the primary session AND the multi-wallet burst arm.
+      await Promise.all([
+        api.delete('/snipe/session').catch(() => {}),
+        api.delete('/snipe/burst').catch(() => {}),
+      ]);
       // Also disable snipe so it doesn't auto-restart next load
       const cfg = configData?.config;
       if (cfg) await api.put('/snipe/config', { ...toSnipeDtoSafe(cfg), enabled: false });
       autoStarted.current = false; // allow re-start if user re-enables
       invalidate('/snipe/config');
+      invalidate('/snipe/burst');
     } catch { /* swallow */ } finally { setKilling(false); }
   }, [configData]);
 
@@ -333,11 +358,11 @@ export default function SnipePage() {
         {/* Col 1: setup */}
         <div className="snipe-col-setup" style={!isColVisible('setup') ? { display: 'none' } : expandedCol === 'setup' ? { gridArea: 'active', width: '100%' } : undefined}>
           <TgPanel status={tgStatus} headerRight={mkExpandBtn('setup')} />
-          <ConfigPanel config={config} wallets={wallets ?? []} />
+          <ConfigPanel config={config} wallets={wallets ?? []} burstStatus={burstStatus ?? null} />
         </div>
         {/* Col 2: inbox */}
         <div className="snipe-col-inbox" style={!isColVisible('inbox') ? { display: 'none' } : expandedCol === 'inbox' ? { gridArea: 'active', width: '100%' } : undefined}>
-          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} headerRight={mkExpandBtn('inbox')} />
+          <TgInboxPanel config={config} tgConnected={!!tgStatus?.connected} session={session as any} burstStatus={burstStatus ?? null} headerRight={mkExpandBtn('inbox')} />
         </div>
         {/* Col 3: history */}
         <div className="snipe-col-history" style={!isColVisible('history') ? { display: 'none' } : expandedCol === 'history' ? { gridArea: 'active', width: '100%' } : undefined}>
@@ -356,6 +381,7 @@ function toSnipeDtoSafe(c: SnipeConfig) {
     groupIds: c.groupIds, skipSafety: c.skipSafety, dedupeWindowMs: c.dedupeWindowMs,
     notifyOnBuy: c.notifyOnBuy, matchPattern: c.matchPattern,
     sellEnabled: c.sellEnabled, sellMode: c.sellMode,
+    riskPreset: c.riskPreset ?? 'DEFAULT',
     takeProfitPct: c.takeProfitPct, stopLossPct: c.stopLossPct,
     trailingStopPct: c.trailingStopPct, exitAfterMs: c.exitAfterMs,
     partialExitPct: c.partialExitPct ?? null,
@@ -1118,6 +1144,21 @@ function TgPanel(props: { status: TgStatus | null; headerRight?: React.ReactNode
 /* ─────────────────────────────────────────────────────────────
    Config panel — Buy / Sell tabs only
 ───────────────────────────────────────────────────────────── */
+// Risk presets surfaced in the Settings UI. Backend authority lives in
+// apps/api/src/snipe/snipe-sell.service.ts (PRESETS) — keep these labels
+// in sync if numbers change there.
+const RISK_PRESETS = [
+  { key: 'CONSERVATIVE' as const, label: 'Conservative',
+    sl: '-30%', tp1: '+50%/50%', tp2: '+200%/70%',
+    desc: 'Tighter stops, earlier profit-taking. Lower variance, lower upside.' },
+  { key: 'DEFAULT' as const, label: 'Default',
+    sl: '-40%', tp1: '+100%/50%', tp2: '+300%/50%',
+    desc: 'Research-backed memecoin playbook (BullX/Trojan-aligned). Recommended.' },
+  { key: 'AGGRESSIVE' as const, label: 'Aggressive',
+    sl: '-50%', tp1: '+150%/40%', tp2: '+500%/60%',
+    desc: 'Looser stops, later profit-taking. Higher variance, higher moonbag.' },
+];
+
 const SELL_STRATEGIES = [
   { label: 'Conservative', tp: 100, sl: -25, trail: null, exit: 20 * 60_000 },
   { label: 'Aggressive',   tp: 400, sl: -30, trail: 20,   exit: null },
@@ -1127,17 +1168,20 @@ const SELL_STRATEGIES = [
 /** Strip Prisma-only fields before sending to the API (forbidNonWhitelisted rejects them). */
 function toSnipeDto(c: SnipeConfig) { return toSnipeDtoSafe(c); }
 
-function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets: Wallet[] }) {
+function ConfigPanel({ config, wallets, burstStatus }: { config: SnipeConfig | null; wallets: Wallet[]; burstStatus: BurstStatus | null }) {
   const [form, setForm] = useState<SnipeConfig>({
     enabled: false, chain: 'SOLANA', walletId: '', buyAmountRaw: '100000000',
     maxSlippageBps: 5000, groupIds: [], skipSafety: true, dedupeWindowMs: 30000,
     notifyOnBuy: true, matchPattern: null, sellEnabled: true, sellMode: 'TRIGGER',
+    riskPreset: 'DEFAULT',
     takeProfitPct: null, stopLossPct: null, trailingStopPct: null, exitAfterMs: null, partialExitPct: null,
   });
   // Human-readable display values (SOL, %, seconds)
   const [solInput,  setSolInput]  = useState('0.1000');
   const [slipInput, setSlipInput] = useState('50.0');
-  const [tab, setTab]             = useState<'buy' | 'sell'>('buy');
+  // Buy/Sell tab toggle was removed — both panels now stack in a single
+  // scrollable view. Kept the ref-style declaration to avoid touching state
+  // wiring elsewhere; the `tab` value is irrelevant to render now.
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const saveTimer                 = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userModified              = useRef(false);
@@ -1203,6 +1247,41 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
 
   const filteredWallets = wallets.filter((w) => w.chain === form.chain);
 
+  // Auto-pin a wallet so the SnipeConfig row always validates (DB requires
+  // walletId). Burst mode still fans out across every wallet — this is just
+  // the legacy back-compat field.
+  useEffect(() => {
+    if (form.walletId || filteredWallets.length === 0) return;
+    const primary = filteredWallets.find((w) => w.isPrimary) ?? filteredWallets[0];
+    if (primary) {
+      userModified.current = true;
+      setForm((f) => ({ ...f, walletId: primary.id }));
+    }
+  }, [filteredWallets, form.walletId]);
+
+  const armedSet = useMemo(
+    () => new Set((burstStatus?.wallets ?? []).map((w) => w.walletId)),
+    [burstStatus],
+  );
+  const armedBalances = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const w of burstStatus?.wallets ?? []) m.set(w.walletId, w.balanceLamports);
+    return m;
+  }, [burstStatus]);
+
+  const armAll = async () => {
+    try {
+      await api.post('/snipe/burst/start', {});
+      invalidate('/snipe/burst');
+    } catch { /* surfaced via status poll */ }
+  };
+  const disarmAll = async () => {
+    try {
+      await api.delete('/snipe/burst');
+      invalidate('/snipe/burst');
+    } catch {}
+  };
+
   const inputUnit = (unit: string) => (
     <span style={{
       position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
@@ -1217,21 +1296,6 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
       <div style={{ borderBottom: '1px solid var(--border)', padding: '9px 12px' }}>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="section-title" style={{ flex: 1 }}>Settings</span>
-          <div className="flex items-center gap-1">
-            {(['buy', 'sell'] as const).map((t) => (
-              <button key={t} onClick={() => setTab(t)}
-                className="btn btn-ghost btn-sm"
-                style={{
-                  fontSize: 11, fontWeight: tab === t ? 700 : 400,
-                  height: 24, padding: '0 8px', borderRadius: 5,
-                  color: tab === t ? 'var(--accent)' : 'var(--text-3)',
-                  background: tab === t ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
-                  border: tab === t ? '1px solid color-mix(in srgb, var(--accent) 28%, transparent)' : '1px solid transparent',
-                }}>
-                {t === 'buy' ? 'Buy' : 'Sell'}
-              </button>
-            ))}
-          </div>
           <div className="flex items-center gap-1.5">
             <Toggle checked={form.enabled} onChange={(v) => set('enabled', v)} />
             <span className="text-[11px] font-mono" style={{
@@ -1245,19 +1309,83 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
       </div>
 
       <div style={{ padding: '12px' }}>
-        {tab === 'buy' && (
-          <div className="space-y-3">
-            {/* Wallet */}
+        {/* BUY block ──────────────────────────────────────────────── */}
+        <div className="space-y-3">
+            {/* Wallets — every Solana wallet snipes in parallel ─────────── */}
             <div>
-              <label className="label" style={{ fontSize: 10 }}>Signing wallet</label>
-              <select className="input" style={{ height: 30, fontSize: 12 }} value={form.walletId} onChange={(e) => set('walletId', e.target.value)}>
-                <option value="">Select wallet…</option>
-                {filteredWallets.map((w) => (
-                  <option key={w.id} value={w.id}>{w.label ?? `${w.address.slice(0, 8)}…${w.address.slice(-4)}`}</option>
-                ))}
-              </select>
-              {filteredWallets.length === 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                <label className="label" style={{ fontSize: 10, margin: 0 }}>
+                  Signing wallets {filteredWallets.length > 0 && (
+                    <span className="font-mono" style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 4 }}>
+                      ({armedSet.size}/{filteredWallets.length} armed)
+                    </span>
+                  )}
+                </label>
+                <div className="flex items-center gap-1">
+                  {burstStatus?.active ? (
+                    <button className="btn btn-ghost btn-sm" style={{ height: 20, padding: '0 8px', fontSize: 10 }} onClick={disarmAll}>
+                      Disarm
+                    </button>
+                  ) : (
+                    <button className="btn btn-sm" style={{ height: 20, padding: '0 8px', fontSize: 10 }} onClick={armAll}>
+                      Arm all
+                    </button>
+                  )}
+                </div>
+              </div>
+              {filteredWallets.length === 0 ? (
                 <p className="text-[10px] mt-1" style={{ color: 'var(--warn)' }}>No Solana wallets — create one on the Wallets page.</p>
+              ) : (
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {filteredWallets.map((w) => {
+                    const armed = armedSet.has(w.id);
+                    const bal = armedBalances.get(w.id);
+                    return (
+                      <div key={w.id} style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr auto auto',
+                        alignItems: 'center', gap: 8,
+                        padding: '6px 8px',
+                        background: 'var(--surface-2)',
+                        border: `1px solid ${armed ? 'color-mix(in srgb, var(--ok) 35%, transparent)' : 'var(--border)'}`,
+                        borderRadius: 6,
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                          {w.isPrimary && (
+                            <span className="font-mono" style={{
+                              fontSize: 8, fontWeight: 700, letterSpacing: '0.08em',
+                              color: 'var(--accent)',
+                              padding: '1px 4px', borderRadius: 3,
+                              background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+                            }}>1°</span>
+                          )}
+                          <code className="font-mono" style={{ fontSize: 11, color: 'var(--text)' }}>
+                            {w.label ?? `${w.address.slice(0, 6)}…${w.address.slice(-4)}`}
+                          </code>
+                        </div>
+                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-2)', fontFeatureSettings: '"tnum" 1' }}>
+                          {bal != null ? `${(bal / 1e9).toFixed(3)} SOL` : '—'}
+                        </span>
+                        <span className="font-mono text-[9px]" style={{
+                          fontWeight: 700, letterSpacing: '0.08em',
+                          padding: '1px 5px', borderRadius: 3,
+                          color: armed ? 'var(--ok)' : 'var(--text-3)',
+                          background: armed
+                            ? 'color-mix(in srgb, var(--ok) 14%, transparent)'
+                            : 'var(--surface)',
+                          border: `1px solid ${armed ? 'color-mix(in srgb, var(--ok) 30%, transparent)' : 'var(--border)'}`,
+                        }}>
+                          {armed ? 'HOT' : 'COLD'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <p className="text-[10px] mt-1" style={{ color: burstStatus?.active ? 'var(--ok)' : 'var(--text-3)' }}>
+                    {burstStatus?.active
+                      ? `Every CA picked up via Telegram fires across all ${armedSet.size} armed wallet${armedSet.size === 1 ? '' : 's'} in parallel.`
+                      : 'Arm to enable multi-wallet sniping — every wallet trades the same buy in parallel.'}
+                  </p>
+                </div>
               )}
             </div>
 
@@ -1300,65 +1428,76 @@ function ConfigPanel({ config, wallets }: { config: SnipeConfig | null; wallets:
               ))}
             </div>
           </div>
-        )}
 
-        {tab === 'sell' && (
-          <div className="space-y-3">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div className="text-[12px] font-semibold">Auto-sell</div>
-                <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>Exit positions automatically</div>
+        {/* SELL block ─────────────────────────────────────────────── */}
+        <div
+          className="space-y-3"
+          style={{
+            marginTop: 16, paddingTop: 12,
+            borderTop: '1px dashed var(--border)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div className="text-[12px] font-semibold" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                Auto-sell
+                <span className="font-mono" style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.08em',
+                  padding: '1px 5px', borderRadius: 3,
+                  color: form.sellEnabled ? 'var(--ok)' : 'var(--text-3)',
+                  background: form.sellEnabled
+                    ? 'color-mix(in srgb, var(--ok) 14%, transparent)'
+                    : 'var(--surface-2)',
+                  border: `1px solid ${form.sellEnabled ? 'color-mix(in srgb, var(--ok) 30%, transparent)' : 'var(--border)'}`,
+                }}>
+                  {form.sellEnabled ? 'ON' : 'OFF'}
+                </span>
               </div>
-              <Toggle checked={form.sellEnabled} onChange={(v) => set('sellEnabled', v)} />
+              <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                {form.sellEnabled
+                  ? 'Exits TP / SL / trail / time across every armed wallet'
+                  : 'Off — positions stay open until you sell manually'}
+              </div>
             </div>
-            {form.sellEnabled && (
-              <>
-                {/* Mode */}
-                <div className="grid grid-cols-2 gap-1.5">
-                  {(['TRIGGER', 'INTELLIGENT'] as const).map((m) => (
-                    <button key={m} onClick={() => set('sellMode', m)}
-                      style={{
-                        padding: '7px 8px', borderRadius: 7, textAlign: 'left', cursor: 'pointer',
-                        background: form.sellMode === m ? 'color-mix(in srgb, var(--accent) 14%, var(--surface-2))' : 'var(--surface-2)',
-                        border: `1px solid ${form.sellMode === m ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border)'}`,
-                      }}>
-                      <div className="font-semibold text-[11px]" style={{ color: form.sellMode === m ? 'var(--accent)' : 'var(--text)' }}>{m}</div>
-                      <div className="text-[10px]" style={{ color: 'var(--text-3)', marginTop: 1 }}>
-                        {m === 'TRIGGER' ? 'Instant on trigger' : 'AI reviews first'}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Quick strategies */}
-                <div>
-                  <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>Quick preset</div>
-                  <div className="flex flex-wrap gap-1">
-                    {SELL_STRATEGIES.map((s) => (
-                      <button key={s.label}
-                        onClick={() => applyStrategy(s)}
-                        className="btn btn-ghost btn-sm"
-                        style={{ fontSize: 10, height: 22, padding: '0 8px' }}>
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Triggers */}
-                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                  <TriggerRow label="Take profit" unit="%" value={form.takeProfitPct} onChange={(v) => set('takeProfitPct', v)} min={1} max={10000} />
-                  <TriggerRow label="Stop loss"   unit="%" value={form.stopLossPct}   onChange={(v) => set('stopLossPct', v)}   min={-99} max={-1} />
-                  <TriggerRow label="Trail stop"  unit="%" value={form.trailingStopPct} onChange={(v) => set('trailingStopPct', v)} min={1} max={99} />
-                  <TriggerRow label="Time exit"   unit="min"
-                    value={form.exitAfterMs != null ? form.exitAfterMs / 60_000 : null}
-                    onChange={(v) => set('exitAfterMs', v != null ? Math.round(v * 60_000) : null)}
-                    min={1} max={1440} />
-                </div>
-              </>
-            )}
+            <Toggle checked={form.sellEnabled} onChange={(v) => set('sellEnabled', v)} />
           </div>
-        )}
+          {form.sellEnabled && (
+            <>
+              {/* Risk preset — drives the phase-machine playbook (see docs/AUTO_SELL_STRATEGY.md) */}
+              <div>
+                <div className="label" style={{ fontSize: 10, marginBottom: 4 }}>Risk preset</div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {RISK_PRESETS.map((p) => {
+                    const active = (form.riskPreset ?? 'DEFAULT') === p.key;
+                    return (
+                      <button key={p.key} onClick={() => set('riskPreset', p.key)}
+                        style={{
+                          padding: '8px 10px', borderRadius: 8, textAlign: 'left', cursor: 'pointer',
+                          background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface-2))' : 'var(--surface-2)',
+                          border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 35%, transparent)' : 'var(--border)'}`,
+                        }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                          <span className="font-semibold text-[12px]" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>
+                            {p.label}
+                          </span>
+                          <span className="font-mono text-[10px]" style={{ color: 'var(--text-3)' }}>
+                            SL {p.sl} · TP1 {p.tp1} · TP2 {p.tp2}
+                          </span>
+                        </div>
+                        <div className="text-[10px]" style={{ color: 'var(--text-3)', marginTop: 3 }}>
+                          {p.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] mt-2" style={{ color: 'var(--text-3)' }}>
+                  Mechanical playbook: TP1 partial → trail post-TP1 → TP2 partial → moonbag trail. Liquidity-drop &amp; honeypot panic exits active in all phases.
+                </p>
+              </div>
+            </>
+          )}
+        </div>
         {saveState === 'error' && <p className="text-[11px] mt-2" style={{ color: 'var(--bad)' }}>Save failed — check connection</p>}
       </div>
     </div>
@@ -1412,15 +1551,44 @@ function highlightCAs(text: string): React.ReactNode[] {
   return parts;
 }
 
-function TgInboxPanel({ config, tgConnected, session, headerRight }: { config: SnipeConfig | null; tgConnected: boolean; session: { active: boolean; balanceLamports?: number }; headerRight?: React.ReactNode }) {
+function TgInboxPanel({ config, tgConnected, session, burstStatus, headerRight }: { config: SnipeConfig | null; tgConnected: boolean; session: { active: boolean; balanceLamports?: number }; burstStatus: BurstStatus | null; headerRight?: React.ReactNode }) {
+  // Multi-wallet, auto-sized: each wallet fires the lesser of (configured
+  // amount, balance - 0.002 SOL fee). A wallet only skips if it can't even
+  // afford the minimum dust buy (~0.005 SOL + fee headroom).
+  const buyAmountSol = Number(config?.buyAmountRaw ?? '0') / 1e9;
+  const FEE_HEADROOM = 0.002;
+  const MIN_BUY = 0.005;
+  const dustThreshold = MIN_BUY + FEE_HEADROOM; // ~0.007 SOL — below this, wallet skips
+  const burstWallets = burstStatus?.wallets ?? [];
+  // "Eligible" = can fire at least the minimum buy. Most wallets qualify.
+  const eligibleBurstWallets = burstWallets.filter(
+    (w) => (w.balanceLamports ?? 0) / 1e9 >= dustThreshold,
+  );
+  const totalBurstWallets = burstWallets.length;
+  const hasBurstArmed = burstStatus?.active === true && totalBurstWallets > 0;
+
+  // Fallback to the primary single-wallet session when burst isn't armed.
   const solBalance = session.balanceLamports !== undefined ? session.balanceLamports / 1e9 : null;
-  const snipeWillRun = config?.enabled && session.active && tgConnected && (solBalance === null || solBalance >= 0.005);
+  const singleWalletMinSol = buyAmountSol + FEE_HEADROOM;
+
+  const snipeWillRun = config?.enabled && tgConnected && (
+    hasBurstArmed
+      ? eligibleBurstWallets.length > 0
+      : session.active && (solBalance === null || solBalance >= dustThreshold)
+  );
+
   const snipeWarning = config?.enabled && tgConnected
-    ? !session.active
-      ? 'No hot session — trades will be skipped. Load a hot session in Snipe settings.'
-      : solBalance !== null && solBalance < 0.005
-        ? `Wallet balance ${solBalance.toFixed(4)} SOL is too low — transactions will be dropped by validators. Fund the wallet first.`
-        : null
+    ? hasBurstArmed
+      ? eligibleBurstWallets.length === 0
+        ? `None of the ${totalBurstWallets} armed wallets have ≥ ${dustThreshold.toFixed(3)} SOL. Fund at least one wallet before a CA arrives.`
+        : eligibleBurstWallets.length < totalBurstWallets
+          ? `${eligibleBurstWallets.length}/${totalBurstWallets} wallets ready — low-balance wallets will buy what they can afford (capped at ${buyAmountSol.toFixed(3)} SOL).`
+          : null
+      : !session.active
+        ? 'No wallets armed — toggle ON in Settings or fund a wallet.'
+        : solBalance !== null && solBalance < singleWalletMinSol
+          ? `Primary wallet has ${solBalance.toFixed(4)} SOL — need at least ${singleWalletMinSol.toFixed(3)} SOL for buy + fees.`
+          : null
     : null;
   const [groups, setGroups]       = useState<TgGroup[]>([]);
   const [groupsLoading, setGroupsLoading] = useState(false);

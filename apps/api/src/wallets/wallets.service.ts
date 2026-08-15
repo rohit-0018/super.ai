@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, Optional } from '@nestjs/common';
 import { Chain } from '@prisma/client';
 import { Keypair } from '@solana/web3.js';
 import { ethers } from 'ethers';
@@ -7,10 +7,33 @@ import { getSolanaRpcUrl, getEvmRpcUrl, isTestnet } from '../common/network-conf
 import { PrismaService } from '../prisma/prisma.service';
 import { KmsService } from './kms.service';
 import { LiveTradeGuardService } from '../common/live-trade-guard.service';
+import { EvmBalancesService, type ChainNativeBalance } from '../venues/evm-balances.service';
 
-const MAX_WALLETS_PER_USER = 5;
+// Hard ceiling exists only as a sanity guard against runaway scripts; can be
+// raised via the WALLET_CAP env var. Sniping is multi-wallet so users
+// stacking 20+ wallets is a normal flow.
+const MAX_WALLETS_PER_USER = Number(process.env.WALLET_CAP ?? '100');
+
+/** Sentinel used for a chain's gas asset in holding rows. */
+const NATIVE_PLACEHOLDER = 'native';
+/** Upper bound on distinct ERC-20s probed per wallet — each is an RPC call. */
+const MAX_EVM_TOKENS_SCANNED = 20;
+
+/** True for a real ERC-20 contract address (excludes native sentinels). */
+function isErc20Address(v: string | null | undefined): boolean {
+  if (!v || !/^0x[a-fA-F0-9]{40}$/.test(v)) return false;
+  const lower = v.toLowerCase();
+  // 1inch's native sentinel and the zero address are not tokens.
+  return lower !== '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+    && lower !== '0x0000000000000000000000000000000000000000';
+}
 
 export interface HoldingRow {
+  /** Chain key ('solana' | 'base' | …). Present on EVM rows; Solana rows omit it. */
+  chain?: string;
+  chainName?: string;
+  /** True for the chain's gas asset rather than a token contract. */
+  isNative?: boolean;
   mint: string;
   symbol: string;
   amount: number;
@@ -31,6 +54,7 @@ export class WalletsService {
     private prisma: PrismaService,
     private kms: KmsService,
     private liveGuard: LiveTradeGuardService,
+    @Optional() private evmBalances?: EvmBalancesService,
   ) {}
 
   /** Fast list — no RPC calls, returns instantly from DB. */
@@ -207,6 +231,30 @@ export class WalletsService {
 
   private async fetchEvmBalance(w: { id: string; chain: string; address: string }) {
     try {
+      // Fan out across every EVM chain. An EVM address is valid on all of them,
+      // and previously we only ever queried Ethereum — so a wallet funded on
+      // Base or Arbitrum reported zero.
+      if (this.evmBalances) {
+        const portfolio = await this.evmBalances.portfolio(w.address);
+        const primary =
+          portfolio.chains.filter((c) => !c.error).sort((a, b) => b.usd - a.usd)[0];
+
+        const bal = {
+          walletId: w.id,
+          chain: w.chain,
+          address: w.address,
+          // Headline figure stays the largest holding so existing UI keeps working,
+          // with the full per-chain split alongside it.
+          native: primary?.native ?? 0,
+          symbol: primary?.symbol ?? 'ETH',
+          usd: portfolio.totalUsd,
+          chains: portfolio.chains.filter((c) => c.native > 0 || c.error),
+        };
+        this.balanceCache.set(w.id, { bal, ts: Date.now() });
+        return;
+      }
+
+      // Fallback for contexts where the venue layer isn't wired (e.g. unit tests).
       if (!this.evmProvider) this.evmProvider = new ethers.JsonRpcProvider(getEvmRpcUrl());
       const wei: bigint = await this.withTimeout(this.evmProvider.getBalance(w.address), 10_000);
       const eth = parseFloat(ethers.formatEther(wei));
@@ -224,6 +272,8 @@ export class WalletsService {
   async fetchOnChainBalance(chain: 'SOLANA' | 'EVM', address: string): Promise<{
     native: number; symbol: string; usd: number;
     tokens?: Array<{ mint: string; symbol: string; amount: number; usd: number }>;
+    /** EVM only — per-chain native balance split across every EVM network. */
+    chains?: ChainNativeBalance[];
   }> {
     if (chain === 'SOLANA') {
       const { PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
@@ -252,6 +302,19 @@ export class WalletsService {
       const tokensUsd = tokens.reduce((s: number, t: SplToken) => s + t.usd, 0);
       return { native: sol, symbol: 'SOL', usd: sol * solPrice + tokensUsd, ...(tokens.length > 0 && { tokens }) };
     }
+    // EVM: sum every chain, not just Ethereum. `native`/`symbol` describe the
+    // chain holding the most value so the single-wallet view stays meaningful.
+    if (this.evmBalances) {
+      const portfolio = await this.evmBalances.portfolio(address);
+      const primary = portfolio.chains.filter((c) => !c.error).sort((a, b) => b.usd - a.usd)[0];
+      return {
+        native: primary?.native ?? 0,
+        symbol: primary?.symbol ?? 'ETH',
+        usd: portfolio.totalUsd,
+        chains: portfolio.chains.filter((c) => c.native > 0 || c.error),
+      };
+    }
+
     if (!this.evmProvider) this.evmProvider = new ethers.JsonRpcProvider(getEvmRpcUrl());
     const wei = await this.evmProvider.getBalance(address);
     const eth = parseFloat(ethers.formatEther(wei));
@@ -288,13 +351,116 @@ export class WalletsService {
    * Returns all non-zero SPL token positions for a Solana wallet,
    * enriched with Birdeye prices and P&L from snipe trade history.
    */
-  async getHoldings(userId: string, walletId: string): Promise<HoldingRow[]> {
+
+  /**
+   * EVM holdings: native balance per chain, plus ERC-20 balances for tokens the
+   * user has actually traded.
+   *
+   * A plain RPC cannot enumerate an address's ERC-20 holdings — that needs a
+   * keyed indexer. Rather than add a paid dependency we check `balanceOf` for
+   * the tokens qwai already knows the user touched, which covers the case that
+   * matters (positions opened through this app) at zero cost.
+   *
+   * Bounded deliberately: without a `chainKey` we only scan chains where the
+   * wallet holds gas, because scanning 20 tokens x 8 chains would be 160 RPC
+   * calls per wallet. Callers that care about a specific chain pass it.
+   */
+  private async getEvmHoldings(
+    userId: string,
+    address: string,
+    chainKey?: string,
+  ): Promise<HoldingRow[]> {
+    if (!this.evmBalances) return [];
+
+    const portfolio = await this.evmBalances.portfolio(address).catch(() => null);
+    if (!portfolio) return [];
+
+    const rows: HoldingRow[] = [];
+
+    // 1. Native balance on each chain that has one.
+    for (const c of portfolio.chains) {
+      if (c.error || c.native <= 0) continue;
+      if (chainKey && c.chain !== chainKey) continue;
+      rows.push({
+        chain: c.chain,
+        chainName: c.chainName,
+        isNative: true,
+        mint: NATIVE_PLACEHOLDER,
+        symbol: c.symbol,
+        amount: c.native,
+        decimals: 18,
+        priceUsd: c.native > 0 ? c.usd / c.native : null,
+        valueUsd: c.usd,
+        entryCostSol: null,
+        entryCostUsd: null,
+        pnlUsd: null,
+        pnlPct: null,
+        firstBoughtAt: null,
+        txHash: null,
+      });
+    }
+
+    // 2. ERC-20s the user has traded on EVM.
+    const trades = await this.prisma.trade.findMany({
+      where: { userId, chain: 'EVM' },
+      select: { tokenIn: true, tokenOut: true, createdAt: true, txHash: true },
+      orderBy: { createdAt: 'asc' },
+      take: 300,
+    });
+
+    const firstSeen = new Map<string, { at: Date; txHash: string | null }>();
+    for (const t of trades) {
+      for (const token of [t.tokenIn, t.tokenOut]) {
+        if (!isErc20Address(token)) continue;
+        const key = token.toLowerCase();
+        if (!firstSeen.has(key)) firstSeen.set(key, { at: t.createdAt, txHash: t.txHash });
+      }
+    }
+
+    const tokens = [...firstSeen.keys()].slice(0, MAX_EVM_TOKENS_SCANNED);
+    if (!tokens.length) return rows;
+
+    const scanChains = chainKey
+      ? portfolio.chains.filter((c) => c.chain === chainKey)
+      : portfolio.chains.filter((c) => !c.error && c.native > 0);
+
+    for (const c of scanChains) {
+      const balances = await this.evmBalances
+        .tokenBalances(c.chain as any, address, tokens)
+        .catch(() => []);
+
+      for (const b of balances) {
+        rows.push({
+          chain: c.chain,
+          chainName: c.chainName,
+          isNative: false,
+          mint: b.token,
+          symbol: b.symbol ?? b.token.slice(0, 6) + '…',
+          amount: b.balance,
+          decimals: b.decimals,
+          // Pricing ERC-20s needs a per-chain price lookup; left null rather
+          // than guessed, so the UI shows "—" instead of a wrong number.
+          priceUsd: null,
+          valueUsd: null,
+          entryCostSol: null,
+          entryCostUsd: null,
+          pnlUsd: null,
+          pnlPct: null,
+          firstBoughtAt: firstSeen.get(b.token.toLowerCase())?.at.toISOString() ?? null,
+          txHash: firstSeen.get(b.token.toLowerCase())?.txHash ?? null,
+        });
+      }
+    }
+
+    return rows.sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0));
+  }
+
+  async getHoldings(userId: string, walletId: string, chainKey?: string): Promise<HoldingRow[]> {
     const wallet = await this.prisma.wallet.findFirst({ where: { id: walletId, userId } });
     if (!wallet) throw new ForbiddenException();
 
     if (wallet.chain !== 'SOLANA') {
-      // EVM: no token-account model; return empty for now
-      return [];
+      return this.getEvmHoldings(userId, wallet.address, chainKey);
     }
 
     const { PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');

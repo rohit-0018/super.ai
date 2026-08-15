@@ -3,7 +3,8 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { SnipeSessionService } from './snipe-session.service';
 import { SnipeSellService } from './snipe-sell.service';
-import { UpsertSnipeConfigDto, StartSessionDto, UpsertGroupOverrideDto } from './snipe.dto';
+import { ParallelSnipeService } from './parallel-snipe.service';
+import { UpsertSnipeConfigDto, StartSessionDto, UpsertGroupOverrideDto, BurstSnipeDto } from './snipe.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('snipe')
@@ -12,6 +13,7 @@ export class SnipeController {
     private prisma: PrismaService,
     private snipeSession: SnipeSessionService,
     private snipeSell: SnipeSellService,
+    private parallelSnipe: ParallelSnipeService,
   ) {}
 
   /** GET /api/snipe/config — return current snipe config + session status */
@@ -36,6 +38,7 @@ export class SnipeController {
     const sellFields = {
       sellEnabled:     dto.sellEnabled,
       sellMode:        dto.sellMode as any,
+      riskPreset:      dto.riskPreset ?? 'DEFAULT',
       takeProfitPct:   dto.takeProfitPct   ?? null,
       stopLossPct:     dto.stopLossPct     ?? null,
       trailingStopPct: dto.trailingStopPct ?? null,
@@ -88,6 +91,72 @@ export class SnipeController {
   getSession(@Req() req: any) {
     const userId: string = req.user.userId;
     return this.snipeSession.sessionStatus(userId);
+  }
+
+  // ── Burst mode (parallel-wallet sniping) ──────────────────────────────────
+
+  /**
+   * POST /api/snipe/burst/start — decrypt all Solana wallets into hot
+   * sessions so a subsequent /burst can fire instantly across them.
+   * Idempotent; safe to call repeatedly. Sessions auto-expire after 1h.
+   */
+  @Post('burst/start')
+  async startBurst(@Req() req: any) {
+    const userId: string = req.user.userId;
+    const wallets = await this.snipeSession.startBurstSessions(userId);
+    return { ok: true, wallets };
+  }
+
+  /** DELETE /api/snipe/burst — stop all burst sessions (zero keys from memory). */
+  @Delete('burst')
+  stopBurst(@Req() req: any) {
+    const userId: string = req.user.userId;
+    this.snipeSession.stopBurstSessions(userId);
+    return { ok: true };
+  }
+
+  /**
+   * GET /api/snipe/burst — burst session status with live balances.
+   *
+   * Triggers a single batched `getMultipleAccountsInfo` RPC call to refresh
+   * every armed wallet's SOL balance from chain before returning. This is
+   * the source of truth for the Signing wallets list on /snipe — the page
+   * polls this every 15s, so balances stay live without a per-wallet RPC.
+   *
+   * Cost: 1 RPC roundtrip total, regardless of wallet count (~50-100ms on
+   * a warm Helius connection). Safe to call as frequently as the page polls.
+   */
+  @Get('burst')
+  async getBurst(@Req() req: any) {
+    const userId: string = req.user.userId;
+    // Best-effort refresh — failure (RPC blip) leaves the previous cached
+    // values in place rather than blanking the UI.
+    await this.snipeSession.refreshBurstBalances(userId);
+    return this.snipeSession.burstStatus(userId);
+  }
+
+  /**
+   * POST /api/snipe/burst — fire `buyAmountRaw` of SOL into `mint` from every
+   * active burst session in parallel. Returns immediately with per-wallet
+   * results; background monitor confirms each tx and emits WS updates.
+   */
+  @Post('burst')
+  async fireBurst(@Req() req: any, @Body() dto: BurstSnipeDto) {
+    const userId: string = req.user.userId;
+    return this.parallelSnipe.burst({
+      userId,
+      mint: dto.mint,
+      buyAmountRaw: dto.buyAmountRaw,
+      maxSlippageBps: dto.maxSlippageBps,
+      pauseWorkers: dto.pauseWorkers ?? true,
+    });
+  }
+
+  /** POST /api/snipe/burst/resume — manually resume paused workers (escape hatch). */
+  @Post('burst/resume')
+  async resumeBurst() {
+    await this.parallelSnipe.resumeQueues();
+    return { ok: true };
   }
 
   /** GET /api/snipe/history — recent snipe trades */

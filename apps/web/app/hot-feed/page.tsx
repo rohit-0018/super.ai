@@ -244,7 +244,10 @@ export default function HotFeedPage() {
             graduates to <Link href="/intel-track" style={{ color: 'var(--accent)' }}>Intel Track</Link>.
           </p>
         </div>
-        <div className="section-actions">
+        <div className="section-actions" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Link href="/snipe" className="btn btn-primary btn-sm" title="Open the sniper terminal">
+            Open sniper
+          </Link>
           <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
             {liveCount.current > 0 ? `${liveCount.current} new live` : `${items.length} cards`}
           </span>

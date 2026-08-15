@@ -40,6 +40,11 @@ export class UpsertSnipeConfigDto {
   @IsIn(['TRIGGER', 'INTELLIGENT'])
   sellMode!: 'TRIGGER' | 'INTELLIGENT';
 
+  /** Risk preset that drives the phase-machine playbook. */
+  @IsOptional() @IsIn(['CONSERVATIVE', 'DEFAULT', 'AGGRESSIVE'])
+  riskPreset?: 'CONSERVATIVE' | 'DEFAULT' | 'AGGRESSIVE';
+
+  // Legacy per-knob fields — accepted for back-compat, no longer drive engine.
   @IsOptional() @IsNumber()
   takeProfitPct?: number;
 
@@ -59,6 +64,29 @@ export class UpsertSnipeConfigDto {
 export class StartSessionDto {
   @IsString()
   walletId!: string;
+}
+
+/** Body for POST /api/snipe/burst — fire a parallel buy across every wallet. */
+export class BurstSnipeDto {
+  /** Solana mint to buy. */
+  @IsString()
+  mint!: string;
+
+  /** Lamports per wallet (e.g. "100000000" = 0.1 SOL each). */
+  @IsString()
+  buyAmountRaw!: string;
+
+  /**
+   * Slippage cap in bps. Burst mode is meant for fast new-launch sniping so
+   * we allow up to 50% (5000 bps). Above the normal tg-snipe ceiling of 9000
+   * because the retry path escalates beyond this anyway.
+   */
+  @IsInt() @Min(100) @Max(5000)
+  maxSlippageBps!: number;
+
+  /** Pause heavy background workers for the burst window. Default true. */
+  @IsOptional() @IsBoolean()
+  pauseWorkers?: boolean;
 }
 
 export class UpsertGroupOverrideDto {

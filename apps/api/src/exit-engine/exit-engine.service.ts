@@ -3,7 +3,17 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TokenPoolService } from '../hot-tokens/token-pool.service';
 import { RealtimeGateway } from '../ws/realtime.gateway';
 import { ExecutionService } from '../execution/execution.service';
+import { HolderWatchService } from './holder-watch.service';
 import { makeQueue, makeJobData, QUEUES } from '../agents/queues';
+import {
+  DEFAULT_EXIT_SIGNAL_CONFIG,
+  pushWindow,
+  realizedVolatilityPct,
+  adaptiveTrailingPct,
+  liquidityDrainTriggered,
+  thinLiquidity,
+  momentumReversal,
+} from './exit-engine.signals';
 
 // ── env config ────────────────────────────────────────────────────────────────
 const ENABLED      = process.env.EXIT_ENGINE_ENABLED !== 'false';
@@ -18,7 +28,15 @@ const THESIS_BREAK_DROP      = parseInt(process.env.EXIT_THESIS_DROP      ?? '20
 // Time-stop thresholds
 const TIME_STOP_48H_MOVE_PCT = parseFloat(process.env.EXIT_TIME_STOP_MOVE ?? '10') / 100; // <10% move
 const TIME_STOP_48H_SELL_PCT = 50;
-const TIME_STOP_72H_SELL_PCT = 100;
+
+// Sell reliability: how many failed attempts before a position is flagged stuck,
+// and the base slippage that escalates with each consecutive failure.
+const MAX_SELL_ATTEMPTS = parseInt(process.env.EXIT_MAX_SELL_ATTEMPTS ?? '5', 10);
+const BASE_SLIPPAGE_BPS = parseInt(process.env.EXIT_BASE_SLIPPAGE_BPS ?? '300', 10);
+const MAX_SLIPPAGE_BPS  = parseInt(process.env.EXIT_MAX_SLIPPAGE_BPS  ?? '2500', 10);
+
+// Rolling mcap window length for the volatility estimate (ticks; ~30s each).
+const VOL_WINDOW_CAP = parseInt(process.env.EXIT_VOL_WINDOW ?? '20', 10);
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -79,11 +97,18 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
   private timer?: NodeJS.Timeout;
   private running = false;
 
+  // Pure-signal config + cheap in-memory rolling state (rebuilds within a few
+  // ticks after a restart; pruned to active tokens each tick — see pruneState).
+  private readonly sigCfg     = DEFAULT_EXIT_SIGNAL_CONFIG;
+  private readonly mcapWindow = new Map<string, number[]>(); // token → recent mcap ticks
+  private readonly peakLiq    = new Map<string, number>();   // token → highest liquidity seen
+
   constructor(
     @Optional() private readonly prisma:   PrismaService,
     @Optional() private readonly pool:     TokenPoolService,
     @Optional() private readonly realtime: RealtimeGateway,
     @Optional() private readonly exec?:    ExecutionService,
+    @Optional() private readonly holderWatch?: HolderWatchService,
   ) {}
 
   onModuleInit() {
@@ -119,11 +144,13 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
 
   private async processOpenTrades(): Promise<void> {
     if (!this.prisma) return;
-    // Load open buy trades — no exitAt set yet.
+    // Load open buy trades — no exitAt set yet, and not flagged stuck (a stuck
+    // position has exhausted its retries and is awaiting manual intervention; we
+    // stop auto-retrying it so we don't burn fees in a loop).
     // In paper-only mode, restrict to PAPER. When live mode is on, process both.
     const where = LIVE_MODE
-      ? { side: 'buy', exitAt: null }
-      : { side: 'buy', exitAt: null, mode: 'PAPER' as const };
+      ? { side: 'buy', exitAt: null, sellStuck: false }
+      : { side: 'buy', exitAt: null, sellStuck: false, mode: 'PAPER' as const };
 
     const trades = await this.prisma.trade.findMany({
       where,
@@ -135,11 +162,19 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
     if (!trades.length) return;
     this.logger.debug(`Exit tick: evaluating ${trades.length} open trades`);
 
+    this.pruneState(new Set(trades.map((t) => t.tokenOut as string)));
+
     for (const trade of trades) {
       await this.evaluateTrade(trade).catch((e: Error) =>
         this.logger.warn(`evaluateTrade ${trade.id}: ${e.message}`),
       );
     }
+  }
+
+  /** Drop rolling state for tokens no longer in any open position (bounds memory). */
+  private pruneState(activeTokens: Set<string>): void {
+    for (const key of this.mcapWindow.keys()) if (!activeTokens.has(key)) this.mcapWindow.delete(key);
+    for (const key of this.peakLiq.keys())    if (!activeTokens.has(key)) this.peakLiq.delete(key);
   }
 
   // ── per-trade evaluation ───────────────────────────────────────────────────
@@ -184,39 +219,71 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
     const openSec      = (Date.now() - (trade.createdAt as Date).getTime()) / 1000;
     const highestMcap  = newHigh;
 
-    // 5. Staged take-profit tiers
+    const ctx = { mcapRatio, entryUsd, currentPriceUsd: live.priceUsd ?? 0 };
+    const inProfit  = mcapRatio > 1.0;
+    const remaining = () => this.remainingPositionPct(executed, tiers) / 100;
+
+    // Maintain cheap in-memory rolling state from the tick we already have.
+    const win = pushWindow(this.mcapWindow.get(token) ?? [], currentMcap, VOL_WINDOW_CAP);
+    this.mcapWindow.set(token, win);
+    const liqUsd  = (live.liquidityUsd as number | null) ?? 0;
+    const peakLiq = Math.max(this.peakLiq.get(token) ?? 0, liqUsd);
+    this.peakLiq.set(token, peakLiq);
+
+    // 5a. DANGER — liquidity drain (LP pull / rug). Dump the remainder NOW,
+    //     irrespective of P&L; getting out partially beats getting trapped.
+    if (liqUsd > 0 && liquidityDrainTriggered(liqUsd, peakLiq, this.sigCfg)) {
+      await this.executeSell(trade, { ...ctx, reason: 'liquidity_drain', sellFraction: remaining() });
+      return;
+    }
+
+    // 5a.2 DANGER — whale/insider dump flagged by the (throttled) holder watcher.
+    const dumpReason = this.holderWatch?.consumeSignal(token);
+    if (dumpReason) {
+      await this.executeSell(trade, { ...ctx, reason: dumpReason, sellFraction: remaining() });
+      return;
+    }
+
+    // 5b. Staged take-profit tiers — sell a fraction of the ORIGINAL position
     for (let i = 0; i < tiers.length; i++) {
       if (executed.includes(i)) continue; // already fired
       if (mcapRatio >= tiers[i].mcapMultiple) {
-        const sellPct       = tiers[i].sellPct / 100;
-        const sellNotional  = entryUsd * mcapRatio * sellPct;
-        await this.executeSell(trade, live.priceUsd ?? 0, sellNotional, tiers[i].id);
+        await this.executeSell(trade, { ...ctx, reason: tiers[i].id, sellFraction: tiers[i].sellPct / 100 });
         return; // one action per tick
       }
     }
 
-    // 6. Trailing stop — activates once in profit (mcap > entry)
-    if (mcapRatio > 1.0 && highestMcap > 0) {
-      const trailingPct = this.resolveTrailingStop(executed, tiers);
-      const stopLevel   = highestMcap * (1 - trailingPct / 100);
+    // 6. Volatility-adaptive trailing stop — activates once in profit; sells the
+    //    remainder. The band widens with realized volatility (don't get noise-
+    //    stopped), but thin liquidity forces the tightest band (exit fast before
+    //    slippage eats the gains).
+    if (inProfit && highestMcap > 0) {
+      const baseTrail = this.resolveTrailingStop(executed, tiers);
+      let trailingPct = adaptiveTrailingPct(baseTrail, realizedVolatilityPct(win), this.sigCfg);
+      if (thinLiquidity(liqUsd, currentMcap, this.sigCfg)) trailingPct = this.sigCfg.minTrailingPct;
+      const stopLevel = highestMcap * (1 - trailingPct / 100);
       if (currentMcap <= stopLevel) {
-        const remainingPct  = this.remainingPositionPct(executed, tiers) / 100;
-        const sellNotional  = entryUsd * mcapRatio * remainingPct;
-        await this.executeSell(trade, live.priceUsd ?? 0, sellNotional, 'trailing_stop');
+        await this.executeSell(trade, { ...ctx, reason: 'trailing_stop', sellFraction: remaining() });
         return;
       }
     }
 
-    // 7. Time stop
+    // 6b. Momentum reversal — a sharp 5m drop while in profit ("first red
+    //     candle"); take the remainder rather than wait for the full trailing band.
+    if (momentumReversal(live.priceChange5m as number | undefined, inProfit, this.sigCfg)) {
+      await this.executeSell(trade, { ...ctx, reason: 'momentum_reversal', sellFraction: remaining() });
+      return;
+    }
+
+    // 7. Time stop — flat positions get cut; sell the remainder still held
     const highestMovePct = (highestMcap - entryMcap) / entryMcap;
     if (openSec >= 72 * 3600 && highestMovePct < TIME_STOP_48H_MOVE_PCT) {
-      const sellNotional = entryUsd * mcapRatio * (TIME_STOP_72H_SELL_PCT / 100);
-      await this.executeSell(trade, live.priceUsd ?? 0, sellNotional, 'time_stop');
+      const sellFraction = this.remainingPositionPct(executed, tiers) / 100;
+      await this.executeSell(trade, { ...ctx, reason: 'time_stop', sellFraction });
       return;
     }
     if (openSec >= 48 * 3600 && !executed.includes(0) && highestMovePct < TIME_STOP_48H_MOVE_PCT) {
-      const sellNotional = entryUsd * mcapRatio * (TIME_STOP_48H_SELL_PCT / 100);
-      await this.executeSell(trade, live.priceUsd ?? 0, sellNotional, 'time_stop');
+      await this.executeSell(trade, { ...ctx, reason: 'time_stop', sellFraction: TIME_STOP_48H_SELL_PCT / 100 });
       return;
     }
 
@@ -228,63 +295,83 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
 
   private async executeSell(
     trade: any,
-    currentPriceUsd: number,
-    sellNotionalUsd: number,
-    reason: string,
+    opts: { reason: string; sellFraction: number; mcapRatio: number; entryUsd: number; currentPriceUsd: number },
   ): Promise<void> {
-    if (sellNotionalUsd <= 0) return;
+    const { reason, mcapRatio, entryUsd, currentPriceUsd } = opts;
+    const sellFraction = Math.min(1, Math.max(0, opts.sellFraction));
+    if (sellFraction <= 0) return;
+
+    // USD proceeds of selling `sellFraction` of the original position at the
+    // current valuation. entryUsd bought the whole position; at mcapRatio the
+    // whole position is worth entryUsd*mcapRatio, so the fraction yields:
+    const sellNotionalUsd = entryUsd * mcapRatio * sellFraction;
 
     const executed     = tiersExecutedArr(trade.tiersExecuted);
     const tiers        = getTiers(trade.strategyId ?? null);
     const tierIndex    = tiers.findIndex((t) => t.id === reason);
     const newExecuted  = tierIndex >= 0 ? [...executed, tierIndex] : executed;
     const allTiersDone = tiers.every((_, i) => newExecuted.includes(i));
-    const isFullExit   = allTiersDone || reason === 'trailing_stop' || reason === 'time_stop' || reason === 'thesis_break';
+    const FULL_EXIT_REASONS = ['trailing_stop', 'time_stop', 'liquidity_drain', 'momentum_reversal', 'insider_dump'];
+    const isFullExit   = allTiersDone || FULL_EXIT_REASONS.includes(reason) || reason.startsWith('thesis_break');
 
     this.logger.log(
-      `Exit: ${trade.tokenOut.slice(0, 8)}… reason=${reason} notional=$${sellNotionalUsd.toFixed(2)} fullExit=${isFullExit}`,
+      `Exit: ${trade.tokenOut.slice(0, 8)}… reason=${reason} frac=${(sellFraction * 100).toFixed(0)}% notional=$${sellNotionalUsd.toFixed(2)} fullExit=${isFullExit} attempt=${(trade.sellAttempts ?? 0) + 1}`,
     );
 
-    // Execute via ExecutionService (paper or live depending on trade.mode)
+    // ── Attempt the swap. The trade is ONLY marked sold/exited if this returns. ──
+    // ExecutionService.swap() resolves on a confirmed on-chain tx (live) or a
+    // simulated fill (paper), and throws on any failure. We must never mutate
+    // exit state on a throw, or we'd report a position as sold while the tokens
+    // are still in the wallet.
     let sellResult: { tradeId: string; txHash: string | null; amountOut: string } | null = null;
-    if (this.exec) {
-      try {
-        // Find the wallet used for the original buy
-        const wallet = await this.prisma.wallet.findFirst({
-          where: { userId: trade.userId, chain: trade.chain },
-          orderBy: { createdAt: 'asc' },
-        });
-        if (wallet) {
-          // amountIn for sell = proportional token amount from the original amountOut
-          const originalTokenAmt = parseFloat(trade.amountOut);
-          const sellFraction     = Math.min(1, sellNotionalUsd / ((trade.priceUsd ?? sellNotionalUsd) * (currentPriceUsd || 1)));
-          const sellTokenAmt     = Math.round(originalTokenAmt * sellFraction).toString();
+    let failure: string | null = null;
+    try {
+      if (!this.exec) throw new Error('execution service unavailable');
 
-          sellResult = await this.exec.swap({
-            userId:      trade.userId,
-            walletId:    wallet.id,
-            chain:       trade.chain,
-            tokenIn:     trade.tokenOut,  // selling the held token
-            tokenOut:    SOL_MINT,        // receiving SOL
-            amountIn:    sellTokenAmt,
-            notionalUsd: sellNotionalUsd,
-            slippageBps: 300,
-            strategyId:  'exit_engine',
-          });
-        }
-      } catch (err: any) {
-        this.logger.warn(`Exit sell failed for trade=${trade.id}: ${err.message}`);
-      }
+      const wallet = await this.prisma.wallet.findFirst({
+        where: { userId: trade.userId, chain: trade.chain },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (!wallet) throw new Error(`no ${trade.chain} wallet for user`);
+
+      // Token amount to sell = the same fraction of the tokens originally received.
+      const originalTokenAmt = parseFloat(trade.amountOut);
+      if (!Number.isFinite(originalTokenAmt) || originalTokenAmt <= 0) throw new Error('original amountOut invalid');
+      const sellTokenAmt = Math.max(1, Math.floor(originalTokenAmt * sellFraction)).toString();
+
+      sellResult = await this.exec.swap({
+        userId:      trade.userId,
+        walletId:    wallet.id,
+        chain:       trade.chain,
+        tokenIn:     trade.tokenOut,  // selling the held token
+        tokenOut:    SOL_MINT,        // receiving SOL
+        amountIn:    sellTokenAmt,
+        notionalUsd: sellNotionalUsd,
+        slippageBps: this.slippageForAttempt(trade.sellAttempts ?? 0),
+        strategyId:  'exit_engine',
+      });
+    } catch (err: any) {
+      failure = err?.message ?? 'unknown error';
     }
 
-    // Update the trade record
-    const entryUsd      = (trade.priceUsd as number | null) ?? 0;
-    const gainUsd       = sellNotionalUsd - entryUsd * (sellNotionalUsd / (entryUsd || 1));
+    // ── Failure path: do NOT mark anything sold. Track the attempt and retry. ──
+    if (!sellResult) {
+      await this.recordSellFailure(trade, reason, failure ?? 'swap returned no result');
+      return;
+    }
+
+    // ── Success path: the sale really happened — now it's safe to mutate state. ──
+    const proceeds      = (trade.realizedProceedsUsd as number | null) ?? 0;
+    const newProceeds   = proceeds + sellNotionalUsd;
     const patchData: Record<string, unknown> = {
-      tiersExecuted: newExecuted,
+      tiersExecuted:       newExecuted,
+      realizedProceedsUsd: newProceeds,
+      sellAttempts:        0,      // reset — this action landed
+      lastSellError:       null,
     };
-    const realizedPnl = sellNotionalUsd - entryUsd;
     if (isFullExit) {
+      // realised P&L = everything we ever received from this position minus its cost
+      const realizedPnl = newProceeds - entryUsd;
       patchData.exitReason      = reason;
       patchData.exitAt          = new Date();
       patchData.realizedPnl     = realizedPnl;
@@ -308,17 +395,17 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // Emit WS event
+    const gainUsd = sellNotionalUsd - entryUsd * sellFraction;
     this.realtime?.emitGlobal('trade_exit', {
       tradeId:         trade.id,
-      sellTradeId:     sellResult?.tradeId ?? null,
+      sellTradeId:     sellResult.tradeId ?? null,
       userId:          trade.userId,
       token:           trade.tokenOut,
       reason,
       sellNotionalUsd,
       gainUsd,
       isFullExit,
-      txHash:          sellResult?.txHash ?? null,
+      txHash:          sellResult.txHash ?? null,
       ts:              new Date().toISOString(),
     });
 
@@ -330,6 +417,57 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
       isFullExit,
       ts:              new Date().toISOString(),
     });
+  }
+
+  /** Slippage escalates with each consecutive failed attempt (300 → 600 → 1200 → … → cap). */
+  private slippageForAttempt(attempts: number): number {
+    return Math.min(MAX_SLIPPAGE_BPS, BASE_SLIPPAGE_BPS * Math.pow(2, Math.max(0, attempts)));
+  }
+
+  /**
+   * Records a failed sell without touching exit state. Increments the attempt
+   * counter; once attempts reach MAX_SELL_ATTEMPTS the position is flagged
+   * `sellStuck` (auto-retry paused) and a high-severity alert is emitted so the
+   * tokens are never silently stranded. The next tick retries with higher
+   * slippage until then.
+   */
+  private async recordSellFailure(trade: any, reason: string, error: string): Promise<void> {
+    const attempts = (trade.sellAttempts ?? 0) + 1;
+    const stuck    = attempts >= MAX_SELL_ATTEMPTS;
+
+    await this.prisma.trade.update({
+      where: { id: trade.id },
+      data:  { sellAttempts: attempts, lastSellError: error.slice(0, 500), sellStuck: stuck } as any,
+    });
+
+    if (stuck) {
+      this.logger.error(
+        `Sell STUCK after ${attempts} attempts: trade=${trade.id} token=${trade.tokenOut} reason=${reason} lastError=${error}`,
+      );
+    } else {
+      this.logger.warn(`Exit sell failed (attempt ${attempts}/${MAX_SELL_ATTEMPTS}) trade=${trade.id}: ${error}`);
+    }
+
+    // Surface failures to the UI so a position never disappears silently.
+    this.realtime?.emitToUser(trade.userId, 'trade_exit_failed', {
+      tradeId:  trade.id,
+      token:    trade.tokenOut,
+      reason,
+      error,
+      attempts,
+      stuck,
+      ts:       new Date().toISOString(),
+    });
+    if (stuck) {
+      this.realtime?.emitGlobal('sell_stuck', {
+        tradeId: trade.id,
+        userId:  trade.userId,
+        token:   trade.tokenOut,
+        reason,
+        error,
+        ts:      new Date().toISOString(),
+      });
+    }
   }
 
   // ── thesis-break detection ─────────────────────────────────────────────────
@@ -357,13 +495,12 @@ export class ExitEngineService implements OnModuleInit, OnModuleDestroy {
     if (!honeypot && !scoreFailed) return;
 
     const reason      = honeypot ? 'thesis_break_honeypot' : 'thesis_break';
-    const remaining   = this.remainingPositionPct(tiersExecutedArr(trade.tiersExecuted), getTiers(trade.strategyId)) / 100;
-    const sellNotional = entryUsd * mcapRatio * remaining;
+    const sellFraction = this.remainingPositionPct(tiersExecutedArr(trade.tiersExecuted), getTiers(trade.strategyId)) / 100;
 
     this.logger.log(
       `Thesis break: ${trade.tokenOut.slice(0, 8)}… score=${latest.aiScore} drop=${scoreDrop} honeypot=${honeypot}`,
     );
-    await this.executeSell(trade, currentPrice, sellNotional, reason);
+    await this.executeSell(trade, { reason, sellFraction, mcapRatio, entryUsd, currentPriceUsd: currentPrice });
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────

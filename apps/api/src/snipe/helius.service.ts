@@ -142,6 +142,21 @@ export class HeliusService implements OnModuleInit {
     return Math.min(lamports, MAX_LAMPORTS_HARD_CAP);
   }
 
+  /**
+   * Synchronous fee accessor for the burst hot path. Returns the cached
+   * value if present, the fallback otherwise — never awaits, never fetches.
+   * Burst arming pre-warms the cache, so this returns a real estimate.
+   * Schedules a background refresh if the cache is stale.
+   */
+  getPriorityFeeSync(): number {
+    if (this.feeCache && Date.now() - this.feeCache.cachedAt < FEE_CACHE_TTL_MS) {
+      return this.feeCache.veryHighMicroLamports;
+    }
+    // Stale or missing — kick off a refresh, return last-known or fallback.
+    this.getPriorityFeeEstimate().catch(() => {});
+    return this.feeCache?.veryHighMicroLamports ?? FALLBACK_VERY_HIGH_MICRO;
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private extractApiKey(url: string): string | null {

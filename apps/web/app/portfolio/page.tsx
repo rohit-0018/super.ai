@@ -118,12 +118,14 @@ function WalletHoldings({
           <p className="text-[12px]" style={{ color: 'var(--bad)' }}>Failed to load holdings</p>
         </div>
       ) : (holdings ?? []).length === 0 ? (
-        <div style={{ padding: '28px 16px', textAlign: 'center' }}>
-          <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.4 }}>◎</div>
-          <p className="text-[13px] font-medium" style={{ color: 'var(--text-2)' }}>No tokens found</p>
-          <p className="text-[11px] mt-1" style={{ color: 'var(--text-3)' }}>
-            Tokens appear here once you snipe or receive them on-chain.
-          </p>
+        /* Compact, not a card. A full empty-state block per wallet turned a
+           page with 11 empty wallets into ~1000px of identical placeholder —
+           the emptiness is worth one line, not a hero treatment. */
+        <div
+          className="text-[11px]"
+          style={{ padding: '8px 16px', color: 'var(--text-3)' }}
+        >
+          No tokens — they appear here once you snipe or receive them on-chain.
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>

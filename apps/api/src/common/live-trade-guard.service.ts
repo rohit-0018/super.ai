@@ -36,8 +36,16 @@ export class LiveTradeGuardService {
   /**
    * Called from execution.service before a LIVE swap goes to the DEX.
    * Throws if the trade should be rejected.
+   *
+   * Side-aware enforcement:
+   *   buy  → rate-limited (10 / 60s) + first-live-trade cap.
+   *   sell → no rate limit, no cap. Users must always be able to exit a
+   *          position; rate-limiting sells just traps them when liquidity
+   *          is fleeing and they need to dump fast.
    */
-  async checkLiveSwap(opts: { userId: string; notionalUsd: number }): Promise<void> {
+  async checkLiveSwap(opts: { userId: string; notionalUsd: number; side?: 'buy' | 'sell' }): Promise<void> {
+    if (opts.side === 'sell') return;
+
     this.hitRate(this.swapBuckets, opts.userId, SWAP_WINDOW_MS, SWAP_MAX, 'swap');
 
     const liveCount = await this.countLiveTrades(opts.userId);

@@ -122,12 +122,21 @@ class ApiClient {
     }
 
     if (resp.status === 401 && !isRetry && !path.startsWith('/auth/')) {
+      const attemptedRefresh = this.refreshHook?.getRefreshToken();
       const newToken = await this.refreshAccessToken();
       if (newToken) {
         return this.request<T>(method, path, body, true);
       }
+
+      // Our refresh failed. Before declaring the session dead, let the hook
+      // reconcile — another tab may have rotated the token while we were in
+      // flight, in which case it adopts the newer pair instead of wiping.
       if (typeof window !== 'undefined') {
         this.refreshHook?.onSessionLost();
+        const reconciled = this.refreshHook?.getRefreshToken();
+        if (reconciled && reconciled !== attemptedRefresh) {
+          return this.request<T>(method, path, body, true);
+        }
       }
       throw makeError('Session expired', 401, null);
     }

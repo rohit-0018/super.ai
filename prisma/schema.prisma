@@ -336,8 +336,13 @@ model Trade {
   tiersExecuted         Json?     // e.g. [0, 1] — which take-profit tiers have fired
   exitReason            String?   // 'tier_0'|'tier_1'|'tier_2'|'trailing_stop'|'time_stop'|'thesis_break'|'manual'
   exitAt                DateTime?
-  realizedPnl           Float?    // USD profit/loss realised at exit
+  realizedPnl           Float?    // USD profit/loss realised at full exit (proceeds - entry cost)
+  realizedProceedsUsd   Float?    // running sum of USD received across all (partial) sells
   holdDurationSec       Int?      // seconds from buy to full exit
+  // ── Sell reliability tracking ───────────────────────────────────────────────
+  sellAttempts          Int       @default(0)     // consecutive failed sell attempts for the pending action
+  lastSellError         String?   // last sell failure reason (diagnostics / alerts)
+  sellStuck             Boolean   @default(false)  // retries exhausted — needs attention, auto-retry paused
   @@index([userId, createdAt])
   @@index([userId, strategyId])
   @@index([traceId])
@@ -661,14 +666,17 @@ model SnipeConfig {
   matchPattern   String?                            // optional regex/keyword; message must match before CA extraction
   sessionExpiresAt DateTime?                        // hot-session expiry (null = no active session)
 
-  // Sell config
+  // Sell config — Phase 1 introduced the phase-machine playbook; the legacy
+  // per-knob fields below are retained for back-compat but no longer drive
+  // the auto-sell engine. Risk preset is the new entry point.
   sellEnabled       Boolean   @default(true)
   sellMode          SellMode  @default(TRIGGER)
-  takeProfitPct     Float?                      // e.g. 100.0 = sell at 2× entry
-  stopLossPct       Float?                      // e.g. -25.0 = sell if down 25%
-  trailingStopPct   Float?                      // e.g. 20.0 = sell if 20% below peak
-  exitAfterMs       Int?                        // auto-exit after N ms (e.g. 1200000 = 20 min)
-  partialExitPct    Float?                      // if set, sell this % at takeProfitPct, trail the rest
+  riskPreset        String    @default("DEFAULT")  // CONSERVATIVE | DEFAULT | AGGRESSIVE
+  takeProfitPct     Float?                      // [legacy] use riskPreset instead
+  stopLossPct       Float?                      // [legacy]
+  trailingStopPct   Float?                      // [legacy]
+  exitAfterMs       Int?                        // [legacy]
+  partialExitPct    Float?                      // [legacy]
 
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -704,13 +712,26 @@ model SnipeTrade {
   errorMsg  String?  @db.Text              // error reason when status=failed
   attempts  Int      @default(1)           // total broadcast attempts including slippage retries
 
+  // Which wallet *actually* bought this row. Critical for multi-wallet sniping —
+  // without it the auto-sell engine can't find the right session to sign the
+  // exit. Nullable for back-compat with rows created before this column existed
+  // (those rows fall back to the user's primary session).
+  walletId  String?
+
   // Sell tracking
   sellTxHash    String?
-  sellStatus    String?                         // pending | broadcast | confirmed | failed | skip
-  sellReason    String?                         // take_profit | stop_loss | trailing_stop | time_exit | manual | intelligent
+  sellStatus    String?                         // pending | broadcast | confirmed | failed | skip | partial_tp1 | partial_tp2 | honeypot
+  sellReason    String?                         // tp1 | tp2 | stop_loss | trailing_stop | time_decay | liquidity_panic | manual
   sellAttempts  Int      @default(0)            // total sell broadcast attempts (for retry limiting)
   peakPriceMul  Float?                          // highest price multiple seen (for trailing stop)
   sellCheckedAt DateTime?                       // last time sell conditions were evaluated
+
+  // Phase machine for the multi-tier exit playbook (see docs/AUTO_SELL_STRATEGY.md).
+  //   null / pre_tp1  → waiting for TP1, hard SL, time decay, liquidity panic active
+  //   post_tp1        → TP1 fired, 50% sold; trailing stop + TP2 active
+  //   moonbag         → TP2 fired; only moonbag trail active
+  //   closed          → final exit fired, no more checks
+  sellPhase     String?
 
   // Snapshot at fill time — frozen historical context for accurate P&L and
   // "mcap at buy" rendering. All optional: best-effort, never blocks the buy.

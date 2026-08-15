@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Keypair, Connection } from '@solana/web3.js';
-import { getSolanaRpcUrl } from '../common/network-config';
+import { getSolanaRpcUrl, getJupiterApiBase } from '../common/network-config';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { HeliusService } from './helius.service';
@@ -47,8 +47,16 @@ export interface CachedSnipeConfig {
 export class SnipeSessionService implements OnModuleDestroy {
   private readonly logger = new Logger(SnipeSessionService.name);
 
-  // userId → HotSession (keypair in memory)
+  // userId → HotSession (keypair in memory). This is the *primary* session
+  // used by the Telegram-driven sniper. There is one primary per user, tied
+  // to SnipeConfig.walletId.
   private sessions = new Map<string, HotSession>();
+
+  // userId → walletId → HotSession. Burst mode (parallel-wallet sniping)
+  // keeps a hot session per Solana wallet so we can sign N transactions
+  // simultaneously without paying KMS round-trips per fire. Separate from
+  // `sessions` so the existing tg-snipe code path is untouched.
+  private burstSessions = new Map<string, Map<string, HotSession>>();
 
   // groupId → { configs, cachedAt }
   private groupCache = new Map<string, { configs: CachedSnipeConfig[]; cachedAt: number }>();
@@ -75,6 +83,10 @@ export class SnipeSessionService implements OnModuleDestroy {
   onModuleDestroy() {
     clearInterval(this.cleanupInterval);
     this.sessions.clear();
+    for (const map of this.burstSessions.values()) {
+      for (const s of map.values()) s.keypair.secretKey.fill(0);
+    }
+    this.burstSessions.clear();
   }
 
   async startSession(userId: string, walletId: string): Promise<{ address: string; expiresAt: number; balanceLamports: number }> {
@@ -131,6 +143,179 @@ export class SnipeSessionService implements OnModuleDestroy {
       data: { sessionExpiresAt: null },
     }).catch(() => {});
     this.logger.log(`Hot session stopped: user=${userId}`);
+  }
+
+  // ── Burst (multi-wallet) sessions ────────────────────────────────────────
+
+  /**
+   * Decrypt every SOLANA wallet for the user into a HotSession. Skips wallets
+   * that already have a live burst session. Returns the per-wallet summary
+   * the UI uses to render the burst panel. Idempotent.
+   */
+  async startBurstSessions(userId: string): Promise<Array<{
+    walletId: string; address: string; label: string | null;
+    isPrimary: boolean; balanceLamports: number; expiresAt: number;
+  }>> {
+    const wallets = await this.prisma.wallet.findMany({
+      where: { userId, chain: 'SOLANA' },
+      select: { id: true, address: true, label: true, isPrimary: true },
+      orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+    });
+    if (wallets.length === 0) throw new Error('No Solana wallets found for this user');
+
+    const expiresAt = Date.now() + 3_600_000; // 1 h
+    let map = this.burstSessions.get(userId);
+    if (!map) { map = new Map(); this.burstSessions.set(userId, map); }
+
+    const readConn = this.helius.makeReadConnection();
+    const sendConn = this.helius.makeSendConnection();
+
+    const out: Array<{ walletId: string; address: string; label: string | null; isPrimary: boolean; balanceLamports: number; expiresAt: number }> = [];
+
+    // Pass 1: decrypt + register sessions sequentially (KMS is the bottleneck).
+    const newSessions: HotSession[] = [];
+    for (const w of wallets) {
+      let session = map.get(w.id);
+      if (!session || session.expiresAt < Date.now()) {
+        const keypair = await this.wallets.withSigningKey(userId, w.id, async (key) => {
+          const bytes = new Uint8Array([...key]);
+          return Keypair.fromSecretKey(bytes);
+        });
+        session = {
+          keypair, connection: readConn, sendConnection: sendConn,
+          walletId: w.id, address: w.address, expiresAt,
+        };
+        map.set(w.id, session);
+      }
+      newSessions.push(session);
+    }
+
+    // Pass 2: balance + priority-fee + TLS pre-warm in parallel. This is the
+    // "cosmetic" prep — done now, before any snipe — so the hot path has
+    // no RPC roundtrips beyond the Jupiter quote + broadcast.
+    //
+    // TLS pre-warm: a single getSlot() on the send connection completes the
+    // TLS handshake to Helius's staked endpoint. Saves ~50-150ms on the
+    // first sendRawTransaction after arm (the most latency-sensitive call).
+    const sendConnPrewarm = sendConn.getSlot().catch(() => 0);
+    const jupBase = getJupiterApiBase();
+    const jupPrewarm = jupBase === 'MOCK'
+      ? Promise.resolve(null)
+      : fetch(`${jupBase}/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&amount=1000&slippageBps=100`, {
+          signal: AbortSignal.timeout(3_000),
+        }).then((r) => { r.body?.cancel(); return null; }).catch(() => null);
+
+    const balances = await Promise.all([
+      ...newSessions.map((s) =>
+        s.connection.getBalance(s.keypair.publicKey).catch(() => 0),
+      ),
+      this.helius.getPriorityFeeEstimate().catch(() => null), // primes the 2s cache
+      sendConnPrewarm,                                         // primes TLS to staked Helius endpoint
+      jupPrewarm,                                              // primes TLS to Jupiter API
+    ]);
+
+    newSessions.forEach((s, i) => {
+      s.balanceLamports = balances[i] as number;
+    });
+
+    for (let i = 0; i < wallets.length; i++) {
+      const w = wallets[i];
+      const s = newSessions[i];
+      out.push({
+        walletId: w.id, address: w.address, label: w.label,
+        isPrimary: w.isPrimary, balanceLamports: s.balanceLamports ?? 0,
+        expiresAt: s.expiresAt,
+      });
+    }
+    this.logger.log(`Burst sessions started: user=${userId} wallets=${out.length} (balances + fee pre-warmed)`);
+    return out;
+  }
+
+  /**
+   * Background balance refresh — call periodically from a cheap timer so
+   * the cached `session.balanceLamports` stays usable for the pre-flight
+   * filter without paying the RPC cost on the hot path.
+   *
+   * Implemented as ONE batched `getMultipleAccountsInfo` call rather than N
+   * parallel `getBalance` calls. For 5 wallets that's 1 RPC roundtrip
+   * instead of 5 — same latency budget regardless of wallet count.
+   */
+  async refreshBurstBalances(userId: string): Promise<void> {
+    const sessions = this.getBurstSessions(userId);
+    if (sessions.length === 0) return;
+    // All burst sessions share the same readConn (set at startBurstSessions),
+    // so pick any and batch.
+    const conn = sessions[0].connection;
+    const pubkeys = sessions.map((s) => s.keypair.publicKey);
+    try {
+      const infos = await conn.getMultipleAccountsInfo(pubkeys, 'confirmed');
+      sessions.forEach((s, i) => {
+        // A freshly created (never-funded) wallet returns null here, which
+        // correctly means 0 lamports. Keep the existing cached value if the
+        // RPC returned nothing for an index (defensive — shouldn't happen).
+        const info = infos[i];
+        if (info !== undefined) {
+          s.balanceLamports = info?.lamports ?? 0;
+        }
+      });
+    } catch (e: any) {
+      this.logger.debug(`refreshBurstBalances batched fetch failed: ${e?.message}`);
+      // Don't overwrite cached balances on transient RPC errors.
+    }
+  }
+
+  stopBurstSessions(userId: string) {
+    const map = this.burstSessions.get(userId);
+    if (!map) return;
+    for (const s of map.values()) s.keypair.secretKey.fill(0);
+    this.burstSessions.delete(userId);
+    this.logger.log(`Burst sessions stopped: user=${userId}`);
+  }
+
+  /**
+   * Direct walletId → session lookup. Used by the auto-sell engine to find
+   * the right session for a given SnipeTrade row's wallet (not the primary).
+   * Falls back to the primary session when no burst session is armed for
+   * that wallet — useful for back-compat with rows from before walletId was
+   * tracked.
+   */
+  getSessionForWallet(userId: string, walletId: string | null): HotSession | null {
+    if (walletId) {
+      const map = this.burstSessions.get(userId);
+      const s = map?.get(walletId);
+      if (s && s.expiresAt > Date.now()) return s;
+    }
+    return this.getSession(userId); // fallback to primary single-wallet session
+  }
+
+  /** Returns all live burst sessions for a user (filters expired). */
+  getBurstSessions(userId: string): HotSession[] {
+    const map = this.burstSessions.get(userId);
+    if (!map) return [];
+    const now = Date.now();
+    const live: HotSession[] = [];
+    for (const [walletId, s] of map) {
+      if (s.expiresAt < now) {
+        s.keypair.secretKey.fill(0);
+        map.delete(walletId);
+        continue;
+      }
+      live.push(s);
+    }
+    return live;
+  }
+
+  burstStatus(userId: string) {
+    const sessions = this.getBurstSessions(userId);
+    return {
+      active: sessions.length > 0,
+      count: sessions.length,
+      wallets: sessions.map((s) => ({
+        walletId: s.walletId, address: s.address,
+        balanceLamports: s.balanceLamports ?? null,
+        expiresAt: new Date(s.expiresAt),
+      })),
+    };
   }
 
   getSession(userId: string): HotSession | null {
@@ -213,6 +398,21 @@ export class SnipeSessionService implements OnModuleDestroy {
         s.keypair.secretKey.fill(0);
         this.sessions.delete(userId);
         this.logger.debug(`Auto-expired hot session: user=${userId}`);
+      }
+    }
+    for (const [userId, map] of this.burstSessions) {
+      for (const [walletId, s] of map) {
+        if (s.expiresAt < now) {
+          s.keypair.secretKey.fill(0);
+          map.delete(walletId);
+        }
+      }
+      if (map.size === 0) {
+        this.burstSessions.delete(userId);
+      } else {
+        // Cheap parallel balance refresh so the hot path can rely on
+        // cached balanceLamports for its pre-flight filter.
+        this.refreshBurstBalances(userId).catch(() => {});
       }
     }
     // Prune dedupe entries older than 5 min

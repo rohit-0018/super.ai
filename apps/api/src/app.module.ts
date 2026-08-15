@@ -33,6 +33,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { EpisodesModule } from './episodes/episodes.module';
 import { SnipeModule } from './snipe/snipe.module';
 import { HotTokensModule } from './hot-tokens/hot-tokens.module';
+import { VenuesModule } from './venues/venues.module';
 import { IntelTrackModule } from './intel-track/intel-track.module';
 import { ExitEngineModule } from './exit-engine/exit-engine.module';
 import { AutoTradeModule } from './auto-trade/auto-trade.module';
@@ -81,6 +82,7 @@ import { TraceMiddleware } from './common/trace.middleware';
     SnipeModule,
     HotTokensModule,
     AutoTradeModule,
+    VenuesModule,
     IntelTrackModule,
     ExitEngineModule,
   ],
